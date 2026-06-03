@@ -2218,5 +2218,14 @@
     -moz-appearance: textfield;
 }
 
+/*
+ * Hide tool-call message bubbles (e.g. the RollTheDice round-trip) so dice rolls don't
+ * break roleplay flow. The tool result still returns to the model — only the visible
+ * message is hidden. ".mes.toolCall" is SillyTavern's documented class for tool-call bubbles.
+ */
+.mes.toolCall {
+    display: none;
+}
+
 
 

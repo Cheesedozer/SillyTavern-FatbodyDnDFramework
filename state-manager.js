@@ -50,6 +50,7 @@ export function getSettings() {
         fontSize: 14,
         agentFontSize: 13,
         customSysprompt: false,
+        suiteMode: false,
         rngEnabled: true,
         diceFunctionTool: true,
         barColors: {},

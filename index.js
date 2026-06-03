@@ -2,7 +2,7 @@ import { EXAMPLES, COLOR_EXAMPLES, DEFAULT_STOCK_PROMPTS, RT_PROMPTS, BLOCK_ICON
 import { MODULE_NAME, DEFAULT_MODULES, getSettings, getBarBackground, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
 import { sendStateRequest, fetchOllamaModels, fetchOpenAIModels, testOpenAIConnection, getConnectionProfiles, getCurrentCompletionPreset, setCompletionPreset } from './llm-client.js';
 import { getDiceToolName, getDiceCommandName, getDiceCommandAliases, doDiceRoll, registerDiceFunctionTool, registerDiceSlashCommand, installInterceptor, getNarrativeBlocks, onGenerationEnded, resetRouterTick } from './narrative-hooks.js';
-import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
+import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
 import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderLorebookTerminal } from './renderer.js';
 import { registerLogQuestTool, checkQuestDeadlines } from './quests.js';
 import { initializeDebugViewer, toggleDebugViewer } from './debug-viewer.js';
@@ -768,25 +768,12 @@ import { getRequestHeaders } from '../../../../script.js';
         }
 
         try {
-            let injectedContext = "";
-            const books = {};
-            for (const k of s.activeRouterKeys) {
-                const [bookName] = k.split('::');
-                if (!books[bookName]) books[bookName] = await ctx.loadWorldInfo(bookName);
-            }
-
-            for (const k of s.activeRouterKeys) {
-                const [bookName, uid] = k.split('::');
-                const entry = books[bookName]?.entries?.[uid];
-                if (entry && entry.content) {
-                    injectedContext += `### [${entry.key?.[0] || entry.comment || uid}]\n${entry.content}\n\n`;
-                }
-            }
+            const injectedContext = await buildActiveLorebookContext(s.activeRouterKeys);
 
             if (injectedContext) {
-                const routerBlock = `## ROUTER ACTIVE LORE\n${injectedContext.trim()}`;
+                const routerBlock = `## ROUTER ACTIVE LORE\n${injectedContext}`;
                 // Set as an extension prompt at the end of the system block (Position 0, but ST handles placement)
-                setExtensionPrompt('rpg_tracker_lore', routerBlock, 0, 0); 
+                setExtensionPrompt('rpg_tracker_lore', routerBlock, 0, 0);
             } else {
                 setExtensionPrompt('rpg_tracker_lore', '', 0, 0);
             }
@@ -811,20 +798,10 @@ import { getRequestHeaders } from '../../../../script.js';
                     console.groupEnd();
                     return;
                 }
-                // Reuse the same logic but for the prompt object
-                let injectedContext = "";
-                const books = {};
-                for (const k of s.activeRouterKeys) {
-                    const [bookName] = k.split('::');
-                    if (!books[bookName]) books[bookName] = await ctx.loadWorldInfo(bookName);
-                }
-                for (const k of s.activeRouterKeys) {
-                    const [bookName, uid] = k.split('::');
-                    const entry = books[bookName]?.entries?.[uid];
-                    if (entry && entry.content) injectedContext += `### [${entry.key?.[0] || entry.comment || uid}]\n${entry.content}\n\n`;
-                }
+                // Reuse the same shared helper as refreshExtensionPrompt, but inject into the prompt object
+                const injectedContext = await buildActiveLorebookContext(s.activeRouterKeys);
                 if (injectedContext) {
-                    const routerBlock = `\n## ROUTER ACTIVE LORE\n${injectedContext.trim()}\n`;
+                    const routerBlock = `\n## ROUTER ACTIVE LORE\n${injectedContext}\n`;
                     const sysPart = prompt.find(p => p.role === 'system');
                     if (sysPart) sysPart.content += routerBlock;
                     else prompt.unshift({ role: 'system', content: routerBlock });
@@ -5969,6 +5946,9 @@ Rules:
     async function autoApplySysprompt() {
         const s = getSettings();
         if (s.customSysprompt) return;
+        // Suite Mode: the Megumin Suite owns the Main prompt and injects Fatbody mechanics via its
+        // [[FATBODY]] block, so do NOT overwrite the Main prompt box here.
+        if (s.suiteMode) return;
 
         const fileName = s.diceFunctionTool ? 'sysprompt.txt' : 'sysprompt_legacy.txt';
         let content;
@@ -6841,6 +6821,7 @@ Rules:
             });
 
             $('#rpg_tracker_btn_update_sysprompt').on('click', async function () {
+                if (getSettings().suiteMode && !confirm('Suite Mode is ON. The Megumin Suite owns the Main prompt and injects Fatbody mechanics via its [[FATBODY]] block. Overwriting the Main prompt will clobber the Suite. Continue anyway?')) return;
                 const fileName = getSettings().diceFunctionTool ? 'sysprompt.txt' : 'sysprompt_legacy.txt';
                 let content;
                 try {
@@ -6874,6 +6855,7 @@ Rules:
             });
 
             $('#rpg_tracker_btn_reset_and_apply_sysprompt').on('click', async function () {
+                if (getSettings().suiteMode && !confirm('Suite Mode is ON. The Megumin Suite owns the Main prompt and injects Fatbody mechanics via its [[FATBODY]] block. This action will overwrite the Main prompt and clobber the Suite. Continue anyway?')) return;
                 if (!confirm('This will:\n\n1. Reset the Core State Model prompt to built-in default\n2. Reset all Stock Module prompts, Active Modules, and Module Order to factory defaults\n3. Fetch the latest sysprompt.txt and write it directly into your Quick Prompt "Main" box\n\nYour custom modules will NOT be affected. Proceed?')) return;
 
                 const { extensionSettings } = SillyTavern.getContext();
@@ -7368,6 +7350,18 @@ Rules:
                     fresh.customSysprompt = !!this.checked;
                     saveSettings();
                     syncNarratorBlockVisibility();
+                });
+            }
+
+            // Suite Mode toggle (Megumin Suite). When on, autoApplySysprompt() leaves the Main
+            // prompt box alone — the Suite injects Fatbody mechanics via its [[FATBODY]] block.
+            const suiteModeCb = /** @type {HTMLInputElement|null} */ (document.getElementById('rpg_tracker_suite_mode'));
+            if (suiteModeCb) {
+                suiteModeCb.checked = !!getSettings().suiteMode;
+                suiteModeCb.addEventListener('change', function () {
+                    const fresh = getSettings();
+                    fresh.suiteMode = !!this.checked;
+                    saveSettings();
                 });
             }
 
