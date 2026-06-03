@@ -4,7 +4,11 @@
  */
 
 import { getSettings } from './state-manager.js';
-import { parseQuestsFromMemo, writeQuestsToMemo, parseInWorldTime } from './memo-processor.js';
+import { parseQuestsFromMemo, writeQuestsToMemo, parseInWorldTime, computeFrustration } from './memo-processor.js';
+
+// computeFrustration is defined in memo-processor.js (the leaf module that owns parseInWorldTime
+// and getQuestMood) to avoid a circular import. Re-exported here for existing importers.
+export { computeFrustration };
 
 export function getQuestToolName() {
     return 'LogQuest';
@@ -15,53 +19,6 @@ export function getQuestToolName() {
 // ── Time & Math ──────────────────────────────────────────────────────────────
 
 // parseInWorldTime moved to memo-processor.js
-
-/**
- * Computes NPC mood from -1.0 (very pleased) to 1.0+ (very frustrated).
- * Formula: (elapsed/window)^(1/coeff) * 2 - 1
- *
- * At t=0 (quest accepted): always -1  (NPC is pleased you took it)
- * At t=deadline: always 0 (Neutral)
- * Beyond deadline: >0, unbounded (NPC grows increasingly angry)
- *
- * Low coeff (0.4, patient): stays pleased longer, gets mad slowly after deadline.
- * High coeff (3.0, volatile): becomes neutral faster, gets mad quickly after deadline.
- *
- * @param {object} quest
- * @param {string} currentTime
- * @returns {number} Mood value from -1 (pleased) upward (unbounded)
- */
-export function computeFrustration(quest, currentTime) {
-    if (quest.status !== 'active') return 0;
-    const accepted = parseInWorldTime(quest.accepted_time);
-    const current  = parseInWorldTime(currentTime);
-    if (!accepted || !current) return 0;
-
-    const elapsed = current - accepted;
-    if (elapsed <= 0) return -1; // Just accepted — NPC is optimistic
-
-    const coeff = Math.max(0.1, quest.frustration_coefficient ?? 1.0);
-
-    if (!quest.deadline_time || String(quest.deadline_time).toLowerCase() === 'none') {
-        // No deadline: NPC remains neutral regardless of time elapsed
-        return 0;
-    }
-
-    const deadline = parseInWorldTime(quest.deadline_time);
-    const window   = deadline - accepted;
-    if (window <= 0) return 1;
-
-    const ratio = elapsed / window;
-    
-    if (ratio <= 1.0) {
-        // Before or at deadline: -1 (Very Pleased) to 0 (Neutral)
-        return Math.pow(ratio, 1 / coeff) - 1;
-    } else {
-        // After deadline: 0 (Neutral) scaling upwards
-        return (ratio - 1) * coeff;
-    }
-}
-
 
 // ── State Management ─────────────────────────────────────────────────────────
 
@@ -361,6 +318,9 @@ export function registerLogQuestTool() {
                 return `Quest "${newQuest.title}" successfully logged.`;
             },
             formatMessage: () => '',
+            // Fire-and-forget: staging a quest doesn't need a follow-up generation, and the
+            // tool-call message should never appear in chat. stealth suppresses both.
+            stealth: true,
         });
     } catch (error) {
         console.error('[RPG Tracker] Error registering LogQuest function tool', error);

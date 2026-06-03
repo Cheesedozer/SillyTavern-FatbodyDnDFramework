@@ -13,7 +13,7 @@
  */
 
 import { getSettings } from './state-manager.js';
-import { parseQuestsFromMemo } from './memo-processor.js';
+import { parseQuestsFromMemo, buildActiveLorebookContext } from './memo-processor.js';
 import { runRouterPass, saveSceneToLorebook, scanAssistantOutputForKeywords } from './router.js';
 import { logTransaction } from './debug-viewer.js';
 
@@ -304,19 +304,9 @@ export function installInterceptor() {
 
                 if (triggered.length > 0) {
                     try {
-                        const ctx = SillyTavern.getContext();
-                        let loreBlock = '';
-                        const bookCache = {};
-                        for (const id of triggered) {
-                            const [bookName, uid] = id.split('::');
-                            if (!bookCache[bookName]) bookCache[bookName] = await ctx.loadWorldInfo(bookName);
-                            const entry = bookCache[bookName]?.entries?.[uid];
-                            if (entry?.content) {
-                                loreBlock += `### [${entry.key?.[0] || entry.comment || uid}]\n${entry.content}\n\n`;
-                            }
-                        }
+                        const loreBlock = await buildActiveLorebookContext(triggered);
                         if (loreBlock) {
-                            injections += `\n<font color="#d4a028">## NEWLY ACTIVATED LORE (KEYWORD MATCH)</font>\n${loreBlock.trim()}\n`;
+                            injections += `\n<font color="#d4a028">## NEWLY ACTIVATED LORE (KEYWORD MATCH)</font>\n${loreBlock}\n`;
                             console.log(`[RPG|INTERCEPT] Same-turn lore injected for ${triggered.length} entries.`);
                         }
 
@@ -336,19 +326,9 @@ export function installInterceptor() {
                 const persistent = (settings.keywordActivatedKeys || []).filter(id => !triggeredSet.has(id));
                 if (persistent.length > 0) {
                     try {
-                        const ctx = SillyTavern.getContext();
-                        let persistBlock = '';
-                        const bookCache = {};
-                        for (const id of persistent) {
-                            const [bookName, uid] = id.split('::');
-                            if (!bookCache[bookName]) bookCache[bookName] = await ctx.loadWorldInfo(bookName);
-                            const entry = bookCache[bookName]?.entries?.[uid];
-                            if (entry?.content) {
-                                persistBlock += `### [${entry.key?.[0] || entry.comment || uid}]\n${entry.content}\n\n`;
-                            }
-                        }
+                        const persistBlock = await buildActiveLorebookContext(persistent);
                         if (persistBlock) {
-                            injections += `\n<font color="#d4a028">## ACTIVE LORE (KEYWORD)</font>\n${persistBlock.trim()}\n`;
+                            injections += `\n<font color="#d4a028">## ACTIVE LORE (KEYWORD)</font>\n${persistBlock}\n`;
                         }
                     } catch (e) {
                         console.warn('[RPG Tracker] Persistent keyword lore re-injection failed:', e);
@@ -363,19 +343,9 @@ export function installInterceptor() {
                 const agentOwned = (settings.activeRouterKeys || []).filter(id => !alreadyInjected.has(id));
                 if (agentOwned.length > 0) {
                     try {
-                        const ctx = SillyTavern.getContext();
-                        let agentBlock = '';
-                        const bookCache = {};
-                        for (const id of agentOwned) {
-                            const [bookName, uid] = id.split('::');
-                            if (!bookCache[bookName]) bookCache[bookName] = await ctx.loadWorldInfo(bookName);
-                            const entry = bookCache[bookName]?.entries?.[uid];
-                            if (entry?.content) {
-                                agentBlock += `### [${entry.key?.[0] || entry.comment || uid}]\n${entry.content}\n\n`;
-                            }
-                        }
+                        const agentBlock = await buildActiveLorebookContext(agentOwned);
                         if (agentBlock) {
-                            injections += `\n## ACTIVE LORE (AGENT)\n${agentBlock.trim()}\n`;
+                            injections += `\n## ACTIVE LORE (AGENT)\n${agentBlock}\n`;
                         }
                     } catch (e) {
                         console.warn('[RPG Tracker] Agent-owned lore injection failed:', e);

@@ -1575,6 +1575,18 @@ function parseBasicTags(text, archiveBooks) {
     const action = { record: [], update: [], activate: [], deactivate: [], delete_ids: [], rewrite: [], consolidate: [] };
     const settings = getSettings();
 
+    // Build a single lowercased-comment -> "bookName::uid" index over all archive entries.
+    // Lets every ACTIVATE/DEACTIVATE/DELETE tag and processMatch() resolve a name with one
+    // Map lookup instead of rescanning every book×entry per tag (and avoids the old
+    // outer-loop bug where a break only exited the inner entries loop).
+    const entryIndex = new Map();
+    for (const [bookName, book] of Object.entries(archiveBooks)) {
+        for (const [uid, entry] of Object.entries(book.entries)) {
+            const key = (entry.comment || '').toLowerCase();
+            if (key && !entryIndex.has(key)) entryIndex.set(key, `${bookName}::${uid}`);
+        }
+    }
+
     // REWRITE tag parser
     const rewriteRegex = /\[\[REWRITE:\s*([^|]+)\|([\s\S]*?)\]\]/gi;
     let rw;
@@ -1599,17 +1611,8 @@ function parseBasicTags(text, archiveBooks) {
         content = content.trim();
         const keys = (keywords || '').split(',').map(k => k.trim());
 
-        // Check for existing by name
-        let existingId = null;
-        for (const [bookName, book] of Object.entries(archiveBooks)) {
-            for (const [uid, entry] of Object.entries(book.entries)) {
-                if ((entry.comment || '').toLowerCase() === name.toLowerCase()) {
-                    existingId = `${bookName}::${uid}`;
-                    break;
-                }
-            }
-            if (existingId) break;
-        }
+        // Check for existing by name (single Map lookup)
+        const existingId = entryIndex.get(name.toLowerCase()) || null;
 
         if (existingId) {
             action.update.push({ id: existingId, content });
@@ -1636,14 +1639,8 @@ function parseBasicTags(text, archiveBooks) {
             else if (tagName === 'DEACTIVATE') targetList = action.deactivate;
             else if (tagName === 'DELETE') targetList = action.delete_ids;
 
-            for (const [bookName, book] of Object.entries(archiveBooks)) {
-                for (const [uid, entry] of Object.entries(book.entries)) {
-                    if ((entry.comment || '').toLowerCase() === name) {
-                        targetList.push(`${bookName}::${uid}`);
-                        break;
-                    }
-                }
-            }
+            const targetId = entryIndex.get(name);
+            if (targetId) targetList.push(targetId);
         } else if (parts.length >= 3) {
             // Generic: first = name, last = keywords, everything in between = body (joined with blank line).
             // Supports any number of middle slots so renaming or adding slots in the UI works automatically.

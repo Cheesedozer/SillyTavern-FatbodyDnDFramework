@@ -15,26 +15,41 @@ import { DEFAULT_STOCK_PROMPTS } from './constants.js';
 // ── String utilities ──────────────────────────────────────────────────────────
 
 /**
- * Computes NPC mood from -1.0 (very pleased) to 1.0+ (very frustrated).
- * Duplicated here from quests.js to avoid a circular import.
+ * Computes NPC mood for a quest: -1.0 (very pleased) up to 1.0+ (very frustrated).
+ * Canonical single source — re-exported by quests.js (which depends on this module, so
+ * keeping the function here avoids a circular import). A low coefficient is "patient",
+ * a high one is "volatile".
  * @param {object} quest
  * @param {string} currentTime
- * @returns {number}
+ * @returns {number} Mood value from -1 (pleased) upward (unbounded)
  */
-function computeFrustrationLocal(quest, currentTime) {
-    if (!quest.deadline_time || !quest.accepted_time || quest.deadline_time.toLowerCase() === 'none') return -1;
-    const coeff = (quest.frustration_coefficient != null) ? quest.frustration_coefficient : 1.0;
-    const acceptedMins  = parseInWorldTime(quest.accepted_time);
-    const deadlineMins  = parseInWorldTime(quest.deadline_time);
-    const currentMins   = parseInWorldTime(currentTime);
-    if (!acceptedMins || !deadlineMins || !currentMins) return 0;
-    const total = deadlineMins - acceptedMins;
-    if (total <= 0) return 0;
-    const ratio = (currentMins - acceptedMins) / total;
-    if (ratio <= 1) {
-        return ratio - 1; // pre-deadline: -1 → 0
+export function computeFrustration(quest, currentTime) {
+    if (quest.status !== 'active') return 0;
+    const accepted = parseInWorldTime(quest.accepted_time);
+    const current  = parseInWorldTime(currentTime);
+    if (!accepted || !current) return 0;
+
+    const elapsed = current - accepted;
+    if (elapsed <= 0) return -1; // Just accepted — NPC is optimistic
+
+    const coeff = Math.max(0.1, quest.frustration_coefficient ?? 1.0);
+
+    if (!quest.deadline_time || String(quest.deadline_time).toLowerCase() === 'none') {
+        // No deadline: NPC remains neutral regardless of time elapsed
+        return 0;
+    }
+
+    const deadline = parseInWorldTime(quest.deadline_time);
+    const window   = deadline - accepted;
+    if (window <= 0) return 1;
+
+    const ratio = elapsed / window;
+    if (ratio <= 1.0) {
+        // Before or at deadline: -1 (Very Pleased) to 0 (Neutral)
+        return Math.pow(ratio, 1 / coeff) - 1;
     } else {
-        return (ratio - 1) * coeff; // post-deadline: 0 → positive
+        // After deadline: 0 (Neutral) scaling upwards
+        return (ratio - 1) * coeff;
     }
 }
 
@@ -46,7 +61,7 @@ function computeFrustrationLocal(quest, currentTime) {
  * @returns {{ label: string, color: string, value: number }}
  */
 export function getQuestMood(quest, currentTime, showFrustration) {
-    const frust = computeFrustrationLocal(quest, currentTime);
+    const frust = computeFrustration(quest, currentTime);
     let color = '#00cc77';
     let label = 'Pleased';
     if (showFrustration) {
@@ -761,6 +776,36 @@ export async function buildLorebookContext() {
     }
 
     return parts.join('\n\n');
+}
+
+/**
+ * Loads the given active-lore keys ("bookName::uid") and assembles them into a block of
+ * `### [label]\n<content>` sections. Each distinct lorebook is loaded once and cached.
+ * Callers prepend their own header (e.g. "## ROUTER ACTIVE LORE"). Returns a trimmed string,
+ * or "" when there are no keys or no matching entries.
+ *
+ * Shared by index.js (refreshExtensionPrompt / promptManager interceptor) and
+ * narrative-hooks.js (same-turn keyword / persistent / agent-owned lore injection).
+ * @param {string[]} keys
+ * @returns {Promise<string>}
+ */
+export async function buildActiveLorebookContext(keys) {
+    if (!keys || !keys.length) return "";
+    const ctx = SillyTavern.getContext();
+    const books = {};
+    for (const k of keys) {
+        const [bookName] = k.split('::');
+        if (!(bookName in books)) books[bookName] = await ctx.loadWorldInfo(bookName);
+    }
+    let out = "";
+    for (const k of keys) {
+        const [bookName, uid] = k.split('::');
+        const entry = books[bookName]?.entries?.[uid];
+        if (entry && entry.content) {
+            out += `### [${entry.key?.[0] || entry.comment || uid}]\n${entry.content}\n\n`;
+        }
+    }
+    return out.trim();
 }
 
 // ── Module instruction builders ───────────────────────────────────────────────
