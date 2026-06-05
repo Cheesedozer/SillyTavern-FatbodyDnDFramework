@@ -1773,8 +1773,7 @@ Rules:
                 syncQuestsFromMemo(merged);
 
                 updateUIMemo(merged);
-                syncMemoView();
-                refreshRenderedView();
+                syncMemoView(); // syncMemoView() already calls refreshRenderedView() at its end
                 saveSettings();
 
                 if (settings.debugMode) console.log("[RPG Tracker] State Model pass complete.");
@@ -1908,8 +1907,7 @@ Rules:
                     settings.currentMemo = merged;
 
                     updateUIMemo(merged);
-                    syncMemoView();
-                    refreshRenderedView();
+                    syncMemoView(); // syncMemoView() already calls refreshRenderedView() at its end
                     saveSettings();
                     toastr['success']('Tracker updated.', 'RPG Tracker');
                 } else {

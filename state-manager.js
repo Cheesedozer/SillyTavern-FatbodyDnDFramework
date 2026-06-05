@@ -30,9 +30,14 @@ export const DEFAULT_MODULES = {
  * missing keys. All reads and writes to persistent state go through this.
  * @returns {Record<string, any>}
  */
-export function getSettings() {
-    const { extensionSettings } = SillyTavern.getContext();
-    const defaults = {
+/** Clone a default value for backfill: deep-clone objects/arrays, pass primitives/null through. */
+function cloneDefault(v) {
+    return (v !== null && typeof v === 'object') ? structuredClone(v) : v;
+}
+
+/** Builds the pristine default-settings template (called once at module load). */
+function buildDefaultsTemplate() {
+    return {
         currentMemo: "",
         prevMemo1: "",
         prevMemo2: "",
@@ -259,20 +264,32 @@ Don't be afraid to hit the budget exactly. It's better to lean towards activatin
 </bravery>`,
         categoryRenderOptions: {},
     };
+}
+
+/**
+ * Pristine default settings, built once at module load and frozen. getSettings()
+ * never mutates it — it only clones values out of it when backfilling missing
+ * keys, so the common (already-initialised) path allocates nothing.
+ */
+const DEFAULTS_TEMPLATE = Object.freeze(buildDefaultsTemplate());
+
+export function getSettings() {
+    const { extensionSettings } = SillyTavern.getContext();
 
     if (!extensionSettings[MODULE_NAME]) {
         extensionSettings[MODULE_NAME] = {};
     }
 
-    // Deep merge — fills in missing keys without overwriting existing ones
-    for (const [key, value] of Object.entries(defaults)) {
+    // Deep merge — fills in missing keys without overwriting existing ones.
+    // Values are cloned out of the frozen template only when actually backfilling,
+    // so the hot path (all keys present) does pure reads and allocates nothing.
+    for (const [key, value] of Object.entries(DEFAULTS_TEMPLATE)) {
         if (extensionSettings[MODULE_NAME][key] === undefined) {
-            extensionSettings[MODULE_NAME][key] = value;
+            extensionSettings[MODULE_NAME][key] = cloneDefault(value);
         } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-            if (extensionSettings[MODULE_NAME][key] === undefined) extensionSettings[MODULE_NAME][key] = {};
             for (const [subKey, subValue] of Object.entries(value)) {
                 if (extensionSettings[MODULE_NAME][key][subKey] === undefined) {
-                    extensionSettings[MODULE_NAME][key][subKey] = subValue;
+                    extensionSettings[MODULE_NAME][key][subKey] = cloneDefault(subValue);
                 }
             }
         }
