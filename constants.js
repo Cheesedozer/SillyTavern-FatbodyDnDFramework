@@ -565,7 +565,8 @@ export const BLOCK_ICONS = {
     QUESTS: '📋',
 };
 
-export const BLOCK_ORDER = ['COMBAT', 'CHARACTER', 'PARTY', 'INVENTORY', 'ABILITIES', 'SPELLS', 'XP', 'TIME', 'QUESTS'];
+// BLOCK_ORDER now derives from the module registry (single source of truth for
+// stock memo modules). Import it from './module-registry.js'.
 
 export const PAGE_SIZE = 8;
 

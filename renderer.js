@@ -1,6 +1,7 @@
 import { getSettings, getBarBackground } from './state-manager.js';
 import { escapeHtml, highlightParens, parseInWorldTime, formatTimeDiff } from './memo-processor.js';
-import { BLOCK_ICONS, BLOCK_ORDER, PAGE_SIZE, NO_PAGINATE } from './constants.js';
+import { BLOCK_ICONS, PAGE_SIZE, NO_PAGINATE } from './constants.js';
+import { BLOCK_ORDER } from './module-registry.js';
 
 // ── Renderer module: pure HTML string producers, localStorage helpers ──
 // No live DOM mutations. All functions return strings or void (localStorage).

@@ -9,7 +9,8 @@
  * Imported by: virtually everything — the root dependency.
  */
 
-import { DEFAULT_STOCK_PROMPTS, BLOCK_ORDER } from './constants.js';
+import { DEFAULT_STOCK_PROMPTS } from './constants.js';
+import { BLOCK_ORDER, DEFAULT_BLOCK_ORDER, getDefaultModuleToggles } from './module-registry.js';
 
 // ── Module name (shared constant, settings key) ────────────────────────────────
 export const MODULE_NAME = 'rpg_tracker';
@@ -113,23 +114,13 @@ Update abilities/attributes/HP/etc accordingly, such as an ability's 1d6 bonus i
 <custom_formatting>
 You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These are for graphical rendering options; use them if instructed but only if instructed in a specific [MODULE].
 </custom_formatting>`,
-        modules: {
-            character: true,
-            party: true,
-            combat: true,
-            inventory: true,
-            abilities: true,
-            spells: true,
-            time: true,
-            xp: true,
-            quests: true,
-        },
+        modules: getDefaultModuleToggles(),
         stockPrompts: { ...DEFAULT_STOCK_PROMPTS },
         customFields: [],
         profiles: {},
         activeProfile: "",
         fullViewSections: [],
-        blockOrder: ['COMBAT', 'CHARACTER', 'PARTY', 'INVENTORY', 'ABILITIES', 'SPELLS', 'XP', 'TIME'],
+        blockOrder: [...DEFAULT_BLOCK_ORDER],
         legacyDiceNaming: false,
         closeCount: 0,
         lookbackMessages: 2,
