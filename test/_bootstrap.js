@@ -1,0 +1,46 @@
+/**
+ * test/_bootstrap.js — characterization-test bootstrap.
+ *
+ * The pure-logic modules (memo-processor, narrative-hooks, quests, state-manager)
+ * are DOM-free but call `SillyTavern.getContext()` inside functions like
+ * getSettings(). This bootstrap stubs only what those reads touch so the modules
+ * can be imported and exercised under `node --test` with no browser.
+ *
+ * It does NOT stub `document` — tests stay off the DOM by only importing pure
+ * functions. `crypto.getRandomValues` is native in Node >= 19 (used by the RNG).
+ *
+ * Import this FIRST in every test file, then call setSettings(obj) to seed the
+ * extension_settings['rpg_tracker'] store before calling functions that read it.
+ */
+
+let _store = { rpg_tracker: {} };
+
+/** Seed the rpg_tracker settings object getSettings() will merge defaults into. */
+export function setSettings(obj) {
+    _store = { rpg_tracker: obj || {} };
+}
+
+/** Raw access to the backing extension_settings store (post-merge inspection). */
+export function rawStore() {
+    return _store;
+}
+
+globalThis.SillyTavern = {
+    getContext() {
+        return {
+            extensionSettings: _store,
+            saveSettingsDebounced() {},
+            saveSettings() {},
+            chat: [],
+            eventSource: { on() {}, emit() {} },
+        };
+    },
+    libs: {},
+};
+
+// No-op toast surface (toastr.success/info/warning/error are called fire-and-forget).
+globalThis.toastr = new Proxy({}, { get: () => () => {} });
+
+if (!globalThis.crypto || typeof globalThis.crypto.getRandomValues !== 'function') {
+    throw new Error('These tests require Node >= 19 for crypto.getRandomValues (used by the RNG engine).');
+}
