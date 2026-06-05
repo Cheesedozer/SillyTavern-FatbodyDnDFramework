@@ -148,7 +148,7 @@ async function getWorldInfoNamesSafe() {
  * @param {object} allBooks
  * @param {string[]} activeKeys - IDs currently in activeRouterKeys (Book::uid format).
  */
-function buildKeyringText(allBooks, activeKeys = []) {
+export function buildKeyringText(allBooks, activeKeys = []) {
     const activeSet = new Set(activeKeys);
     let lines = [];
     for (const [bookName, bookData] of Object.entries(allBooks)) {
@@ -160,6 +160,46 @@ function buildKeyringText(allBooks, activeKeys = []) {
         }
     }
     return lines.join('\n');
+}
+
+/**
+ * Precomputes a flat, lowercased search index over all archive entries so that
+ * grep_lore is O(n) per query instead of re-lowercasing every entry on each
+ * query inside the agent loop. Rebuilt whenever archiveBooks is (re)fetched.
+ * The NUL (\u0000) separator can never appear in a query, so a single
+ * includes() on the joined haystack is equivalent to OR-ing content and comment
+ * separately (no spurious cross-boundary matches).
+ * @param {object} allBooks
+ * @returns {{name: string, uid: string, entry: object, hay: string}[]}
+ */
+export function buildLoreIndex(allBooks) {
+    const index = [];
+    for (const [name, book] of Object.entries(allBooks)) {
+        if (!book || !book.entries) continue;
+        for (const [uid, entry] of Object.entries(book.entries)) {
+            const hay = ((entry.content || '') + '\u0000' + (entry.comment || '')).toLowerCase();
+            index.push({ name, uid, entry, hay });
+        }
+    }
+    return index;
+}
+
+/**
+ * grep_lore implementation over a prebuilt index. Output (hit lines, ordering,
+ * and the no-hits message) is byte-identical to the previous inline scan.
+ * @param {{name: string, uid: string, entry: object, hay: string}[]} loreIndex
+ * @param {string} rawQuery
+ * @returns {string}
+ */
+export function grepLore(loreIndex, rawQuery) {
+    const query = (rawQuery || '').toLowerCase();
+    const hits = [];
+    for (const { name, uid, entry, hay } of loreIndex) {
+        if (hay.includes(query)) {
+            hits.push(`[${name}::${uid}] "${entry.comment || uid}": ${(entry.content || '').substring(0, 120)}...`);
+        }
+    }
+    return hits.length > 0 ? hits.join('\n') : `No entries found for "${rawQuery}".`;
 }
 
 /**
@@ -213,6 +253,7 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
         }
 
         let archiveBooks = await fetchArchiveBooks();
+        let loreIndex = buildLoreIndex(archiveBooks);
 
         // ?? Snapshot state BEFORE this pass (for rollback) ??????????????????
         {
@@ -596,6 +637,7 @@ Action: commit({"rewrite": [{"id": "Eldoria_Events::3", "content": "Compressed v
                     args.reason = targetEntryId ? `Targeted cleanup: ${targetEntryId}.` : 'Cleanup pass (agent mode).';
                     const commitResult = await applyAction(args, archiveBooks, currentTime, breadcrumb);
                     archiveBooks = await fetchArchiveBooks();
+                    loreIndex = buildLoreIndex(archiveBooks);
                     if (commitResult.errors.length > 0) {
                         observation = `Committed with warnings: ${commitResult.errors.join(', ')}`;
                     } else {
@@ -610,16 +652,7 @@ Action: commit({"rewrite": [{"id": "Eldoria_Events::3", "content": "Compressed v
                     const book = await ctx.loadWorldInfo(bookName);
                     observation = book?.entries?.[id] ? book.entries[id].content : `Entry "${uid}" not found.`;
                 } else if (toolName === 'grep_lore') {
-                    const query = (args.query || '').toLowerCase();
-                    const hits = [];
-                    for (const [name, book] of Object.entries(archiveBooks)) {
-                        for (const [uid, entry] of Object.entries(book.entries)) {
-                            if ((entry.content || '').toLowerCase().includes(query) || (entry.comment || '').toLowerCase().includes(query)) {
-                                hits.push(`[${name}::${uid}] "${entry.comment || uid}": ${(entry.content || '').substring(0, 120)}...`);
-                            }
-                        }
-                    }
-                    observation = hits.length > 0 ? hits.join('\n') : `No entries found for "${args.query}".`;
+                    observation = grepLore(loreIndex, args.query);
                 } else if (toolName === 'inspect_book') {
                     const bookName = args.book_name || '';
                     if (archiveBooks[bookName]) {
@@ -968,6 +1001,7 @@ ${sharedContext}`;
                 if (toolName === 'commit') {
                     const commitResult = await applyAction(args, archiveBooks, currentTime, breadcrumb);
                     archiveBooks = await fetchArchiveBooks();
+                    loreIndex = buildLoreIndex(archiveBooks);
                     keyringText = buildKeyringText(archiveBooks, settings.activeRouterKeys);
                     updateActiveEntries();
                     if (commitResult.errors.length > 0) {
@@ -979,16 +1013,7 @@ ${sharedContext}`;
                         observation = `Committed successfully. ${details.join(' | ')}`;
                     }
                 } else if (toolName === 'grep_lore') {
-                    const query = (args.query || '').toLowerCase();
-                    const hits = [];
-                    for (const [name, book] of Object.entries(archiveBooks)) {
-                        for (const [uid, entry] of Object.entries(book.entries)) {
-                            if ((entry.content || '').toLowerCase().includes(query) || (entry.comment || '').toLowerCase().includes(query)) {
-                                hits.push(`[${name}::${uid}] "${entry.comment || uid}": ${(entry.content || '').substring(0, 120)}...`);
-                            }
-                        }
-                    }
-                    observation = hits.length > 0 ? hits.join('\n') : `No entries found for "${args.query}".`;
+                    observation = grepLore(loreIndex, args.query);
                 } else if (toolName === 'inspect_book') {
                     const bookName = args.book_name || '';
                     if (archiveBooks[bookName]) {
