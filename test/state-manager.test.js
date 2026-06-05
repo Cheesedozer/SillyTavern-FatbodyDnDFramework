@@ -67,3 +67,20 @@ test('byte-equality guard: settings.modules defaults are stable', () => {
     setSettings({});
     assert.deepEqual(getSettings().modules, EXPECTED_MEMO_MODULES);
 });
+
+test('reset-by-delete: getSettings backfills a deleted key with an independent clone', () => {
+    // The reset buttons (index.js) delete keys and rely on getSettings() to
+    // re-merge defaults. This guards that the template-clone merge preserves it.
+    setSettings({});
+    const s = getSettings();
+    delete s.modules;
+    delete s.systemPromptTemplate;
+    const s2 = getSettings();
+    assert.deepEqual(s2.modules, EXPECTED_MEMO_MODULES, 'deleted object key is restored');
+    assert.equal(typeof s2.systemPromptTemplate, 'string');
+    assert.ok(s2.systemPromptTemplate.length > 0, 'deleted string key is restored');
+    // restored object must be independent of any other store's defaults
+    s2.modules.combat = false;
+    setSettings({});
+    assert.equal(getSettings().modules.combat, true);
+});
