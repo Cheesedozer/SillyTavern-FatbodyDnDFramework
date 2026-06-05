@@ -9,26 +9,18 @@ import { registerLogQuestTool, checkQuestDeadlines } from './quests.js';
 import { initializeDebugViewer, toggleDebugViewer } from './debug-viewer.js';
 import { runRouterPass, rollbackRouterPass, reapplyRouterPass, getLorebookManifest, deleteLorebookEntry, updateLorebookEntry, disableManagedEntries, isRouterRunning } from './router.js';
 import { getRequestHeaders } from '../../../../script.js';
+import { RT } from './shared-state.js';
 import { FOLDER_NAME } from './env.js';
 import { autoApplySysprompt, scheduleAutoApply, buildSysprompt } from './sysprompt.js';
 import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight, makeDraggable, makeResizableTR, setupResizeObserver, setupDeltaResize } from './panel-geometry.js';
 
     // FOLDER_NAME imported from env.js
 
-    let _stateModelRunning = false;
-    let _stateController = null;   // To abort ongoing state updates
-    let _currentChatId = null;
-    let _prefixDeriveTimer = null; // Pending CHAT_CHANGED → prefix-derivation timer
-    let themeUndoStack = [];
-    let _pillDeselectHandler = null;
-    let renderRouterUI = null;
-    globalThis._rpgRenderRouterUI = () => { if (typeof renderRouterUI === 'function') renderRouterUI(); };
+    globalThis._rpgRenderRouterUI = () => { if (typeof RT.renderRouterUI === 'function') RT.renderRouterUI(); };
     /** Rebuilds CAMPAIGN RECORDS; assigned in createPanel when the agent panel is wired. */
-    let refreshAgentManifest = async () => {};
-    globalThis._rpgRefreshAgentManifest = async () => { if (typeof refreshAgentManifest === 'function') await refreshAgentManifest(); };
+    globalThis._rpgRefreshAgentManifest = async () => { if (typeof RT.refreshAgentManifest === 'function') await RT.refreshAgentManifest(); };
 
     /** Last lorebook /world sync diagnostics (JSON-serializable). */
-    let _loreActivationDebugLast = /** @type {Record<string, any>|null} */ (null);
 
     /**
      * Updates the Lorebook Agent debug <pre> if the panel exists.
@@ -36,14 +28,14 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
     function renderLoreActivationDebugPanel() {
         const pre = document.getElementById('rpg_tracker_lore_activation_debug_pre');
         if (!pre) return;
-        if (!_loreActivationDebugLast) {
+        if (!RT.loreActivationDebugLast) {
             pre.textContent = '(no data yet — use Capture now in Extension Settings > Lorebook Agent, or switch chats / Activate Books.)';
             return;
         }
         try {
-            pre.textContent = JSON.stringify(_loreActivationDebugLast, null, 2);
+            pre.textContent = JSON.stringify(RT.loreActivationDebugLast, null, 2);
         } catch (_) {
-            pre.textContent = String(_loreActivationDebugLast);
+            pre.textContent = String(RT.loreActivationDebugLast);
         }
     }
 
@@ -180,7 +172,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
     async function readLoreActivationDebugSnapshot(source) {
         const ctx = SillyTavern.getContext();
         const s = getSettings();
-        const paramChatId = _currentChatId || ctx.chatId || '';
+        const paramChatId = RT.currentChatId || ctx.chatId || '';
         const ctxChatId = ctx.chatId || '';
         const derivedFromChatOnly = sanitizeCampaignPrefixString(paramChatId);
         const overrideRaw = (s.routerCampaignPrefixOverride || '').trim();
@@ -225,7 +217,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             matchingForDerivedFromChatOnly: matchingDerivedOnly,
             managedBooksInChatStates: [...allKnownManagedBooks],
             wouldDeactivateForStoredPrefix: toDeactivateForStored,
-            priorSlashLog: _loreActivationDebugLast?.slashLog ?? null,
+            priorSlashLog: RT.loreActivationDebugLast?.slashLog ?? null,
         };
     }
 
@@ -238,7 +230,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
     async function syncCampaignPrefixAndWorldsForChat(newChatId, source) {
         const s2 = getSettings();
         if (!newChatId) {
-            _loreActivationDebugLast = {
+            RT.loreActivationDebugLast = {
                 ts: new Date().toISOString(),
                 source,
                 stopped: 'empty chat id',
@@ -247,7 +239,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             return;
         }
         if (!s2.routerEnabled) {
-            _loreActivationDebugLast = {
+            RT.loreActivationDebugLast = {
                 ts: new Date().toISOString(),
                 source,
                 newChatId,
@@ -260,8 +252,8 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         if (!prefix) {
             s2.routerCampaignPrefix = '';
             syncRouterPrefixDisplays('');
-            void refreshAgentManifest().catch(() => {});
-            _loreActivationDebugLast = {
+            void RT.refreshAgentManifest().catch(() => {});
+            RT.loreActivationDebugLast = {
                 ts: new Date().toISOString(),
                 source,
                 newChatId,
@@ -283,12 +275,12 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         if (!s2.chatStates[newChatId]) s2.chatStates[newChatId] = {};
         s2.chatStates[newChatId].campaignBooks = matchingBooks;
         saveSettings();
-        if (s2.chatLinkEnabled && _currentChatId) saveChatState(_currentChatId);
+        if (s2.chatLinkEnabled && RT.currentChatId) saveChatState(RT.currentChatId);
         try {
             await activateCampaignBooks({ debugSource: source, syncMeta: { newChatId, matchingBooksCount: matchingBooks.length } });
         } catch (e) {
-            _loreActivationDebugLast = {
-                ...(_loreActivationDebugLast || {}),
+            RT.loreActivationDebugLast = {
+                ...(RT.loreActivationDebugLast || {}),
                 ts: new Date().toISOString(),
                 source,
                 syncError: String(e?.message || e),
@@ -299,11 +291,11 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         // so updateWorldInfoList can repopulate the client after our /world pass (avoids needing manual resync).
         if (reg.usedApiNameFallback && reg.clientWorldNameCount === 0 && matchingBooks.length > 0 && !String(source).includes('registry-followup')) {
             setTimeout(() => {
-                if (newChatId !== _currentChatId) return;
+                if (newChatId !== RT.currentChatId) return;
                 void syncCampaignPrefixAndWorldsForChat(newChatId, `${source}(registry-followup)`).catch(() => {});
             }, 450);
         }
-        void refreshAgentManifest().catch(() => {});
+        void RT.refreshAgentManifest().catch(() => {});
     }
 
     /**
@@ -314,8 +306,8 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         const s = getSettings();
         const ctx = SillyTavern.getContext();
         ctx.saveSettingsDebounced();
-        if (s.chatLinkEnabled && _currentChatId) {
-            saveChatState(_currentChatId);
+        if (s.chatLinkEnabled && RT.currentChatId) {
+            saveChatState(RT.currentChatId);
         }
         syncOnboardingUI();
     }
@@ -381,13 +373,9 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         if (customSyspromptCb) customSyspromptCb.checked = !!s.customSysprompt;
     }
     // ── Renderer / navigation state ──
-    let _historyViewIndex = -1;    // -1 = live, 0 = most recent snapshot, higher = older
-    let _renderedViewActive = false;
-    const _sectionPages = {};
 
     // ── Lorebook Agent nav state ──
     /** @type {Array<{prePassSnapshot: object, postPassState: object}>} */
-    let _loreRedoStack = [];  // in-memory; cleared when a new agent pass starts
 
     /**
      * Returns true if `bookName` belongs to the given `prefix`.
@@ -421,13 +409,13 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             ts: new Date().toISOString(),
             source: debugSource,
             ctxChatId: ctx.chatId || '',
-            trackedChatId: _currentChatId,
+            trackedChatId: RT.currentChatId,
             routerEnabled: !!s.routerEnabled,
             syncMeta: opts.syncMeta || null,
         };
 
         if (typeof ctx.executeSlashCommandsWithOptions !== 'function') {
-            _loreActivationDebugLast = {
+            RT.loreActivationDebugLast = {
                 ...baseDebug,
                 stopped: 'executeSlashCommandsWithOptions missing on SillyTavern context',
                 apis: {
@@ -442,7 +430,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
 
         const prefix = s.routerCampaignPrefix || '';
         if (!prefix) {
-            _loreActivationDebugLast = {
+            RT.loreActivationDebugLast = {
                 ...baseDebug,
                 stopped: 'no routerCampaignPrefix (derive failed earlier or chat id empty)',
                 storedPrefix: '',
@@ -496,7 +484,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             await runWorldCmd(`/world state=on silent=true "${name}"`);
         }
 
-        _loreActivationDebugLast = {
+        RT.loreActivationDebugLast = {
             ...baseDebug,
             storedPrefix: prefix,
             worldRegistry: reg,
@@ -650,7 +638,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
     }
 
 
-    // ── Chat-Linked State (deferred from state-manager.js — touches DOM + _historyViewIndex) ──
+    // ── Chat-Linked State (deferred from state-manager.js — touches DOM + RT.historyViewIndex) ──
 
     function refreshQuestLegacyPrompt(s) {
         let prompt = DEFAULT_STOCK_PROMPTS.quests_legacy;
@@ -714,7 +702,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         // onChatChanged. Restoring a stale value (e.g. a bare "Assistant" from
         // a previous buggy run) would cause greedy lorebook matching.
 
-        _historyViewIndex = -1;
+        RT.historyViewIndex = -1;
         
         // currentMemo is the source of truth for quest state.
         // Derive settings.quests FROM it rather than injecting quests BACK INTO the memo.
@@ -727,10 +715,10 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         syncMemoView();
         
         // Refresh Lorebook Agent UI
-        if (typeof renderRouterUI === 'function') {
-            renderRouterUI();
+        if (typeof RT.renderRouterUI === 'function') {
+            RT.renderRouterUI();
         }
-        void refreshAgentManifest().catch(() => {});
+        void RT.refreshAgentManifest().catch(() => {});
 
         // Patch any managed entries that don't yet have disable:true so ST's
         // native keyword scanner cannot inject them on user-message send.
@@ -853,8 +841,8 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
     function onChatChanged(newChatId) {
         const s = getSettings();
 
-        const oldChatId = _currentChatId;
-        _currentChatId  = newChatId || null;
+        const oldChatId = RT.currentChatId;
+        RT.currentChatId  = newChatId || null;
 
         // Snapshot the departing chat's state BEFORE resetRouterTick mutates shared pools.
         // resetRouterTick(true) zeroes keywordActivatedKeys in-place; if saveChatState ran
@@ -911,10 +899,10 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             };
 
             // Cancel any pending derivation from a previous CHAT_CHANGED.
-            if (_prefixDeriveTimer) clearTimeout(_prefixDeriveTimer);
-            _prefixDeriveTimer = setTimeout(async () => {
-                _prefixDeriveTimer = null;
-                if (newChatId !== _currentChatId) return;
+            if (RT.prefixDeriveTimer) clearTimeout(RT.prefixDeriveTimer);
+            RT.prefixDeriveTimer = setTimeout(async () => {
+                RT.prefixDeriveTimer = null;
+                if (newChatId !== RT.currentChatId) return;
 
                 // Pass 1 (~800ms): deactivate before the registry scan so books vanish fast.
                 await _deactivateOldBooks();
@@ -925,7 +913,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                 // Pass 2 (~after scan): ST's deferred world-info state restoration can re-pin
                 // globally active books AFTER our first pass. A follow-up sweep catches this
                 // without needing another registry scan — just direct /world state=off commands.
-                if (newChatId === _currentChatId) {
+                if (newChatId === RT.currentChatId) {
                     await _deactivateOldBooks();
                 }
             }, 800);
@@ -946,17 +934,17 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             s.activeRouterKeys = [];
             s.routerLog    = [];
             
-            _historyViewIndex = -1;
+            RT.historyViewIndex = -1;
 
             const dp = document.getElementById('rpg-tracker-delta-content');
             if (dp) dp.innerHTML = '<span class="delta-empty">No changes yet.</span>';
 
             updateUIMemo('');
             refreshRenderedView();
-            if (typeof renderRouterUI === 'function') {
-                renderRouterUI();
+            if (typeof RT.renderRouterUI === 'function') {
+                RT.renderRouterUI();
             }
-            void refreshAgentManifest().catch(() => {});
+            void RT.refreshAgentManifest().catch(() => {});
         }
 
         updateChatLinkUI();
@@ -1062,8 +1050,8 @@ Rules:
         }
 
         if (settings.customTheme) {
-            themeUndoStack.push(JSON.parse(JSON.stringify(settings.customTheme)));
-            if (themeUndoStack.length > 20) themeUndoStack.shift();
+            RT.themeUndoStack.push(JSON.parse(JSON.stringify(settings.customTheme)));
+            if (RT.themeUndoStack.length > 20) RT.themeUndoStack.shift();
         }
         settings.customTheme = vars;
         settings.trackerTheme = 'rt-theme-custom';
@@ -1600,7 +1588,7 @@ Rules:
             if (pauseBanner) pauseBanner.textContent = '';
         }
 
-        if (_stateModelRunning) {
+        if (RT.stateModelRunning) {
             indicator.classList.add('running');
         } else {
             indicator.classList.remove('running');
@@ -1626,13 +1614,13 @@ Rules:
         }
 
         try {
-            _stateModelRunning = true;
+            RT.stateModelRunning = true;
             updateStatusIndicator('running');
 
             // Abort previous if any
-            if (_stateController) _stateController.abort();
-            _stateController = new AbortController();
-            const signal = _stateController.signal;
+            if (RT.stateController) RT.stateController.abort();
+            RT.stateController = new AbortController();
+            const signal = RT.stateController.signal;
 
             const modulesText = buildModulesInstructionText(settings);
 
@@ -1750,7 +1738,7 @@ Rules:
 
                 // 4. Set pointer to the NEW state (the live stone)
                 settings.historyIndex = 0;
-                _historyViewIndex = -1;
+                RT.historyViewIndex = -1;
 
                 // Persist delta and update panel
                 settings.lastDelta = delta;
@@ -1785,8 +1773,8 @@ Rules:
             }
             console.error("[RPG Tracker] State Model pass failed:", error);
         } finally {
-            _stateModelRunning = false;
-            _stateController = null;
+            RT.stateModelRunning = false;
+            RT.stateController = null;
             updateStatusIndicator('active');
         }
     }
@@ -1794,8 +1782,8 @@ Rules:
     // ── Phase-5 bridge: exposes runStateModelPass for narrative-hooks.js/onGenerationEnded ──
     // Removed when memo-processor.js is created in Phase 5.
     globalThis._rpgRunStateModelPass = runStateModelPass;
-    globalThis._rpgStateModelRunning = () => _stateModelRunning;
-    globalThis._rpgCurrentChatId = () => _currentChatId;
+    globalThis._rpgStateModelRunning = () => RT.stateModelRunning;
+    globalThis._rpgCurrentChatId = () => RT.currentChatId;
     // Expose live prefix derivation for any module that needs the current prefix.
     globalThis._rpgGetCurrentPrefix = () => getEffectiveRouterCampaignPrefix(SillyTavern.getContext().chatId || '');
 
@@ -1813,7 +1801,7 @@ Rules:
      * Used for initial character setup and manual corrections.
      */
     async function sendDirectPrompt(message) {
-        if (_stateModelRunning) {
+        if (RT.stateModelRunning) {
             toastr['info']('State Model is already running. Please wait.', 'RPG Tracker');
             return;
         }
@@ -1823,13 +1811,13 @@ Rules:
         if (!generateRaw) return;
 
         try {
-            _stateModelRunning = true;
+            RT.stateModelRunning = true;
             updateStatusIndicator('running');
 
             // Abort previous if any
-            if (_stateController) _stateController.abort();
-            _stateController = new AbortController();
-            const signal = _stateController.signal;
+            if (RT.stateController) RT.stateController.abort();
+            RT.stateController = new AbortController();
+            const signal = RT.stateController.signal;
             const worldLore = await buildLorebookContext();
             const worldLoreSection = worldLore ? worldLore + '\n\n' : '';
 
@@ -1890,7 +1878,7 @@ Rules:
                     settings.memoHistory.unshift(merged);
                     if (settings.memoHistory.length > 1000) settings.memoHistory.length = 1000;
                     settings.historyIndex = 0;
-                    _historyViewIndex = -1;
+                    RT.historyViewIndex = -1;
 
                     const dp = document.getElementById('rpg-tracker-delta-content');
                     if (dp) dp.innerHTML = delta;
@@ -1915,8 +1903,8 @@ Rules:
             console.error('[RPG Tracker] Direct prompt failed:', err);
             toastr['error']('Direct prompt failed. Check console.', 'RPG Tracker');
         } finally {
-            _stateModelRunning = false;
-            _stateController = null;
+            RT.stateModelRunning = false;
+            RT.stateController = null;
             updateStatusIndicator('active');
         }
     }
@@ -1940,7 +1928,7 @@ Rules:
         syncQuestsFromMemo(s.currentMemo);
         s.lastDelta = p.lastDelta ?? '';
         s.activeProfile = name;
-        _historyViewIndex = -1;
+        RT.historyViewIndex = -1;
         
         saveSettings();
         // Refresh UI
@@ -2320,8 +2308,8 @@ Rules:
                 const localPageSize = getPageSize(renderType);
 
                 const totalPages = Math.ceil(items.length / localPageSize);
-                const cur = _sectionPages[tag] ?? 0;
-                _sectionPages[tag] = Math.max(0, Math.min(totalPages - 1, cur + dir));
+                const cur = RT.sectionPages[tag] ?? 0;
+                RT.sectionPages[tag] = Math.max(0, Math.min(totalPages - 1, cur + dir));
                 refresh();
             });
         });
@@ -2389,22 +2377,22 @@ Rules:
         });
 
         // Global deselect when clicking anything else
-        if (!_pillDeselectHandler) {
-            _pillDeselectHandler = (e) => {
+        if (!RT.pillDeselectHandler) {
+            RT.pillDeselectHandler = (e) => {
                 if (!e.target.closest('.rt-unit-pill')) {
                     document.querySelectorAll('.rt-unit-pill.active').forEach(u => u.classList.remove('active'));
                 }
             };
-            document.addEventListener('click', _pillDeselectHandler);
+            document.addEventListener('click', RT.pillDeselectHandler);
         }
     }
 
     function refreshRenderedView() {
-        if (!_renderedViewActive) return;
+        if (!RT.renderedViewActive) return;
         const s = getSettings();
-        const memo = _historyViewIndex === -1
+        const memo = RT.historyViewIndex === -1
             ? s.currentMemo
-            : (s.memoHistory[_historyViewIndex] ?? '');
+            : (s.memoHistory[RT.historyViewIndex] ?? '');
             
         const collapsed = loadCollapsed();
         const detached  = loadDetached();
@@ -2415,7 +2403,7 @@ Rules:
 
         const el = document.getElementById('rpg-tracker-render');
         if (el) {
-            let html = renderMemoAsCards(memo, null, _sectionPages);
+            let html = renderMemoAsCards(memo, null, RT.sectionPages);
 
             // Append quest log section if module is enabled (always render, even when empty)
             if (s.modules?.quests) {
@@ -2460,7 +2448,7 @@ Rules:
                         const snapshotQuests = parseQuestsFromMemo(memo);
                         body.innerHTML = renderQuestLog(snapshotQuests, currentTime, collapsed, detached, 'QUESTS');
                     } else {
-                        body.innerHTML = renderMemoAsCards(memo, tag, _sectionPages);
+                        body.innerHTML = renderMemoAsCards(memo, tag, RT.sectionPages);
                     }
                     bindRenderedCardEvents(body, memo, true);
                 }
@@ -2863,9 +2851,9 @@ Rules:
             stopBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 // 1. Abort the state update controller (kills fetch/Ollama/OpenAI)
-                if (_stateController) {
-                    _stateController.abort();
-                    _stateController = null;
+                if (RT.stateController) {
+                    RT.stateController.abort();
+                    RT.stateController = null;
                 }
                 // 2. Stop SillyTavern generation (kills internal ST requests)
                 const { stopGeneration } = SillyTavern.getContext();
@@ -2905,8 +2893,8 @@ Rules:
                 const s = getSettings();
                 const turningOn = !s.chatLinkEnabled;
 
-                if (turningOn && _currentChatId) {
-                    const saved = s.chatStates?.[_currentChatId];
+                if (turningOn && RT.currentChatId) {
+                    const saved = s.chatStates?.[RT.currentChatId];
                     const liveContent = (s.currentMemo || '').trim();
                     const savedContent = (saved?.currentMemo || '').trim();
                     
@@ -2951,7 +2939,7 @@ Rules:
                                 });
                                 if (saved.memoHistory.length > 50) saved.memoHistory.length = 50;
                             }
-                            loadChatState(_currentChatId);
+                            loadChatState(RT.currentChatId);
                             toastr['success']('Chat Link ON — restored saved state.', 'RPG Tracker');
                         } else if (choice === POPUP_RESULT.NEGATIVE) {
                             // User wants to Overwrite
@@ -2959,7 +2947,7 @@ Rules:
                                 s.memoHistory.unshift(saved.currentMemo);
                                 if (s.memoHistory.length > 50) s.memoHistory.length = 50;
                             }
-                            saveChatState(_currentChatId);
+                            saveChatState(RT.currentChatId);
                             toastr['success']('Chat Link ON — current state saved to chat.', 'RPG Tracker');
                         } else {
                             // User closed the modal or hit escape — cancel the toggle
@@ -2967,14 +2955,14 @@ Rules:
                         }
                     } else {
                         // No conflict or chat was empty
-                        saveChatState(_currentChatId);
+                        saveChatState(RT.currentChatId);
                         toastr['success']('Chat Link ON — state bound to this chat.', 'RPG Tracker');
                     }
                 } else if (turningOn) {
                     // Normal lock (empty or new chat)
-                    if (_currentChatId) {
-                        const found = loadChatState(_currentChatId);
-                        if (!found) saveChatState(_currentChatId);
+                    if (RT.currentChatId) {
+                        const found = loadChatState(RT.currentChatId);
+                        if (!found) saveChatState(RT.currentChatId);
                     }
                     toastr['success']('Chat Link ON', 'RPG Tracker');
                 } else {
@@ -2993,7 +2981,7 @@ Rules:
         agentPanel.style.setProperty('--rt-base-size', (settings.agentFontSize || 13) + 'px');
         const agentCloseBtn = /** @type {HTMLElement} */ (panel.querySelector('#rpg-tracker-agent-close'));
         
-        renderRouterUI = async function() {
+        RT.renderRouterUI = async function() {
             const s = getSettings();
             const keysContainer = agentPanel.querySelector('#rt-agent-router-active-keys');
             const logContainer = agentPanel.querySelector('#rt-agent-router-log');
@@ -3088,7 +3076,7 @@ Rules:
                             st.lastKeywordTriggeredKeys = st.lastKeywordTriggeredKeys.filter(k => k !== key);
                         }
                         saveSettings();
-                        renderRouterUI();
+                        RT.renderRouterUI();
                     }
                 });
             });
@@ -3115,7 +3103,7 @@ Rules:
                         if (colIcon) colIcon.className = 'fa-solid fa-chevron-up';
                     }
                     syncRouterPrefixDisplays(getSettings().routerCampaignPrefix || '');
-                    renderRouterUI();
+                    RT.renderRouterUI();
                     refreshManifest();
                 }
             });
@@ -3637,7 +3625,7 @@ Rules:
                 }
             };
 
-            refreshAgentManifest = refreshManifest;
+            RT.refreshAgentManifest = refreshManifest;
 
             const refreshBtn = agentPanel.querySelector('#rt-agent-manifest-refresh');
             if (refreshBtn) refreshBtn.addEventListener('click', () => refreshManifest('manual-button'));
@@ -4186,7 +4174,7 @@ Rules:
                     agentPanel.style.display = 'flex'; // Force visibility if detached
                     document.body.appendChild(agentPanel);
                     syncRouterPrefixDisplays(getSettings().routerCampaignPrefix || '');
-                    renderRouterUI(); // Ensure it's populated
+                    RT.renderRouterUI(); // Ensure it's populated
                     refreshManifest();
                     const header = agentPanel.querySelector('.rpg-tracker-header');
                     if (header instanceof HTMLElement) {
@@ -4407,7 +4395,7 @@ Rules:
         const syncAgentNav = () => {
             const s = getSettings();
             const histLen  = (s.routerHistory || []).length;
-            const redoLen  = _loreRedoStack.length;
+            const redoLen  = RT.loreRedoStack.length;
             if (agentNavBack)  agentNavBack.disabled  = histLen === 0;
             if (agentNavFwd)   agentNavFwd.disabled   = redoLen === 0;
             if (agentNavLabel) {
@@ -4451,7 +4439,7 @@ Rules:
                 const postPassState = await captureCurrentLoreState(histEntry);
                 const ok = await rollbackRouterPass(0);
                 if (ok) {
-                    _loreRedoStack.push({ prePassSnapshot: histEntry, postPassState });
+                    RT.loreRedoStack.push({ prePassSnapshot: histEntry, postPassState });
                 } else {
                     toastr['error']('Rollback failed. Check console.', 'Lorebook Agent');
                 }
@@ -4462,13 +4450,13 @@ Rules:
 
         if (agentNavFwd) {
             agentNavFwd.addEventListener('click', async () => {
-                if (!_loreRedoStack.length) return;
+                if (!RT.loreRedoStack.length) return;
                 if (agentNavBack) agentNavBack.disabled = true;
                 agentNavFwd.disabled = true;
-                const redoEntry = _loreRedoStack.pop();
+                const redoEntry = RT.loreRedoStack.pop();
                 const ok = await reapplyRouterPass(redoEntry.prePassSnapshot, redoEntry.postPassState);
                 if (!ok) {
-                    _loreRedoStack.push(redoEntry);
+                    RT.loreRedoStack.push(redoEntry);
                     toastr['error']('Redo failed. Check console.', 'Lorebook Agent');
                 }
                 syncAgentNav();
@@ -4487,7 +4475,7 @@ Rules:
                 if (typeof _ctx.updateWorldInfoList === 'function') {
                     try { await _ctx.updateWorldInfoList(); } catch (_) {}
                 }
-                await renderRouterUI();
+                await RT.renderRouterUI();
                 keysRefreshBtn.querySelector('i')?.classList.remove('fa-spin');
             });
         }
@@ -4502,7 +4490,7 @@ Rules:
             if (typeof _ctx.updateWorldInfoList === 'function') {
                 try { await _ctx.updateWorldInfoList(); } catch (_) {}
             }
-            await renderRouterUI();
+            await RT.renderRouterUI();
             updateUndoLabel();
         });
 
@@ -4518,7 +4506,7 @@ Rules:
             
             if (step.type === 'start') {
                 _routerSteps = [];
-                _loreRedoStack = [];
+                RT.loreRedoStack = [];
                 syncAgentNav();
             }
             _routerSteps.push(step);
@@ -4545,7 +4533,7 @@ Rules:
                 const s = getSettings();
                 s.routerLog = [];
                 saveSettings();
-                renderRouterUI();
+                RT.renderRouterUI();
             });
         }
 
@@ -4558,7 +4546,7 @@ Rules:
         const textarea = panel.querySelector('#rpg-tracker-memo');
         let _rawEditDebounce = null;
         textarea.addEventListener('input', (e) => {
-            if (_historyViewIndex !== -1) return;
+            if (RT.historyViewIndex !== -1) return;
             const newText = /** @type {HTMLTextAreaElement} */ (e.target).value;
             settings.currentMemo = newText;
             
@@ -4580,14 +4568,14 @@ Rules:
         const rv = /** @type {HTMLElement} */ (panel.querySelector('#rpg-tracker-render'));
 
         if (settings.renderedViewActive !== undefined) {
-            _renderedViewActive = settings.renderedViewActive;
+            RT.renderedViewActive = settings.renderedViewActive;
         } else {
-            _renderedViewActive = true;
+            RT.renderedViewActive = true;
             settings.renderedViewActive = true;
         }
 
         const applyViewState = () => {
-            if (_renderedViewActive) {
+            if (RT.renderedViewActive) {
                 ta.style.display = 'none';
                 rv.style.display = 'block';
                 _viewBtn.textContent = '≡';
@@ -4604,8 +4592,8 @@ Rules:
         applyViewState();
 
         _viewBtn.addEventListener('click', () => {
-            _renderedViewActive = !_renderedViewActive;
-            settings.renderedViewActive = _renderedViewActive;
+            RT.renderedViewActive = !RT.renderedViewActive;
+            settings.renderedViewActive = RT.renderedViewActive;
             saveSettings();
             applyViewState();
         });
@@ -4791,16 +4779,16 @@ Rules:
         // Restore via label click (Commit)
         panel.querySelector('#rpg-tracker-nav-label').addEventListener('click', () => {
             const s = getSettings();
-            if (_historyViewIndex === -1) return;
-            const snapshot = s.memoHistory[_historyViewIndex];
+            if (RT.historyViewIndex === -1) return;
+            const snapshot = s.memoHistory[RT.historyViewIndex];
             if (snapshot === undefined) return;
 
             // Simply move the live pointer to this snapshot.
             // The history already contains all states — no need to archive currentMemo here.
             // Direct Prompt and runStateModelPass handle archiving when they produce new states.
             s.currentMemo = snapshot;
-            s.historyIndex = _historyViewIndex;
-            _historyViewIndex = -1;
+            s.historyIndex = RT.historyViewIndex;
+            RT.historyViewIndex = -1;
             saveSettings();
             syncMemoView();
             toastr['success']('Historical state restored as LIVE.', 'RPG Tracker');
@@ -4815,7 +4803,7 @@ Rules:
                 settings.memoHistory = [];
                 settings.historyIndex = -1;
                 settings.lastDelta = "";
-                _historyViewIndex = -1;
+                RT.historyViewIndex = -1;
                 saveSettings();
                 syncMemoView();
                 const dp = document.getElementById('rpg-tracker-delta-content');
@@ -4834,15 +4822,15 @@ Rules:
         const maxPos = L === -1 ? maxIndex + 1 : maxIndex;
         
         let pos = L === -1 
-            ? (_historyViewIndex === -1 ? 0 : _historyViewIndex + 1)
-            : (_historyViewIndex === -1 ? L : _historyViewIndex);
+            ? (RT.historyViewIndex === -1 ? 0 : RT.historyViewIndex + 1)
+            : (RT.historyViewIndex === -1 ? L : RT.historyViewIndex);
             
         pos += direction;
         
         if (pos < 0) pos = 0;
         if (pos > maxPos) pos = maxPos;
         
-        _historyViewIndex = L === -1
+        RT.historyViewIndex = L === -1
             ? (pos === 0 ? -1 : pos - 1)
             : (pos === L ? -1 : pos);
             
@@ -4862,12 +4850,12 @@ Rules:
         const L = s.historyIndex === undefined ? -1 : s.historyIndex;
         const livePos = L === -1 ? 0 : L;
         const currentPos = L === -1 
-            ? (_historyViewIndex === -1 ? 0 : _historyViewIndex + 1)
-            : (_historyViewIndex === -1 ? L : _historyViewIndex);
+            ? (RT.historyViewIndex === -1 ? 0 : RT.historyViewIndex + 1)
+            : (RT.historyViewIndex === -1 ? L : RT.historyViewIndex);
 
         const maxPos = L === -1 ? histLen : histLen - 1;
 
-        if (_historyViewIndex === -1) {
+        if (RT.historyViewIndex === -1) {
             // LIVE stone
             textarea.value = s.currentMemo;
             textarea.readOnly = false;
@@ -4875,7 +4863,7 @@ Rules:
             navLabel.title = 'Current Live State';
         } else {
             // Snapshot stone
-            const snapshot = s.memoHistory[_historyViewIndex];
+            const snapshot = s.memoHistory[RT.historyViewIndex];
             textarea.value = snapshot ?? '';
             textarea.readOnly = true;
             navLabel.classList.add('clickable');
@@ -4902,7 +4890,7 @@ Rules:
         const deltaPanel = document.getElementById('rpg-tracker-delta-content');
         if (deltaPanel) {
             let deltaHtml = '';
-            const activeIdx = (_historyViewIndex === -1) ? L : _historyViewIndex;
+            const activeIdx = (RT.historyViewIndex === -1) ? L : RT.historyViewIndex;
 
             if (activeIdx === -1) {
                 deltaHtml = s.lastDelta || '<span class="delta-empty">No changes yet.</span>';
@@ -4923,7 +4911,7 @@ Rules:
      */
     // [moved to panel-geometry.js]
     function updateUIMemo(text) {
-        if (_historyViewIndex !== -1) return; // don't clobber snapshot view
+        if (RT.historyViewIndex !== -1) return; // don't clobber snapshot view
         const textarea = /** @type {HTMLTextAreaElement|null} */ (document.getElementById('rpg-tracker-memo'));
         if (textarea) textarea.value = text;
         const counter = document.getElementById('rpg-tracker-count');
@@ -5116,7 +5104,7 @@ Rules:
             const savedCustomFields = s.customFields;
             s.customFields = [...savedCustomFields, ghostField];
             try {
-                renderView.innerHTML = renderMemoAsCards(fakeMemo, previewTag, _sectionPages);
+                renderView.innerHTML = renderMemoAsCards(fakeMemo, previewTag, RT.sectionPages);
                 bindRenderedCardEvents(renderView, fakeMemo, true, () => renderPreviewInto(targetEl));
             } finally {
                 s.customFields = savedCustomFields;
@@ -5719,6 +5707,7 @@ Rules:
     /**
      * Initialization
      */
+    if (!globalThis.__FB_NO_INIT__)
     (async function init() {
         // Guard against double-init (e.g. browser serving a cached copy of this script
         // while the fresh copy also loads). Remove any stale panel/settings first.
@@ -5872,16 +5861,16 @@ Rules:
                 saveSettings();
                 updateChatLinkUI();
                 
-                if (turningOn && _currentChatId) {
-                    const saved = s.chatStates?.[_currentChatId];
+                if (turningOn && RT.currentChatId) {
+                    const saved = s.chatStates?.[RT.currentChatId];
                     if (saved && saved.currentMemo && s.currentMemo && s.currentMemo !== saved.currentMemo) {
                         // In settings we'll just do the safe silent restore if they checked the box
                         // because async confirms in jQuery 'change' events can be janky.
                         // The panel button handles the explicit decision better.
-                        loadChatState(_currentChatId);
+                        loadChatState(RT.currentChatId);
                     } else {
-                        const found = loadChatState(_currentChatId);
-                        if (!found) saveChatState(_currentChatId);
+                        const found = loadChatState(RT.currentChatId);
+                        if (!found) saveChatState(RT.currentChatId);
                     }
                 }
             });
@@ -5905,7 +5894,7 @@ Rules:
             eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
             // Bootstrap: restore state for whichever chat is already open
             const bootChatId = ctx.getCurrentChatId?.() || null;
-            _currentChatId = bootChatId;
+            RT.currentChatId = bootChatId;
             if (bootChatId && settings.chatLinkEnabled) {
                 loadChatState(bootChatId);
             }
@@ -6252,11 +6241,11 @@ Rules:
                 }
             });
             document.getElementById('rpg_tracker_theme_wizard_undo')?.addEventListener('click', () => {
-                if (themeUndoStack.length === 0) {
+                if (RT.themeUndoStack.length === 0) {
                     toastr['info']('No steps to undo.', 'Theme Wizard');
                     return;
                 }
-                const prev = themeUndoStack.pop();
+                const prev = RT.themeUndoStack.pop();
                 settings.customTheme = prev;
                 saveSettings();
                 applyCustomTheme(prev);
@@ -6264,7 +6253,7 @@ Rules:
                 if (statusEl) { 
                     statusEl.style.display = 'block'; 
                     statusEl.style.color = 'inherit'; 
-                    statusEl.textContent = `Undone last change. (${themeUndoStack.length} steps remaining)`; 
+                    statusEl.textContent = `Undone last change. (${RT.themeUndoStack.length} steps remaining)`; 
                 }
             });
 
@@ -6855,7 +6844,7 @@ Rules:
                 const btn = $(this);
                 btn.prop('disabled', true);
                 try {
-                    _loreActivationDebugLast = await readLoreActivationDebugSnapshot('manual:capture-settings');
+                    RT.loreActivationDebugLast = await readLoreActivationDebugSnapshot('manual:capture-settings');
                     renderLoreActivationDebugPanel();
                     toastr['info']('Lore debug snapshot captured (read-only, no /world commands).');
                 } catch (_) {
@@ -6869,7 +6858,7 @@ Rules:
                 btn.prop('disabled', true);
                 try {
                     const ctx = SillyTavern.getContext();
-                    const id = ctx.chatId || _currentChatId || '';
+                    const id = ctx.chatId || RT.currentChatId || '';
                     await syncCampaignPrefixAndWorldsForChat(id, 'manual:re-sync-settings');
                     toastr['info']('Re-sync finished; see JSON in Lore activation debug below.');
                 } catch (_) {
@@ -7079,7 +7068,7 @@ Rules:
                     settings.lastDelta = "";
                     settings.quests = [];
                     settings.historyIndex = -1;
-                    _historyViewIndex = -1;
+                    RT.historyViewIndex = -1;
                     saveSettings();
                     updateUIMemo("");
                     refreshRenderedView();
