@@ -11,6 +11,21 @@
 
 import { getSettings } from './state-manager.js';
 import { DEFAULT_STOCK_PROMPTS } from './constants.js';
+import { MEMO_MODULES } from './module-registry.js';
+
+/**
+ * The set of memo block tags we recognize: the stock modules plus any custom
+ * field tags the user defined. Used by the tolerant merge recovery so stray
+ * brackets in narrative text (e.g. [2/6], [QUEST ACCEPTED]) are never mistaken
+ * for block openers.
+ */
+function getKnownMemoTags(settings) {
+    const tags = new Set(MEMO_MODULES.map(m => m.tag.toUpperCase()));
+    for (const f of (settings.customFields || [])) {
+        if (f && f.tag) tags.add(String(f.tag).toUpperCase());
+    }
+    return tags;
+}
 
 // ── String utilities ──────────────────────────────────────────────────────────
 
@@ -195,18 +210,55 @@ export function mergeMemo(currentMemo, aiOutput) {
     const tagPattern = /\[([^\]\/][^\]]*)\]([\s\S]*?)\[\/\1\]/gi;
     const matches = [...aiOutput.matchAll(tagPattern)];
 
-    if (matches.length === 0) {
+    // Normalized entry list (preserve document order via source index).
+    const entries = matches.map(m => ({ tag: m[1].trim(), content: m[2].trim(), index: m.index }));
+
+    // ── Tolerant recovery ──────────────────────────────────────────────────────
+    // A common State Extractor failure is emitting an opening [TAG] with a
+    // missing or mismatched closing tag, which the strict regex above drops
+    // silently → state drift. Recover any KNOWN block tag that opens but is not
+    // part of a well-formed block, treating its content as running until the next
+    // known opening tag or end-of-output.
+    const knownTags = getKnownMemoTags(settings);
+    const consumed = matches.map(m => [m.index, m.index + m[0].length]);
+    const isConsumed = (i) => consumed.some(([a, b]) => i >= a && i < b);
+
+    // All openings of recognized tags (strict ones serve as recovery boundaries).
+    // The character class excludes '/' so closing tags [/TAG] are never matched.
+    const openRe = /\[([^\[\]\/\n]+)\]/g;
+    const knownOpenings = [];
+    let om;
+    while ((om = openRe.exec(aiOutput)) !== null) {
+        const t = om[1].trim().toUpperCase();
+        if (knownTags.has(t)) knownOpenings.push({ index: om.index, end: om.index + om[0].length, tag: t });
+    }
+    for (let k = 0; k < knownOpenings.length; k++) {
+        const op = knownOpenings[k];
+        if (isConsumed(op.index)) continue; // part of a well-formed [TAG]...[/TAG]
+        // A malformed QUESTS JSON diff is unsafe to guess — preserve drop behavior.
+        if (op.tag === 'QUESTS' && !settings.questLegacyMode) continue;
+        const next = knownOpenings.slice(k + 1).find(o => o.index >= op.end);
+        const boundary = next ? next.index : aiOutput.length;
+        const content = aiOutput.slice(op.end, boundary).trim();
+        if (!content) continue; // empty recovery → no-op (no spurious block/removal)
+        entries.push({ tag: op.tag, content, index: op.index });
+        if (settings.debugMode) console.warn(`[RPG Tracker] mergeMemo: RECOVERED [${op.tag}] (missing/mismatched closing tag).`);
+    }
+
+    if (entries.length === 0) {
         console.warn("[RPG Tracker] No valid [TAG]...[/TAG] blocks found in model output — treating as no-change. Output was:", aiOutput);
         return currentMemo;
     }
 
-    if (settings.debugMode) console.log(`[RPG Tracker] mergeMemo: found ${matches.length} tag(s):`, matches.map(m => m[1]));
+    entries.sort((a, b) => a.index - b.index);
+
+    if (settings.debugMode) console.log(`[RPG Tracker] mergeMemo: found ${entries.length} tag(s):`, entries.map(e => e.tag));
 
     let memo = currentMemo;
 
-    for (const match of matches) {
-        const tag = match[1].trim();
-        const newContent = match[2].trim();
+    for (const entry of entries) {
+        const tag = entry.tag;
+        const newContent = entry.content;
 
         // [QUESTS] block — route to appropriate handler based on mode
         if (tag.toUpperCase() === 'QUESTS') {

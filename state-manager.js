@@ -15,6 +15,30 @@ import { BLOCK_ORDER, DEFAULT_BLOCK_ORDER, getDefaultModuleToggles } from './mod
 // ── Module name (shared constant, settings key) ────────────────────────────────
 export const MODULE_NAME = 'rpg_tracker';
 
+// ── State Extractor prompt versioning / migration ──────────────────────────────
+// Bump STATE_PROMPT_VERSION whenever the default `systemPromptTemplate` changes.
+// Existing installs persist the prompt, so getSettings()'s undefined-only backfill
+// never updates it; migrateSystemPrompt() force-upgrades installs still running a
+// known prior default while preserving user-customized prompts.
+export const STATE_PROMPT_VERSION = 1;
+
+/** Tiny FNV-1a fingerprint (`<len>:<hash>`) used to recognize prior default prompts. */
+function promptFingerprint(str) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return `${str.length}:${(h >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+// Fingerprints of every default `systemPromptTemplate` that shipped before the
+// current one. An install whose prompt matches one of these never customized it
+// and is safe to auto-upgrade.
+const LEGACY_STATE_PROMPT_FINGERPRINTS = new Set([
+    '3722:7f9db8a7', // pre-v1 default (v2.4.x)
+]);
+
 // ── Default module definitions (single source of truth for reset logic) ─────────
 export const DEFAULT_MODULES = {
     npc:   { enabled: true, tag: 'NPC',   format: 'Name | Description | Keywords',                    instruction: 'Named characters. Do NOT create an entry for {{user}}. Mention {{user}} in EVENT or QUEST entries as needed.' },
@@ -82,11 +106,11 @@ NEVER ignore a module.
 <rules>
 1. Read the PRIOR MEMO and the NARRATIVE OUTPUT carefully.
 2. Determine which sections changed. Only output sections that actually changed.
-3. Use strict [TAG]...[/TAG] structure based on the modules requested above. ALWAYS include the closing tag.
+3. Use strict [TAG]...[/TAG] structure based on the modules requested above. ALWAYS include the matching closing tag for every section you open — never leave a section unclosed.
 4. Omit unchanged sections entirely. Do NOT output a section if its contents did not change.
 5. BLOCK PERSISTENCE: For list-based sections ([PARTY], [INVENTORY], [ABILITIES], [SPELLS], [COMBAT]), if any single item within that section changes, you MUST re-output the ENTIRE section containing all items. Never omit existing members or items unless they are explicitly logically removed.
 6. If there are absolutely NO CHANGES to any section, you MUST output exactly: \`NO_CHANGES_DETECTED\`
-7. Output ONLY the changed sections (or NO_CHANGES_DETECTED). No preamble, no explanation, no commentary.
+7. Output ONLY the changed sections (or NO_CHANGES_DETECTED). No preamble, no explanation, no commentary, no markdown code fences, and no wrapper tags.
 </rules>
 
 
@@ -96,6 +120,7 @@ For sections with multiple items ([ABILITIES], [INVENTORY], [SPELLS], [PARTY]):
 2. Format: \`- Name (Resource/Max, Effect Description)\`.
 3. If no resource tracker is needed, use: \`- Name (Effect Description)\`.
 4. The parentheses MUST contain the resource count FIRST, followed by a comma, then the description.
+5. In [SPELLS], write each spell as its plain canonical name only (e.g. \`Hex\`, \`Tasha's Hideous Laughter\`). Do NOT append parenthetical annotations like "(concentration)" or "(ritual)" to a spell's name; put such details in a Status/Traits line instead. Clean spell names keep the in-UI spell reference links working.
 </list_formatting>
 
 <buff_debuff_logic>
@@ -114,6 +139,10 @@ Update abilities/attributes/HP/etc accordingly, such as an ability's 1d6 bonus i
 <custom_formatting>
 You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These are for graphical rendering options; use them if instructed but only if instructed in a specific [MODULE].
 </custom_formatting>`,
+        // 0 so existing installs run migrateSystemPrompt() once; fresh installs
+        // are stamped to the current version by that same migration at init.
+        systemPromptVersion: 0,
+        systemPromptUpdateAvailable: false,
         modules: getDefaultModuleToggles(),
         stockPrompts: { ...DEFAULT_STOCK_PROMPTS },
         customFields: [],
@@ -396,8 +425,37 @@ export function getEffectiveRouterCampaignPrefix(chatId) {
  * Migrates custom fields from legacy formats to the current template-based format.
  * Safe to call repeatedly — idempotent.
  */
+/**
+ * One-time, idempotent upgrade of the State Extractor prompt. Because existing
+ * installs persist `systemPromptTemplate`, changing its default alone reaches no
+ * one — getSettings() backfills undefined keys only. This force-upgrades installs
+ * still on a known prior default, but never clobbers a user-customized prompt
+ * (instead it flags `systemPromptUpdateAvailable` so the UI can offer a reset).
+ * Safe to call repeatedly.
+ */
+export function migrateSystemPrompt(s) {
+    if ((s.systemPromptVersion || 0) >= STATE_PROMPT_VERSION) return;
+
+    const cur = s.systemPromptTemplate;
+    const latest = DEFAULTS_TEMPLATE.systemPromptTemplate;
+
+    if (cur === latest) {
+        // Fresh install or already migrated — nothing to change.
+    } else if (LEGACY_STATE_PROMPT_FINGERPRINTS.has(promptFingerprint(cur))) {
+        s.systemPromptTemplate = latest; // untouched prior default → auto-upgrade
+        if (s.debugMode) console.log(`[RPG Tracker] State Extractor prompt auto-upgraded to v${STATE_PROMPT_VERSION}.`);
+    } else {
+        s.systemPromptUpdateAvailable = true; // customized → preserve, surface notice
+        if (s.debugMode) console.log('[RPG Tracker] State Extractor prompt is customized; upgrade available (not applied).');
+    }
+
+    s.systemPromptVersion = STATE_PROMPT_VERSION;
+}
+
 export function migrateCustomFields() {
     const s = getSettings();
+
+    migrateSystemPrompt(s);
 
     // Strip placeholder NEW_TAG entries persisted from previous sessions (one-time cleanup at init)
     if (Array.isArray(s.routerCustomTags)) {

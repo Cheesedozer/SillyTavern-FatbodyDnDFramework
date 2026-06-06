@@ -572,3 +572,12 @@ export const PAGE_SIZE = 8;
 
 /** Sections that should NEVER be paginated — always show all entries. */
 export const NO_PAGINATE = new Set(['CHARACTER', 'ABILITIES']);
+
+// ── Wikidot spell-link overrides ──────────────────────────────────────────────
+// dnd5e.wikidot.com page slugs that do NOT follow the mechanical slugify rule
+// (lowercase, strip apostrophes, non-alphanumerics → '-'). When the computed
+// slug 404s on Wikidot, add an entry here: key = computed slug, value = the
+// correct Wikidot slug. Empty by default — most spells slugify correctly.
+export const SPELL_SLUG_OVERRIDES = {
+    // 'computed-slug': 'correct-wikidot-slug',
+};
