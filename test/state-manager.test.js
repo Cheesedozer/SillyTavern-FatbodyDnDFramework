@@ -13,7 +13,7 @@ import './_bootstrap.js';
 import { setSettings } from './_bootstrap.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { getSettings, DEFAULT_MODULES } from '../state-manager.js';
+import { getSettings, DEFAULT_MODULES, migrateSystemPrompt, STATE_PROMPT_VERSION } from '../state-manager.js';
 import { BLOCK_ORDER } from '../module-registry.js';
 
 const EXPECTED_MEMO_MODULES = {
@@ -66,6 +66,34 @@ test('byte-equality guard: constants.BLOCK_ORDER literal is stable', () => {
 test('byte-equality guard: settings.modules defaults are stable', () => {
     setSettings({});
     assert.deepEqual(getSettings().modules, EXPECTED_MEMO_MODULES);
+});
+
+test('migrateSystemPrompt: fresh install (latest default) just stamps the version', () => {
+    setSettings({});
+    const s = getSettings();
+    const before = s.systemPromptTemplate;
+    migrateSystemPrompt(s);
+    assert.equal(s.systemPromptTemplate, before, 'latest default is left unchanged');
+    assert.equal(s.systemPromptVersion, STATE_PROMPT_VERSION);
+    assert.equal(s.systemPromptUpdateAvailable, false, 'no notice for an up-to-date install');
+});
+
+test('migrateSystemPrompt: a customized prompt is preserved and flagged', () => {
+    setSettings({ systemPromptTemplate: 'MY CUSTOM EXTRACTOR PROMPT', systemPromptVersion: 0 });
+    const s = getSettings();
+    migrateSystemPrompt(s);
+    assert.equal(s.systemPromptTemplate, 'MY CUSTOM EXTRACTOR PROMPT', 'never clobber a user prompt');
+    assert.equal(s.systemPromptUpdateAvailable, true, 'surface an update notice instead');
+    assert.equal(s.systemPromptVersion, STATE_PROMPT_VERSION);
+});
+
+test('migrateSystemPrompt: idempotent (version gate prevents re-running)', () => {
+    setSettings({ systemPromptTemplate: 'MY CUSTOM EXTRACTOR PROMPT', systemPromptVersion: 0 });
+    const s = getSettings();
+    migrateSystemPrompt(s);
+    s.systemPromptUpdateAvailable = false; // simulate UI consuming the notice
+    migrateSystemPrompt(s);
+    assert.equal(s.systemPromptUpdateAvailable, false, 'does not re-fire once version is current');
 });
 
 test('reset-by-delete: getSettings backfills a deleted key with an independent clone', () => {

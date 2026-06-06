@@ -4118,6 +4118,16 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
 
         getSettings();
         migrateCustomFields();
+
+        // One-time notice when an upgraded State Extractor prompt is available but
+        // the user customized theirs, so we couldn't auto-apply it (see migrateSystemPrompt).
+        const _s = getSettings();
+        if (_s.systemPromptUpdateAvailable) {
+            _s.systemPromptUpdateAvailable = false;
+            try { saveSettings(); } catch (e) {}
+            toastr['info']('An improved State Model prompt is available. You customized yours, so it was left untouched — click "Reset State Model prompt" in settings to adopt it.', 'RPG Tracker', { timeOut: 12000 });
+        }
+
         createPanel();
 
         try {

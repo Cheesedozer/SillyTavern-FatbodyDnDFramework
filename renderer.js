@@ -1,6 +1,6 @@
 import { getSettings, getBarBackground } from './state-manager.js';
 import { escapeHtml, highlightParens, parseInWorldTime, formatTimeDiff } from './memo-processor.js';
-import { BLOCK_ICONS, PAGE_SIZE, NO_PAGINATE } from './constants.js';
+import { BLOCK_ICONS, PAGE_SIZE, NO_PAGINATE, SPELL_SLUG_OVERRIDES } from './constants.js';
 import { BLOCK_ORDER } from './module-registry.js';
 
 // ── Renderer module: pure HTML string producers, localStorage helpers ──
@@ -116,6 +116,28 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
         return `<div class="rt-entity-sub-line"><span class="rt-entity-sub-label">HD:</span> <span>${pipsHtml}</span></div>`;
     }
 
+    /**
+     * Build the canonical dnd5e.wikidot.com slug for a spell name.
+     * Steps: drop a TRAILING annotation like "(concentration)" or "[reaction]"
+     * (the model appends these and they 404), lowercase, strip apostrophes
+     * (verified correct for Wikidot, e.g. "Tasha's" → "tashas"), collapse any
+     * non-alphanumeric run to a single '-', then trim leading/trailing hyphens.
+     * Finally honour SPELL_SLUG_OVERRIDES for genuinely irregular pages.
+     */
+    export function spellSlug(name) {
+        const base = String(name).replace(/\s*[\(\[][^\)\]]*[\)\]]\s*$/, '').trim();
+        const slug = base.toLowerCase()
+            .replace(/'/g, '')
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+        return SPELL_SLUG_OVERRIDES[slug] || slug;
+    }
+
+    /** Full Wikidot spell URL for a (possibly annotated) spell name. */
+    export function spellWikidotUrl(name) {
+        return `https://dnd5e.wikidot.com/spell:${spellSlug(name)}`;
+    }
+
     export function renderSpellGroups(val) {
         const isCompound = /\|/.test(val) && /(?:Level\s*\d+|Cantrips?)/i.test(val);
         const groups = isCompound ? val.split(/\s*\|\s*/) : [val];
@@ -135,8 +157,7 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
             if (spellList) {
                 spellsHtml = spellList.split(',').map(s => {
                     const name = s.trim();
-                    const slug = name.toLowerCase().replace(/'/g, '').replace(/[^a-z0-9]+/g, '-');
-                    return `<a href="https://dnd5e.wikidot.com/spell:${slug}" target="_blank" class="rt-spell-name" title="View spell on Wikidot">${escapeHtmlWithColor(name)}</a>`;
+                    return `<a href="${spellWikidotUrl(name)}" target="_blank" class="rt-spell-name" title="View spell on Wikidot">${escapeHtmlWithColor(name)}</a>`;
                 }).join('');
             }
             html += `<div class="rt-spell-row"><span class="rt-spell-level">${escapeHtmlWithColor(lbl.trim())}</span><div class="rt-spell-inline-group"><div class="rt-spell-list">${pipsHtml}${spellsHtml}</div></div></div>`;
@@ -617,11 +638,7 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
                     }
                     const spells = spellList.split(',').map(s => {
                         const name = s.trim();
-                        const slug = name.toLowerCase()
-                            .replace(/'/g, '')
-                            .replace(/[^a-z0-9]+/g, '-');
-                        const url = `https://dnd5e.wikidot.com/spell:${slug}`;
-                        return `<a href="${url}" target="_blank" class="rt-spell-name" title="View spell on Wikidot">${escapeHtmlWithColor(name)}</a>`;
+                        return `<a href="${spellWikidotUrl(name)}" target="_blank" class="rt-spell-name" title="View spell on Wikidot">${escapeHtmlWithColor(name)}</a>`;
                     }).join('');
                     return `<div class="rt-spell-row">
                         <span class="rt-spell-level">${escapeHtmlWithColor(label.trim())}</span>

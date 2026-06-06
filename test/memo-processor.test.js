@@ -37,6 +37,47 @@ test('mergeMemo appends a brand-new section', () => {
     assert.equal(out, '[CHARACTER]\nHP 10\n[/CHARACTER]\n\n[INVENTORY]\nSword\n[/INVENTORY]');
 });
 
+test('mergeMemo recovers a section with a MISSING closing tag (to EOF)', () => {
+    setSettings({ debugMode: false });
+    const cur = '[CHARACTER]\nHP 10/10\n[/CHARACTER]';
+    const out = mergeMemo(cur, '[CHARACTER]\nHP 5/10');
+    assert.equal(out, '[CHARACTER]\nHP 5/10\n[/CHARACTER]');
+});
+
+test('mergeMemo recovery is bounded by the next known opening tag', () => {
+    setSettings({ debugMode: false });
+    const cur = '[CHARACTER]\nHP 10/10\n[/CHARACTER]\n\n[INVENTORY]\nRope\n[/INVENTORY]';
+    // CHARACTER has no close; INVENTORY is well-formed and must not be swallowed.
+    const out = mergeMemo(cur, '[CHARACTER]\nHP 5/10\n[INVENTORY]\nSword\n[/INVENTORY]');
+    assert.match(out, /\[CHARACTER\]\nHP 5\/10\n\[\/CHARACTER\]/);
+    assert.match(out, /\[INVENTORY\]\nSword\n\[\/INVENTORY\]/);
+    assert.doesNotMatch(out, /Sword[\s\S]*HP 5/); // CHARACTER content didn't eat INVENTORY
+});
+
+test('mergeMemo does NOT treat stray brackets as block openers', () => {
+    setSettings({ debugMode: false });
+    const cur = '[CHARACTER]\nHP 10/10\n[/CHARACTER]';
+    // [2/6] and [QUEST ACCEPTED] are narrative noise, not known tags.
+    const out = mergeMemo(cur, 'Picked up mushrooms [4/6]. *[QUEST ACCEPTED]*');
+    assert.equal(out, cur);
+});
+
+test('mergeMemo recovery is idempotent (re-merging its own output is stable)', () => {
+    setSettings({ debugMode: false });
+    const cur = '[CHARACTER]\nHP 10/10\n[/CHARACTER]';
+    const once = mergeMemo(cur, '[CHARACTER]\nHP 5/10');
+    const twice = mergeMemo(once, once);
+    assert.equal(twice, once);
+});
+
+test('mergeMemo skips a malformed QUESTS diff in non-legacy mode', () => {
+    setSettings({ debugMode: false, questLegacyMode: false });
+    const cur = '[CHARACTER]\nHP 10/10\n[/CHARACTER]';
+    // Missing close on a JSON-diff QUESTS block → unsafe to guess → dropped.
+    const out = mergeMemo(cur, '[QUESTS]\n{"updates":[{"id":"q1","status":"completed"}]}');
+    assert.equal(out, cur);
+});
+
 test('deduplicateMemo keeps the last duplicate', () => {
     setSettings({ debugMode: false });
     const out = deduplicateMemo('[A]\n1\n[/A]\n[A]\n2\n[/A]');
