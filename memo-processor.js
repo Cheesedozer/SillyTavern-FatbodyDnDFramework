@@ -27,6 +27,140 @@ function getKnownMemoTags(settings) {
     return tags;
 }
 
+// ── Token budgeting ─────────────────────────────────────────────────────────────
+
+/**
+ * Chars-per-token heuristic. Matches the memo token estimate in index.js:1971.
+ * A cheap synchronous estimate is preferred over ST's async getTokenCountAsync in
+ * the generation hot path: it never throws, needs no worker/network, and the
+ * interceptor reserves generous headroom so approximate is good enough.
+ */
+export const TOKEN_CHARS_PER_TOKEN = 2.62;
+
+/** Estimated token cost of a string. */
+export function estimateTokens(text) {
+    return Math.ceil((text ? text.length : 0) / TOKEN_CHARS_PER_TOKEN);
+}
+
+/**
+ * Memo block tags that carry the most generation-critical live state; kept first
+ * when the memo must be trimmed to fit the context budget. Everything else
+ * (e.g. INVENTORY, custom-field blocks, loose narrative text) is shed first.
+ * [TIME] leads because it is tiny and anchors quest deadlines.
+ */
+const MEMO_TRIM_PRIORITY = ['TIME', 'CHARACTER', 'PARTY', 'COMBAT', 'XP', 'ABILITIES', 'SPELLS'];
+const MEMO_TRIM_MARKER = '…(state memo trimmed to fit the context budget)\n';
+
+/**
+ * Trims a state memo so its estimated token cost fits within maxTokens, dropping
+ * the lowest-value [TAG]...[/TAG] blocks first and preserving the highest-priority
+ * ones (always trying to keep [TIME]). Any leading preamble before the first block
+ * (e.g. an injected "### STATE MEMO" header) is preserved. Falls back to a tail
+ * char-slice when the memo has no parseable blocks. Returns the memo unchanged when
+ * it already fits.
+ * @param {string} memo
+ * @param {number} maxTokens
+ */
+export function trimMemoToBudget(memo, maxTokens) {
+    if (!memo) return memo || '';
+    if (estimateTokens(memo) <= maxTokens) return memo;
+
+    const limitChars = Math.max(0, Math.floor(maxTokens * TOKEN_CHARS_PER_TOKEN));
+
+    // Parse top-level [TAG]...[/TAG] blocks in document order.
+    const blockRe = /\[([A-Z_]+)\]([\s\S]*?)\[\/\1\]/gi;
+    const blocks = [];
+    let m;
+    while ((m = blockRe.exec(memo)) !== null) {
+        blocks.push({ tag: m[1].toUpperCase(), text: m[0], order: m.index });
+    }
+
+    // No structured blocks — keep the tail (most-recent content) with a marker.
+    if (blocks.length === 0) {
+        const keep = Math.max(0, limitChars - MEMO_TRIM_MARKER.length);
+        return MEMO_TRIM_MARKER + memo.slice(Math.max(0, memo.length - keep));
+    }
+
+    const preamble = memo.slice(0, blocks[0].order);   // e.g. the injected header
+    let budget = limitChars - MEMO_TRIM_MARKER.length - preamble.length;
+
+    const rank = tag => {
+        const i = MEMO_TRIM_PRIORITY.indexOf(tag);
+        return i === -1 ? MEMO_TRIM_PRIORITY.length : i;   // unknown/custom = lowest
+    };
+    // Decide inclusion by priority (then document order); keep blocks that still fit.
+    const byPriority = [...blocks].sort((a, b) => rank(a.tag) - rank(b.tag) || a.order - b.order);
+    const kept = new Set();
+    for (const b of byPriority) {
+        const cost = b.text.length + 2;   // + "\n\n" separator
+        if (cost <= budget) { kept.add(b); budget -= cost; }
+    }
+
+    // Reassemble in original document order; mark that content was dropped.
+    const body = blocks.filter(b => kept.has(b)).map(b => b.text).join('\n\n');
+    return MEMO_TRIM_MARKER + preamble + body;
+}
+
+/**
+ * Fraction of the model's context window held back for the reply (plus slack for
+ * the approximate token estimate). The interceptor never lets its injected context
+ * consume this reserve, so a large restored state memo can't crowd the output to
+ * empty — the root cause of the intermittent blank replies under Chat-Linked Mode.
+ */
+export const OUTPUT_HEADROOM_FRAC = 0.20;
+/** Below this remaining budget, skip the memo entirely rather than ship a stub. */
+const MIN_MEMO_TOKENS = 200;
+
+/**
+ * Fits the priority-ordered injection items into the remaining context budget.
+ * Items are emitted in their original array order, but inclusion is decided by
+ * `tier` (lower = kept first). Tier 0 (RNG) is always kept; the trimmable memo
+ * item is block-trimmed (trimMemoToBudget) as a last resort before being dropped.
+ *
+ * @param {object} p
+ * @param {number} p.contextSize  max context window in tokens (from ST interceptor)
+ * @param {number} p.chatTokens   estimated tokens already in the chat array
+ * @param {{name:string,text:string,tier:number,trimmable?:boolean}[]} p.items  output-ordered
+ * @returns {{injections:string, dropped:string[], trimmed:boolean}}
+ */
+export function budgetInjections({ contextSize, chatTokens, items }) {
+    const dropped = [];
+    let trimmed = false;
+
+    // No usable budget signal → preserve legacy behavior (inject everything).
+    if (!contextSize || contextSize <= 0) {
+        return { injections: items.map(i => i.text || '').join(''), dropped, trimmed };
+    }
+
+    const reserved = Math.ceil(contextSize * OUTPUT_HEADROOM_FRAC);
+    let budget = contextSize - reserved - chatTokens;
+
+    // Decide inclusion in priority order; remember kept text by original index.
+    const order = items
+        .map((it, i) => ({ it, i }))
+        .filter(({ it }) => it.text)
+        .sort((a, b) => (a.it.tier - b.it.tier) || (a.i - b.i));
+
+    const keep = new Map();
+    for (const { it, i } of order) {
+        const cost = estimateTokens(it.text);
+        if (it.tier === 0 || cost <= budget) {        // tier 0 (RNG) is never dropped
+            keep.set(i, it.text);
+            budget -= cost;
+        } else if (it.trimmable && budget >= MIN_MEMO_TOKENS) {
+            const t = trimMemoToBudget(it.text, budget);
+            keep.set(i, t);
+            budget -= estimateTokens(t);
+            trimmed = true;
+        } else {
+            dropped.push(it.name);
+        }
+    }
+
+    const injections = items.map((it, i) => keep.get(i) || '').join('');
+    return { injections, dropped, trimmed };
+}
+
 // ── String utilities ──────────────────────────────────────────────────────────
 
 /**
