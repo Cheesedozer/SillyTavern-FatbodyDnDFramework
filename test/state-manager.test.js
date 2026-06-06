@@ -14,7 +14,7 @@ import { setSettings } from './_bootstrap.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getSettings, DEFAULT_MODULES } from '../state-manager.js';
-import { BLOCK_ORDER } from '../constants.js';
+import { BLOCK_ORDER } from '../module-registry.js';
 
 const EXPECTED_MEMO_MODULES = {
     character: true, party: true, combat: true, inventory: true,
