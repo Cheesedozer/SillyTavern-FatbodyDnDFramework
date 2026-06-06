@@ -128,16 +128,12 @@ async function getWorldInfoNamesSafe() {
         }
     } catch (_) {}
 
-    // 3. Fallback for older ST versions
-    try {
-        const r = await fetch('/api/worldinfo/get', { method: 'POST', headers: getRequestHeaders() });
-        if (r.ok) {
-            const j = await r.json();
-            if (typeof j === 'object' && j !== null && !j.error) {
-                Object.keys(j).forEach(n => namesSet.add(n));
-            }
-        }
-    } catch (_) {}
+    // NOTE: a former 3rd strategy probed POST /api/worldinfo/get with no body as a
+    // legacy fallback. In current SillyTavern that endpoint expects a { name } body
+    // and returns a single book's entries — not a name map — so the bodyless call
+    // returned 400 (Bad Request) and spammed the console on every chat-link load.
+    // Strategies 1 (frontend cache) + 2 (settings world_names) already cover
+    // discovery, so the broken probe was removed.
 
     return [...namesSet];
 }

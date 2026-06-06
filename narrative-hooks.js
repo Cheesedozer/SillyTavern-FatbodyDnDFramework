@@ -13,7 +13,7 @@
  */
 
 import { getSettings } from './state-manager.js';
-import { parseQuestsFromMemo, buildActiveLorebookContext } from './memo-processor.js';
+import { parseQuestsFromMemo, buildActiveLorebookContext, estimateTokens, budgetInjections, OUTPUT_HEADROOM_FRAC } from './memo-processor.js';
 import { runRouterPass, saveSceneToLorebook, scanAssistantOutputForKeywords } from './router.js';
 import { logTransaction } from './debug-viewer.js';
 
@@ -240,60 +240,65 @@ function stripMemoHtml(text) {
 
 export function installInterceptor() {
     globalThis.rpgTrackerInterceptor = async function (chat, contextSize, abort, type) {
-        const settings = getSettings();
-        // `paused` only suppresses automatic state tracker / lorebook runs (see onGenerationEnded).
-        // Do not skip this hook when paused: RNG queue, memo, and quest context must still inject
-        // into the outgoing user message or combat RNG breaks while updates are paused.
-        if (!settings.enabled) return;
+        // Fail open: any internal error must never break the outgoing generation.
+        try {
+            const settings = getSettings();
+            // `paused` only suppresses automatic state tracker / lorebook runs (see onGenerationEnded).
+            // Do not skip this hook when paused: RNG queue, memo, and quest context must still inject
+            // into the outgoing user message or combat RNG breaks while updates are paused.
+            if (!settings.enabled) return;
 
-        let idx = -1;
-        for (let i = chat.length - 1; i >= 0; i--) {
-            if (chat[i]['role'] === "user" || chat[i].is_user) { idx = i; break; }
-        }
-        if (idx === -1) return;
-
-        const msg = chat[idx];
-        const content = msg['content'] || msg.mes || '';
-        let injections = "";
-
-        if (settings.rngEnabled && !content.includes("[RNG_QUEUE v6.0_PROPER]")) {
-            const queue = makeRngQueue(RNG_QUEUE_LEN);
-            injections += buildRngBlock(queue);
-        }
-
-        if (settings.currentMemo && !content.includes("### STATE MEMO (DO NOT REPEAT)")) {
-            // Strip the JSON [QUESTS] block from the narrative context to save tokens and avoid redundancy
-            const memoText = stripMemoHtml(settings.currentMemo).replace(/\[QUESTS\][\s\S]*?\[\/QUESTS\]/gi, '').trim();
-            injections += `### STATE MEMO (DO NOT REPEAT)\n${memoText}\n\n`;
-        }
-
-        // Quest deadline check — fires before state model pass, deterministically
-        if (settings.modules?.quests) {
-            const memoQuests = parseQuestsFromMemo(settings.currentMemo);
-            if (memoQuests.length) {
-                const { checkQuestDeadlines, renderQuestsAsPlainText } = await import('./quests.js');
-                checkQuestDeadlines();
-
-                // Inject active quests as plain text into narrative context
-                const timeMatch = (settings.currentMemo || '').match(/\[TIME\]([\s\S]*?)\[\/TIME\]/i);
-                const currentTime = timeMatch ? timeMatch[1].split('\n').filter(Boolean)[0]?.trim() || '' : '';
-                // Re-parse after checkQuestDeadlines may have mutated the memo
-                const freshQuests = parseQuestsFromMemo(settings.currentMemo);
-                const questText = renderQuestsAsPlainText(freshQuests, currentTime);
-                if (questText) injections += questText;
+            let idx = -1;
+            for (let i = chat.length - 1; i >= 0; i--) {
+                if (chat[i]['role'] === "user" || chat[i].is_user) { idx = i; break; }
             }
-        }
+            if (idx === -1) return;
 
+            const msg = chat[idx];
+            const content = msg['content'] || msg.mes || '';
 
+            // ── Tier 0: RNG queue (tiny, combat-critical — never dropped) ──
+            let rngBlock = '';
+            if (settings.rngEnabled && !content.includes("[RNG_QUEUE v6.0_PROPER]")) {
+                rngBlock = buildRngBlock(makeRngQueue(RNG_QUEUE_LEN));
+            }
 
-        // Pre-generation keyword scan + same-turn lore injection.
-        // The PromptManager builds the prompt BEFORE this interceptor runs, so updating
-        // activeRouterKeys is always one turn late on that path.
-        // Fix: entries activated THIS scan are injected directly into the user message —
-        // the same pattern as state memo and quests — guaranteeing same-turn presence.
-        // Skipped when routerNativeKeywordActivation is enabled (native ST system handles keywords).
-        if (settings.routerEnabled && !settings.routerNativeKeywordActivation) {
-            if (content) {
+            // ── Tier 5: STATE MEMO (largest contributor — trimmed/dropped last) ──
+            let memoText = '';
+            if (settings.currentMemo && !content.includes("### STATE MEMO (DO NOT REPEAT)")) {
+                // Strip the JSON [QUESTS] block from the narrative context to save tokens and avoid redundancy
+                memoText = stripMemoHtml(settings.currentMemo).replace(/\[QUESTS\][\s\S]*?\[\/QUESTS\]/gi, '').trim();
+            }
+            const memoBlock = memoText ? `### STATE MEMO (DO NOT REPEAT)\n${memoText}\n\n` : '';
+
+            // ── Tier 1: quest deadline check + active quests ──
+            let questText = '';
+            // Quest deadline check — fires before state model pass, deterministically
+            if (settings.modules?.quests) {
+                const memoQuests = parseQuestsFromMemo(settings.currentMemo);
+                if (memoQuests.length) {
+                    const { checkQuestDeadlines, renderQuestsAsPlainText } = await import('./quests.js');
+                    checkQuestDeadlines();
+
+                    // Inject active quests as plain text into narrative context
+                    const timeMatch = (settings.currentMemo || '').match(/\[TIME\]([\s\S]*?)\[\/TIME\]/i);
+                    const currentTime = timeMatch ? timeMatch[1].split('\n').filter(Boolean)[0]?.trim() || '' : '';
+                    // Re-parse after checkQuestDeadlines may have mutated the memo
+                    const freshQuests = parseQuestsFromMemo(settings.currentMemo);
+                    questText = renderQuestsAsPlainText(freshQuests, currentTime) || '';
+                }
+            }
+
+            // ── Tiers 2-4: keyword pre-scan + same-turn / persistent / agent lore ──
+            // The PromptManager builds the prompt BEFORE this interceptor runs, so updating
+            // activeRouterKeys is always one turn late on that path.
+            // Fix: entries activated THIS scan are injected directly into the user message —
+            // the same pattern as state memo and quests — guaranteeing same-turn presence.
+            // Skipped when routerNativeKeywordActivation is enabled (native ST system handles keywords).
+            let keywordLore = '';   // tier 2: newly activated this turn
+            let agentLore = '';     // tier 3: agent/direct-command owned
+            let persistentLore = '';// tier 4: previously keyword-activated, re-injected
+            if (settings.routerEnabled && !settings.routerNativeKeywordActivation && content) {
                 const t0 = performance.now().toFixed(1);
                 console.group(`[RPG|INTERCEPT] rpgTrackerInterceptor keyword pre-scan @ ${t0}ms`);
                 console.log('activeRouterKeys BEFORE scan:', JSON.stringify(settings.activeRouterKeys || []));
@@ -306,7 +311,7 @@ export function installInterceptor() {
                     try {
                         const loreBlock = await buildActiveLorebookContext(triggered);
                         if (loreBlock) {
-                            injections += `\n<font color="#d4a028">## NEWLY ACTIVATED LORE (KEYWORD MATCH)</font>\n${loreBlock}\n`;
+                            keywordLore = `\n<font color="#d4a028">## NEWLY ACTIVATED LORE (KEYWORD MATCH)</font>\n${loreBlock}\n`;
                             console.log(`[RPG|INTERCEPT] Same-turn lore injected for ${triggered.length} entries.`);
                         }
 
@@ -328,7 +333,7 @@ export function installInterceptor() {
                     try {
                         const persistBlock = await buildActiveLorebookContext(persistent);
                         if (persistBlock) {
-                            injections += `\n<font color="#d4a028">## ACTIVE LORE (KEYWORD)</font>\n${persistBlock}\n`;
+                            persistentLore = `\n<font color="#d4a028">## ACTIVE LORE (KEYWORD)</font>\n${persistBlock}\n`;
                         }
                     } catch (e) {
                         console.warn('[RPG Tracker] Persistent keyword lore re-injection failed:', e);
@@ -345,7 +350,7 @@ export function installInterceptor() {
                     try {
                         const agentBlock = await buildActiveLorebookContext(agentOwned);
                         if (agentBlock) {
-                            injections += `\n## ACTIVE LORE (AGENT)\n${agentBlock}\n`;
+                            agentLore = `\n## ACTIVE LORE (AGENT)\n${agentBlock}\n`;
                         }
                     } catch (e) {
                         console.warn('[RPG Tracker] Agent-owned lore injection failed:', e);
@@ -354,17 +359,41 @@ export function installInterceptor() {
 
                 console.groupEnd();
             }
-        }
 
-        if (!injections) return;
+            // ── Fit all injections into the context budget (output order preserved) ──
+            let chatTokens = 0;
+            for (const m of chat) chatTokens += estimateTokens(m.content || m.mes || '');
 
-        const originalContent = msg.content || msg.mes || '';
-        if (typeof msg.content === "string") msg.content = injections + msg.content;
-        else if (typeof msg.mes === "string") msg.mes = injections + msg.mes;
+            const { injections, dropped, trimmed } = budgetInjections({
+                contextSize,
+                chatTokens,
+                items: [
+                    { name: 'RNG',             tier: 0, text: rngBlock },
+                    { name: 'STATE MEMO',      tier: 5, text: memoBlock, trimmable: true },
+                    { name: 'quests',          tier: 1, text: questText },
+                    { name: 'keyword lore',    tier: 2, text: keywordLore },
+                    { name: 'persistent lore', tier: 4, text: persistentLore },
+                    { name: 'agent lore',      tier: 3, text: agentLore },
+                ],
+            });
 
-        if (settings.debugMode) {
-            console.log("[Fatbody Framework] Injections pushed to request.");
-            logTransaction('Main Chat', [{ role: 'user', content: injections + originalContent }]);
+            if (dropped.length || trimmed) {
+                const reserved = Math.ceil(contextSize * OUTPUT_HEADROOM_FRAC);
+                console.warn(`[RPG|BUDGET] context=${contextSize} chat=${chatTokens} reserved≈${reserved} dropped=[${dropped.join(', ')}] memoTrimmed=${trimmed}`);
+            }
+
+            if (!injections) return;
+
+            const originalContent = msg.content || msg.mes || '';
+            if (typeof msg.content === "string") msg.content = injections + msg.content;
+            else if (typeof msg.mes === "string") msg.mes = injections + msg.mes;
+
+            if (settings.debugMode) {
+                console.log("[Fatbody Framework] Injections pushed to request.");
+                logTransaction('Main Chat', [{ role: 'user', content: injections + originalContent }]);
+            }
+        } catch (e) {
+            console.error('[RPG Tracker] Interceptor failed open (no injection applied):', e);
         }
     };
 }

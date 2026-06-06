@@ -716,20 +716,40 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
 
         refreshOrderList();
         syncMemoView();
-        
-        // Refresh Lorebook Agent UI
-        if (typeof RT.renderRouterUI === 'function') {
-            RT.renderRouterUI();
-        }
-        void RT.refreshAgentManifest().catch(() => {});
 
-        // Patch any managed entries that don't yet have disable:true so ST's
-        // native keyword scanner cannot inject them on user-message send.
-        if (s.routerEnabled) {
-            disableManagedEntries().catch(e => console.warn('[RPG Tracker] disableManagedEntries on chat change failed:', e));
-        }
-
+        // Router/worldinfo side-effects (manifest refresh, entry disabling) are NOT
+        // run here — they do network I/O and must not block the synchronous restore.
+        // Callers invoke applyChatStateSideEffects() after the restore instead.
         return true;
+    }
+
+    /** Guards against stacking concurrent manifest refreshes on rapid chat switches. */
+    let _chatStateSideEffectsPending = false;
+
+    /**
+     * Deferred, non-blocking side-effects that should follow a chat-state restore:
+     * refresh the Lorebook Agent UI, and (only when the Agent is enabled) refresh
+     * the agent manifest and re-disable managed lorebook entries. Split out of
+     * loadChatState so state restore stays synchronous and free of network I/O.
+     */
+    function applyChatStateSideEffects() {
+        const s = getSettings();
+
+        // UI refresh is cheap and DOM-only — run it immediately.
+        if (typeof RT.renderRouterUI === 'function') RT.renderRouterUI();
+
+        if (!s.routerEnabled) return;
+        if (_chatStateSideEffectsPending) return;
+        _chatStateSideEffectsPending = true;
+
+        // Defer the network work off the critical path so chat switches stay snappy.
+        setTimeout(() => {
+            _chatStateSideEffectsPending = false;
+            void RT.refreshAgentManifest().catch(() => {});
+            // Patch any managed entries that don't yet have disable:true so ST's
+            // native keyword scanner cannot inject them on user-message send.
+            disableManagedEntries().catch(e => console.warn('[RPG Tracker] disableManagedEntries (deferred) failed:', e));
+        }, 0);
     }
 
     /**
@@ -944,12 +964,9 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
 
             updateUIMemo('');
             refreshRenderedView();
-            if (typeof RT.renderRouterUI === 'function') {
-                RT.renderRouterUI();
-            }
-            void RT.refreshAgentManifest().catch(() => {});
         }
 
+        applyChatStateSideEffects();
         updateChatLinkUI();
     }
 
@@ -2114,6 +2131,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                 s.chatLinkEnabled = turningOn;
                 saveSettings();
                 updateChatLinkUI();
+                applyChatStateSideEffects();
             });
         }
 
@@ -4281,6 +4299,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                         const found = loadChatState(RT.currentChatId);
                         if (!found) saveChatState(RT.currentChatId);
                     }
+                    applyChatStateSideEffects();
                 }
             });
 
