@@ -165,7 +165,7 @@ On combat start: declare all previously unknown NPC stats (AC, Saves, HP, Attack
 
 GENERAL COMBAT FLOW:
 - Simulate all actions for every NPC participant each round.
-- State remaining HP after every damage or healing event.
+- After every damage or healing event, state the affected creature's new current/max HP (e.g. "Goblin: 4/12 HP") so the tracker stays accurate.
 - Expire buffs/debuffs after appropriate duration. Explicitly state initial duration in turns. Examples: Mage Armor (+3 AC, 8h 0m) or Heroism (+5 Temp HP, 10 turns) or Exhaustion (Disadvantage on Ability Checks, until Long Rest)
 
 DAMAGE LOGIC:
@@ -304,7 +304,7 @@ CHARACTER VOICE:
 
 <end_of_output_footer>
 END OF EACH OUTPUT (required):
-*(Status: [HP]) | (XP: [current]/[next level]) | (Location: [Main, Sub])*
+*(Status: [current/max HP]) | (XP: [current]/[next level]) | (Location: [Main, Sub])*
 *Level [X] | [HH:MM AM/PM], Day [X]*
 </end_of_output_footer>
 
@@ -328,6 +328,7 @@ Declare their COMBAT PROFILE immediately:
 
 <state_memo>
 - ## TRACKER STATE 0 (Current) is passed on every turn; its mechanical data is absolute law.
+- Name spells by their exact canonical name with no trailing parentheticals (write "Hex", not "Hex (concentration)"); note concentration or duration in the surrounding text.
 - Ignore any formatting data such as ((PLS)).
 </state_memo>
 
@@ -378,7 +379,7 @@ On combat start: declare all previously unknown NPC stats (AC, Saves, HP, Attack
 
 GENERAL COMBAT FLOW:
 - Simulate all actions for every NPC participant each round.
-- State remaining HP after every damage or healing event.
+- After every damage or healing event, state the affected creature's new current/max HP (e.g. "Goblin: 4/12 HP") so the tracker stays accurate.
 - Expire buffs/debuffs after appropriate duration. Explicitly state initial duration in turns. Examples: Mage Armor (+3 AC, 8h 0m) or Heroism (+5 Temp HP, 10 turns) or Exhaustion (Disadvantage on Ability Checks, until Long Rest)
 
 DAMAGE LOGIC:
@@ -517,7 +518,7 @@ CHARACTER VOICE:
 
 <end_of_output_footer>
 END OF EACH OUTPUT (required):
-*(Status: [HP]) | (XP: [current]/[next level]) | (Vibe: [X])*
+*(Status: [current/max HP]) | (XP: [current]/[next level]) | (Vibe: [X])*
 *Level [X] | [HH:MM AM/PM], Day [X]*
 </end_of_output_footer>
 
@@ -541,6 +542,7 @@ Declare their COMBAT PROFILE immediately:
 
 <state_memo>
 - ## TRACKER STATE 0 (Current) is passed on every turn; its mechanical data is absolute law.
+- Name spells by their exact canonical name with no trailing parentheticals (write "Hex", not "Hex (concentration)"); note concentration or duration in the surrounding text.
 - Ignore any formatting data such as ((PLS)).
 </state_memo>
 
