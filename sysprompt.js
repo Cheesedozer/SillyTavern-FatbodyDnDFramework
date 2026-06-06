@@ -20,6 +20,10 @@ let _autoApplyTimer = null;
 
 export async function autoApplySysprompt() {
     const s = getSettings();
+    // Master switch: never (re)write the Main prompt box while the extension is
+    // disabled, so a disabled Fatbody leaves no D&D framing behind (otherwise the
+    // model keeps running the level/XP system and defaults the character to Level 1).
+    if (!s.enabled) return;
     if (s.customSysprompt) return;
     // Suite Mode: the Megumin Suite owns the Main prompt and injects Fatbody mechanics via its
     // [[FATBODY]] block, so do NOT overwrite the Main prompt box here.
