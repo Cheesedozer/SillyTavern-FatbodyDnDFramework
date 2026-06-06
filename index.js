@@ -766,7 +766,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         if (typeof setExtensionPrompt !== 'function') return;
 
         const s = getSettings();
-        if (!s.routerEnabled || !s.activeRouterKeys?.length) {
+        if (!s.enabled || !s.routerEnabled || !s.activeRouterKeys?.length) {
             setExtensionPrompt('rpg_tracker_lore', '', 0, 0); // Clear if disabled
             return;
         }
@@ -797,7 +797,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                 const t = performance.now().toFixed(1);
                 console.group(`[RPG|LORE-INJECT] promptManagerInterceptor fired @ ${t}ms`);
                 console.log('activeRouterKeys at inject time:', JSON.stringify(s.activeRouterKeys || []));
-                if (!s.routerEnabled || !s.activeRouterKeys?.length) {
+                if (!s.enabled || !s.routerEnabled || !s.activeRouterKeys?.length) {
                     console.log('→ Skipped (disabled or empty)');
                     console.groupEnd();
                     return;
@@ -4247,10 +4247,32 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                 }
             }
 
-            $('#rpg_tracker_enabled').prop('checked', settings.enabled).on('change', function () {
+            $('#rpg_tracker_enabled').prop('checked', settings.enabled).on('change', async function () {
                 settings.enabled = !!$(this).prop('checked');
                 saveSettings();
                 updatePanelStatus();
+
+                if (settings.enabled) {
+                    // Re-apply Fatbody's footprint (sysprompt write is gated on enabled).
+                    await autoApplySysprompt();
+                    await refreshExtensionPrompt();
+                } else {
+                    // True off: remove the D&D sysprompt Fatbody wrote into the Main prompt
+                    // box. Only touch it when Fatbody actually owns it (not in Suite/Custom
+                    // modes, where Megumin or the user owns the box). Backed up so it's
+                    // reversible; re-enabling rewrites it via autoApplySysprompt() anyway.
+                    if (!settings.suiteMode && !settings.customSysprompt) {
+                        const box = /** @type {HTMLTextAreaElement|null} */ (document.getElementById('main_prompt_quick_edit_textarea'));
+                        if (box) {
+                            settings.mainPromptBackup = box.value;
+                            saveSettings();
+                            box.value = '';
+                            box.dispatchEvent(new Event('blur', { bubbles: true }));
+                        }
+                    }
+                    await refreshExtensionPrompt();   // clears router lore (now also gated on enabled)
+                    toastr['info']('Fatbody disabled — D&D system prompt removed from the Main prompt box.', 'RPG Tracker');
+                }
             });
 
             $('#rpg_tracker_debug').prop('checked', settings.debugMode).on('change', function () {

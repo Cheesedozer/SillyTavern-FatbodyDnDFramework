@@ -64,6 +64,7 @@ function cloneDefault(v) {
 function buildDefaultsTemplate() {
     return {
         currentMemo: "",
+        mainPromptBackup: "",
         prevMemo1: "",
         prevMemo2: "",
         memoHistory: [],
