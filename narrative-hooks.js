@@ -13,7 +13,7 @@
  */
 
 import { getSettings, getActivationMode } from './state-manager.js';
-import { parseQuestsFromMemo, buildActiveLorebookContext, estimateTokens, budgetInjections, OUTPUT_HEADROOM_FRAC } from './memo-processor.js';
+import { parseQuestsFromMemo, buildActiveLorebookContext, estimateTokens, estimateExternalPromptTokens, budgetInjections, OUTPUT_HEADROOM_FRAC } from './memo-processor.js';
 import { runRouterPass, saveSceneToLorebook, scanAssistantOutputForKeywords } from './router.js';
 import { logTransaction } from './debug-viewer.js';
 
@@ -366,9 +366,17 @@ export function installInterceptor() {
             let chatTokens = 0;
             for (const m of chat) chatTokens += estimateTokens(m.content || m.mes || '');
 
+            // Other extensions' injections (VectFox memories, router lore, etc.) occupy
+            // context too: registered extension prompts are measurable here; injectors
+            // that run after the interceptor (Megumin Suite) are covered by the
+            // user-configured external reserve.
+            const externalTokens = estimateExternalPromptTokens(SillyTavern.getContext())
+                + (Number(settings.externalReserveTokens) > 0 ? Number(settings.externalReserveTokens) : 0);
+
             const { injections, dropped, trimmed } = budgetInjections({
                 contextSize,
                 chatTokens,
+                externalTokens,
                 items: [
                     { name: 'RNG',             tier: 0, text: rngBlock },
                     { name: 'STATE MEMO',      tier: 5, text: memoBlock, trimmable: true },
@@ -381,7 +389,7 @@ export function installInterceptor() {
 
             if (dropped.length || trimmed) {
                 const reserved = Math.ceil(contextSize * OUTPUT_HEADROOM_FRAC);
-                console.warn(`[RPG|BUDGET] context=${contextSize} chat=${chatTokens} reserved≈${reserved} dropped=[${dropped.join(', ')}] memoTrimmed=${trimmed}`);
+                console.warn(`[RPG|BUDGET] context=${contextSize} chat=${chatTokens} external≈${externalTokens} reserved≈${reserved} dropped=[${dropped.join(', ')}] memoTrimmed=${trimmed}`);
             }
 
             if (!injections) return;

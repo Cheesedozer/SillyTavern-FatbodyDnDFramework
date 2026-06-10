@@ -112,6 +112,37 @@ export const OUTPUT_HEADROOM_FRAC = 0.20;
 const MIN_MEMO_TOKENS = 200;
 
 /**
+ * Estimates the token footprint of OTHER extensions' registered extension
+ * prompts (plus Fatbody's own 'rpg_tracker_lore'/'rpg_tracker_rules' — they
+ * consume context too). ST's prompt builder appends every entry in the
+ * extension-prompt registry, none of which the interceptor's chatTokens count
+ * sees, so without this the injection budget over-promises (e.g. VectFox's
+ * retrieved memories can be several thousand tokens).
+ *
+ * Registry availability varies by ST build — degrades to 0 when absent.
+ * Extensions that inject after the interceptor runs (Megumin Suite at
+ * CHAT_COMPLETION_PROMPT_READY) are invisible here; the user-configurable
+ * `externalReserveTokens` setting covers those.
+ *
+ * @param {any} ctx - SillyTavern.getContext()
+ * @returns {number} estimated tokens
+ */
+export function estimateExternalPromptTokens(ctx) {
+    try {
+        const registry = ctx?.extensionPrompts;
+        if (!registry || typeof registry !== 'object') return 0;
+        let total = 0;
+        for (const entry of Object.values(registry)) {
+            const value = typeof entry === 'string' ? entry : entry?.value;
+            if (typeof value === 'string' && value) total += estimateTokens(value);
+        }
+        return total;
+    } catch (_) {
+        return 0;
+    }
+}
+
+/**
  * Fits the priority-ordered injection items into the remaining context budget.
  * Items are emitted in their original array order, but inclusion is decided by
  * `tier` (lower = kept first). Tier 0 (RNG) is always kept; the trimmable memo
@@ -120,10 +151,12 @@ const MIN_MEMO_TOKENS = 200;
  * @param {object} p
  * @param {number} p.contextSize  max context window in tokens (from ST interceptor)
  * @param {number} p.chatTokens   estimated tokens already in the chat array
+ * @param {number} [p.externalTokens=0]  estimated tokens of other extensions' injections
+ *                 (extension-prompt registry + user-configured reserve)
  * @param {{name:string,text:string,tier:number,trimmable?:boolean}[]} p.items  output-ordered
  * @returns {{injections:string, dropped:string[], trimmed:boolean}}
  */
-export function budgetInjections({ contextSize, chatTokens, items }) {
+export function budgetInjections({ contextSize, chatTokens, externalTokens = 0, items }) {
     const dropped = [];
     let trimmed = false;
 
@@ -133,7 +166,7 @@ export function budgetInjections({ contextSize, chatTokens, items }) {
     }
 
     const reserved = Math.ceil(contextSize * OUTPUT_HEADROOM_FRAC);
-    let budget = contextSize - reserved - chatTokens;
+    let budget = contextSize - reserved - chatTokens - (externalTokens > 0 ? externalTokens : 0);
 
     // Decide inclusion in priority order; remember kept text by original index.
     const order = items

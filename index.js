@@ -4559,6 +4559,13 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                     saveSettings();
                 });
             }
+            const externalReserveInput = $('#rpg_tracker_external_reserve');
+            if (externalReserveInput.length) {
+                externalReserveInput.val(settings.externalReserveTokens || 0).on('input', function () {
+                    settings.externalReserveTokens = parseInt(/** @type {string} */($(this).val())) || 0;
+                    saveSettings();
+                });
+            }
             const historyCountInput = $('#rpg_tracker_history_count');
             if (historyCountInput.length) {
                 historyCountInput.val(settings.trackerHistoryCount !== undefined ? settings.trackerHistoryCount : 1).on('input', function () {

@@ -78,6 +78,10 @@ function buildDefaultsTemplate() {
         completionPresetId: "",
         renderedViewActive: true,
         maxTokens: 0,
+        // Token reserve for extensions that inject AFTER the interceptor runs
+        // (e.g. Megumin Suite at CHAT_COMPLETION_PROMPT_READY) and are therefore
+        // invisible to the injection budget. ~1000-2000 recommended with Megumin.
+        externalReserveTokens: 0,
         fontSize: 14,
         agentFontSize: 13,
         customSysprompt: false,

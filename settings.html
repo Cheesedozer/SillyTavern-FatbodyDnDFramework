@@ -269,6 +269,10 @@
                         <input id="rpg_tracker_lookback_messages" type="text" inputmode="numeric" pattern="[0-9]*" class="text_pole" value="2" />
                         <label>History Context (States)</label>
                         <input id="rpg_tracker_history_count" type="text" inputmode="numeric" pattern="[0-9]*" class="text_pole" value="1" />
+                        <label>External Token Reserve
+                            <i class="fa-solid fa-circle-question interactable" title="Tokens held back from Fatbody's injection budget for OTHER extensions that add prompt content after Fatbody runs (e.g. Megumin Suite). Set ~1000-2000 when running Megumin Suite; leave 0 otherwise. Extensions that register their prompts normally (e.g. VectFox) are measured automatically and don't need this."></i>
+                        </label>
+                        <input id="rpg_tracker_external_reserve" type="text" inputmode="numeric" pattern="[0-9]*" class="text_pole" value="0" />
                     </div>
                 </div>
             </div>
