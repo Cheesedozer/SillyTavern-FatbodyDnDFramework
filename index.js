@@ -16,6 +16,7 @@ import { buildRowTypeSelect, openCustomFieldEditor, openPromptEditor, exportModu
 import { FOLDER_NAME } from './env.js';
 import { autoApplySysprompt, applyAdditiveSysprompt, applySysprompt, scheduleAutoApply, buildSysprompt } from './sysprompt.js';
 import { openFoundationWizard } from './foundation-wizard.js';
+import { openSkillTreeTab, onSkillTreeChatChanged } from './skilltree-bridge.js';
 import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight, makeDraggable, makeResizableTR, setupResizeObserver, setupDeltaResize } from './panel-geometry.js';
 
     // FOLDER_NAME imported from env.js
@@ -1070,6 +1071,9 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
     // activated. 'managed' = Fatbody injects manually (VectFox must skip our books);
     // 'native' = ST keyword scanner; 'semantic' = VectFox similarity search owns surfacing.
     globalThis._rpgGetActivationMode = () => getActivationMode(getSettings());
+    // Rendered-view refresh hook for modules that mutate the memo outside the
+    // normal state pass (skilltree-bridge after skill purchases).
+    globalThis._rpgRefreshRenderedView = () => refreshRenderedView();
 
     // [runStateModelPass/handleLevelUp/sendDirectPrompt moved to state-pass.js]
 
@@ -4361,6 +4365,8 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             // prompt must follow the active chat. Each path no-ops/clears when inactive.
             void applySysprompt();
             eventSource.on(event_types.CHAT_CHANGED, () => void applySysprompt());
+            // Re-anchor the Skill Tree bridge when the active chat changes.
+            eventSource.on(event_types.CHAT_CHANGED, () => onSkillTreeChatChanged(ctx.getCurrentChatId?.() || null));
 
             // ─── Chat Link ───
             eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
@@ -4974,6 +4980,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             });
 
             $('#rpg_tracker_btn_foundation_wizard').on('click', () => openFoundationWizard());
+            $('#rpg_tracker_btn_skill_tree').on('click', () => openSkillTreeTab());
 
             $('#rpg_tracker_btn_update_sysprompt').on('click', async function () {
                 // Additive delivery: the Main prompt box is off-limits — refresh the
