@@ -350,6 +350,34 @@ export async function commitFoundation(chatId, foundation, prefix) {
 }
 
 /**
+ * Builds the [CHARACTER] module prompt for a Modern campaign from its
+ * foundation: the state model must keep Level and every resource pool line
+ * alive across passes (the stock prompt is D&D-shaped and would drop them).
+ * Pure (node-testable).
+ *
+ * @param {object} foundation
+ * @returns {string}
+ */
+export function buildModernCharacterPrompt(foundation) {
+    const resources = foundation?.POWER_SYSTEM?.resources || [];
+    const resourceLines = resources.map(r => `${r.name}: current/max`).join('\n');
+    const resourceNames = resources.map(r => r.name).join(', ');
+    return `Main character's core stats. Use this format:
+[CHARACTER]
+{{user}} (Class): current/max HP
+Level: N
+${resourceLines}
+Attr: STR X, DEX X, CON X, INT X, WIS X, CHA X
+Traits: Trait1 (effect), Trait2 (effect)
+Status: Effect (duration Xh Xm)
+[/CHARACTER]
+
+Keep the Level line and EVERY resource pool line (${resourceNames}) on every update, even when unchanged. This is NOT a D&D character: no spell slots, no AC, no saves, no hit dice.
+
+Upon LEVEL UP, incorporate attribute changes.`;
+}
+
+/**
  * Commits a validated foundation and performs first-commit campaign setup:
  * seeds the progression state, enables the [SKILLS] memo module, and clears
  * the onboarding flow flag. Shared by the Foundation Builder's Commit button
@@ -391,6 +419,11 @@ export async function commitFoundationAndInit(chatId, foundationDoc) {
     const live = getSettings();
     if (!live.modules) live.modules = {};
     live.modules.skills = true;
+    // Swap the [CHARACTER] module prompt to a foundation-aware one so the
+    // state model maintains Level and resource pools (`stockPrompts` is also
+    // snapshotted per chat — D&D chats keep the stock D&D prompt).
+    if (!live.stockPrompts) live.stockPrompts = {};
+    live.stockPrompts.character = buildModernCharacterPrompt(stamped);
     SillyTavern.getContext().saveSettingsDebounced();
 
     toastr['success'](`Foundation v${stamped.foundationVersion} committed — campaign locked to Modern mode.`, 'Foundation Builder');

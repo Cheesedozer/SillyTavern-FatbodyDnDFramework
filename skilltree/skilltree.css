@@ -145,7 +145,11 @@ html, body {
     justify-content: center;
     text-align: center;
     opacity: 0.65;
+    /* Overlay sits over the whole canvas — it must never swallow node clicks
+       or pan/zoom, and the author display rule must yield to [hidden]. */
+    pointer-events: none;
 }
+#st-empty[hidden] { display: none; }
 #st-banner {
     position: fixed;
     bottom: 14px;

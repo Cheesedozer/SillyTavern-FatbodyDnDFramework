@@ -12,7 +12,9 @@ import {
     extractFoundationJson,
     foundationPlaceholders,
     renderFoundationProse,
+    buildModernCharacterPrompt,
 } from '../foundation.js';
+import { defaultFoundation } from '../default-foundation.js';
 
 /** Minimal but complete valid foundation fixture. */
 function validFoundation() {
@@ -175,4 +177,14 @@ test('renderFoundationProse produces a stable full document', () => {
         assert.ok(doc.includes(heading), `${heading} present`);
     }
     assert.ok(doc.includes('Memory Contractor'), 'job seeds listed');
+});
+
+test('buildModernCharacterPrompt lists Level and every foundation resource pool', () => {
+    const p = buildModernCharacterPrompt(defaultFoundation());
+    assert.ok(p.includes('Level: N'), 'Level line present');
+    for (const name of ['Stamina', 'Mana', 'Focus']) {
+        assert.ok(p.includes(`${name}: current/max`), `${name} pool line present`);
+        assert.ok(p.includes(name), `${name} named in the keep-alive instruction`);
+    }
+    assert.ok(/no spell slots/i.test(p), 'D&D constructs explicitly excluded');
 });

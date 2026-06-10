@@ -20,7 +20,7 @@ import { commitFoundationAndInit } from './foundation.js';
 import { defaultFoundation } from './default-foundation.js';
 import { selectClassAndForge } from './skill-forge.js';
 import { initSettingsOverlay, openSettingsOverlay } from './settings-overlay.js';
-import { openSkillTreeTab, onSkillTreeChatChanged } from './skilltree-bridge.js';
+import { openSkillTreeTab, onSkillTreeChatChanged, pushSkillTreeState } from './skilltree-bridge.js';
 import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight, makeDraggable, makeResizableTR, setupResizeObserver, setupDeltaResize } from './panel-geometry.js';
 
     // FOLDER_NAME imported from env.js
@@ -1266,6 +1266,9 @@ ${resourceList}
         try {
             setStatus(`Forging ${cls.name}'s starting skill tiers… (this takes a minute)`);
             const { nodeCount } = await selectClassAndForge(chatId, classId, setStatus);
+            // An already-open Skill Tree tab only pulls state on hello/apply —
+            // push the freshly forged constellation to it explicitly.
+            pushSkillTreeState(chatId);
             if (nodeCount) {
                 toastr['success'](`${cls.name} locked in — ${nodeCount} skills forged. Open the Skill Tree (🌳) to spend your points!`, 'Fatbody Framework', { timeOut: 10000 });
             }

@@ -449,6 +449,11 @@ export async function ensureTierPregenerated(chatId) {
         prog.tree.tiersGenerated[target.key] = target.tier;
         SillyTavern.getContext().saveSettingsDebounced();
         console.log(`[RPG Tracker] Skill Forge: pre-generated tier ${target.tier} of "${target.key}" (${nodes.length} nodes).`);
+        // Dynamic import keeps this module's node-test import graph DOM-free.
+        try {
+            const { pushSkillTreeState } = await import('./skilltree-bridge.js');
+            pushSkillTreeState(chatId);
+        } catch (_) { /* tab refresh is best-effort */ }
         return true;
     } catch (e) {
         console.warn('[RPG Tracker] Skill Forge background pass failed:', e.message || e);

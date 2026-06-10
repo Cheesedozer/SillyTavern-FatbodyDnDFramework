@@ -214,6 +214,16 @@ export function openSkillTreeTab() {
     setTimeout(() => postState(chatId), 400);
 }
 
+/**
+ * Pushes fresh state to an already-open tab after an out-of-band progression
+ * change (class forge, background tier pre-generation). No-op when no tab
+ * channel is installed or it belongs to another chat.
+ * @param {string} chatId
+ */
+export function pushSkillTreeState(chatId) {
+    if (_channel && _channelChatId === chatId) postState(chatId);
+}
+
 /** Re-anchors the bridge when the active chat changes while a tab is open. */
 export function onSkillTreeChatChanged(newChatId) {
     if (_channel && newChatId && _channelChatId !== newChatId && getCampaignMode(newChatId) === 'modern') {

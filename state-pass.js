@@ -343,7 +343,13 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                     cleanedOutput = result.replace(/<\/?memo>/gi, '').trim();
                 }
 
-                const merged = mergeMemo(sanitizedCurrent, cleanedOutput);
+                let merged = mergeMemo(sanitizedCurrent, cleanedOutput);
+
+                // Modern mode: normalize/create the [XP] block from engine truth,
+                // exactly like runStateModelPass — without this, initial character
+                // creation (which goes through this direct path) never gets the
+                // Level/XP line. No-op for D&D chats.
+                merged = applyModernProgression(settings, merged);
 
                 if (merged !== sanitizedCurrent) {
                     const delta = computeDelta(sanitizedCurrent, merged);

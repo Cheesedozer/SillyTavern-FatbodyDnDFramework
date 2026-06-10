@@ -2,6 +2,19 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.2.1] - 2026-06-10
+
+**Skill tree unblocked & Modern HUD stats.** Fixes the invisible click-blocker over the skill tree and makes Level, Stamina, Mana (and any custom foundation resource) visible in the tracker right after Modern character creation.
+
+### Fixed
+- **Skill tree "No skills forged yet" overlay**: a CSS `display` rule defeated the `[hidden]` attribute, so the overlay stayed visible over a fully forged constellation and — spanning the whole canvas — swallowed every click, making nodes unselectable. The overlay now hides properly and is click-through even when shown.
+- **Stale skill tree tab**: a tab left open during class selection or background tier pre-generation now receives the freshly forged nodes immediately instead of waiting for a reopen.
+- **Level missing after Modern character creation**: the direct-prompt path used for initial setup skipped the modern progression step, so the `[XP]` block (level + XP bar) was never written. It now runs the same engine normalization as regular state passes.
+
+### Added
+- **Resource pool bars**: `[CHARACTER]` lines matching a foundation resource (Stamina/Mana/Focus by default, any name in custom foundations) render as recolorable bars with distinct default colors, like HP.
+- **Foundation-aware character prompt**: committing a foundation swaps the per-chat `[CHARACTER]` module prompt to one built from the foundation's resources, so the state model keeps Level and every pool line alive across turns (D&D chats keep the stock prompt).
+
 ## [3.2.0] - 2026-06-10
 
 **Onboarding flow.** New chats now start from a mode picker in the Stat Tracking HUD, and Modern campaign setup lives in the HUD instead of the Foundation Builder modal.
