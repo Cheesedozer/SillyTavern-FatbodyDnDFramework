@@ -24,6 +24,7 @@ import {
     renderFoundationProse,
     commitFoundation,
 } from './foundation.js';
+import { selectClassAndForge } from './skill-forge.js';
 
 const MAX_GENERATION_RETRIES = 3;
 
@@ -306,10 +307,49 @@ export function openFoundationWizard() {
             SillyTavern.getContext().saveSettingsDebounced();
 
             toastr['success'](`Foundation v${stamped.foundationVersion} committed — campaign locked to Modern mode.`, 'Foundation Builder');
-            close();
+
+            // Class selection (first commit only — class is locked afterwards).
+            if (!st.progression.classId && (stamped.CLASS_ROSTER || []).length) {
+                showClassSelection(stamped);
+            } else {
+                close();
+            }
         } catch (e) {
             statusEl.textContent = `Commit failed: ${e.message || e}`;
             setBusy(false);
         }
     });
+
+    /** Post-commit step: pick a starting class; forges tiers 1–2 (setup time). */
+    function showClassSelection(foundation) {
+        commitRow.style.display = 'none';
+        previewEl.style.display = 'block';
+        previewEl.innerHTML = '';
+        statusEl.textContent = 'Choose your starting class — this is locked for the campaign.';
+
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'display:flex;flex-direction:column;gap:10px;';
+        for (const cls of foundation.CLASS_ROSTER) {
+            const btn = document.createElement('button');
+            btn.className = 'menu_button interactable';
+            btn.style.cssText = 'text-align:left;padding:10px 14px;white-space:normal;';
+            btn.innerHTML = `<b>${cls.name}</b> <span style="opacity:0.7;">(${cls.role})</span><br><span style="font-size:0.85em;opacity:0.85;">${cls.fantasy}</span>`;
+            btn.addEventListener('click', async () => {
+                if (busy) return;
+                setBusy(true, `Forging ${cls.name}'s starting skill tiers… (this takes a minute)`);
+                wrap.querySelectorAll('button').forEach(b => { b.disabled = true; });
+                try {
+                    const { nodeCount } = await selectClassAndForge(chatId, cls.id, (m) => { statusEl.textContent = m; });
+                    toastr['success'](`${cls.name} locked in — ${nodeCount} skills forged. Open the Skill Tree (🌳) to spend your points!`, 'Foundation Builder', { timeOut: 10000 });
+                    close();
+                } catch (e) {
+                    statusEl.textContent = `Forge failed: ${e.message || e}. Pick a class to retry.`;
+                    wrap.querySelectorAll('button').forEach(b => { b.disabled = false; });
+                    setBusy(false);
+                }
+            });
+            wrap.appendChild(btn);
+        }
+        previewEl.appendChild(wrap);
+    }
 }

@@ -94,9 +94,18 @@ Also recommended: disable the Suite's **NPC Bank** and **memory archiver** (they
 - **Semantic lore activation (v2.5.0 + VectFox 3.4.0):** set the Lorebook Agent's *Entry Activation* to **Semantic (VectFox)**. The agent keeps writing the campaign archive; VectFox's semantic World Info activation surfaces entries by similarity — a town's entry activates because the scene moved there, with no keyword matching and no constant-active entries. Vectorize the campaign books once (or just let Fatbody's write-notifications auto-index them); VectFox re-indexes automatically as the agent writes.
 - In the default *Managed* mode, VectFox automatically leaves Fatbody's campaign books alone — no configuration needed.
 
-## Don't Care About D&D?
+## Don't Care About D&D? Build Your Own RPG (v3.0)
 
-You can scrap the entire system prompt and all the default fields and track your own things completely. The D&D setup is just a plug & play system that works by default. 
+**Modern mode** turns Fatbody into a custom RPG engine. Click **🏗️ Foundation Builder** in the settings: an AI architect interviews you about your world (it also reads your character card, persona, and any documents you paste), then generates the campaign *foundation* — power system with resource pools, dice profile, 3–5 starting classes, FFXIV-style Jobs, skill taxonomy, currency, and lethality rules. Committing locks the chat to Modern mode:
+
+- **Levels 1–100** with a deterministic XP curve (the engine detects level-ups, not the model — no skipped or duplicated levels, ever).
+- **Skill points** (+2 per level, +4 bonus every 10th) spent in a **🌳 Skill Tree** that opens in its own browser tab: constellation layout, search, staged purchases, respec (free through level 10, currency-priced beyond).
+- **AI-forged skills, consistently narrated**: every skill carries a canonical descriptor the narrator must match forever — the fist-sized fireball you bought never inflates into a building-leveler. Active skills cost resources or cooldowns; passives bake into your stats. New tiers generate in the background as you level, never during a turn.
+- **Standard lethality**: 0 HP means Downed, not dead — but run out the rescue window and you collect permanent Injuries (3 strikes before true death).
+
+Existing chats are untouched (they simply *are* D&D campaigns); the mode is locked per campaign at creation.
+
+Or go fully manual: scrap the entire system prompt and all the default fields and track your own things completely. The D&D setup is just a plug & play system that works by default. 
 
 ## What Model to Use?
 Your primary narrator model must support **Tool Calling** for the Hybrid RNG system to work properly. 

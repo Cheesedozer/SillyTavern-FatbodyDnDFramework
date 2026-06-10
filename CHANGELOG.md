@@ -2,6 +2,19 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.0.0] - 2026-06-10
+
+**Custom RPG Progression.** Fatbody is no longer D&D-only: campaigns now choose between **D&D mode** (classic behavior, unchanged) and **Modern mode** — a user-defined RPG system with levels 1–100, AI-generated classes/skills constrained by a campaign "foundation", and a Path-of-Exile-style skill tree in its own browser tab. Existing chats migrate automatically as D&D campaigns; nothing changes for them. Modes are locked at campaign creation.
+
+### Added
+- **Foundation Builder (🏗️)**: an AI architect interviews you about your world (seeded with the character card, persona, and pasted documents), then generates a schema-validated campaign foundation — setting, power system (resource pools for active skills + dice profile + difficulty scale), progression rules (currency, respec), 3–5 starting classes, FFXIV-style Job rules, skill taxonomy, and lethality. Versioned in a `<prefix>_Foundation` lorebook; revisions never retcon acquired skills.
+- **Modern leveling engine** (deterministic, zero per-turn LLM cost): XP curve to level 100 owned by JS — the narrator awards XP inline as before, the engine detects threshold crossings, awards skill points (+2 per level, +4 bonus every 10th), and injects a level-up directive into the next turn. The narrator never sees a level table and can never skip or duplicate a level-up.
+- **Skill Forge**: the secondary model generates one skill tier per branch at a time, gated by a deterministic validator — power budget per tier, prereq/DAG checks, active-skill resource economy (no free spam), and a word-capped *canonical descriptor* per skill that the narrator must match forever (the fireball you bought is the fireball you get). Starting tiers forge at class selection; later tiers pre-forge in the background as you level. Jobs graft new branches onto your class tree.
+- **Skill Tree tab (🌳)**: a separate browser window (no SillyTavern slowdown) with a constellation layout, pan/zoom, search, staged allocations with Apply/Cancel, respec (free through level 10, currency-priced beyond — steep by level 45+), rarity-colored nodes, and tooltips showing each skill's exact costs and canonical descriptor. The SillyTavern tab keeps sole authority over your data; the tree degrades to read-only if the opener closes.
+- **[SKILLS] memo module**: acquired actives are injected with exact costs and descriptors (the consistency contract); the state extractor only tracks uses/cooldowns. Passive skills are baked into [CHARACTER] stats with `(P: Skill Name)` restoration anchors.
+- **Modern narrator sysprompt**: assembled from the foundation — generic check resolution with your dice profile, percent-bracket XP guidance, directive-driven level-ups, and the **Standard lethality** template (0 HP → Downed with a rescue window → Dying → up to 3 permanent Injuries → true death). Includes a no-tool-call fallback.
+- **Dice profiles**: the RNG queue composition follows the campaign (D&D keeps its exact d20+subdice format; Modern uses the foundation's dice). The waterproof DC-commit tool-call pattern is unchanged.
+
 ## [2.5.0] - 2026-06-10
 
 ### Added
