@@ -42,6 +42,31 @@
                             </button>
                         </div>
 
+                        <div style="display: flex; gap: 6px; margin-top: 8px;">
+                            <button id="rpg_tracker_btn_foundation_wizard" class="menu_button interactable" style="flex: 1; background: rgba(170, 85, 255, 0.15); border-color: #aa55ff;"
+                                title="Custom RPG Progression (Modern mode): an AI architect interviews you about your world, then generates the campaign foundation — power system, classes, skill taxonomy, lethality. Commits lock the chat to Modern mode (level 1-100, skill trees).">
+                                🏗️ Foundation Builder
+                            </button>
+                            <button id="rpg_tracker_btn_skill_tree" class="menu_button interactable" style="flex: 1; background: rgba(0, 200, 140, 0.12); border-color: #00c88c;"
+                                title="Open the Skill Tree in a separate browser tab (Modern campaigns). Spend skill points, plan builds, and respec without touching the chat window.">
+                                🌳 Skill Tree
+                            </button>
+                        </div>
+
+                        <div style="margin-top: 10px;">
+                            <small style="display: block; margin-bottom: 4px; font-weight: bold; opacity: 0.9;">Sysprompt Delivery
+                                <i class="fa-solid fa-circle-question interactable" title="Standalone: Fatbody writes the full D&amp;D system prompt (role + rules) into the Main prompt box. Additive: Fatbody never touches the Main prompt box — a rules-only prompt (no persona) is injected alongside whatever system prompt you or another extension (e.g. Megumin Suite engines) provide."></i>
+                            </small>
+                            <label class="checkbox_label">
+                                <input type="radio" name="rpg_tracker_sysprompt_delivery" value="standalone" />
+                                <span>Standalone (owns Main prompt)</span>
+                            </label>
+                            <label class="checkbox_label">
+                                <input type="radio" name="rpg_tracker_sysprompt_delivery" value="additive" />
+                                <span>Additive (rules only, injected)</span>
+                            </label>
+                        </div>
+
                         <label class="checkbox_label" style="margin-top: 10px;">
                             <input id="rpg_tracker_custom_sysprompt" type="checkbox" />
                             <span>Custom Sysprompt Mode</span>
@@ -255,6 +280,10 @@
                         <input id="rpg_tracker_lookback_messages" type="text" inputmode="numeric" pattern="[0-9]*" class="text_pole" value="2" />
                         <label>History Context (States)</label>
                         <input id="rpg_tracker_history_count" type="text" inputmode="numeric" pattern="[0-9]*" class="text_pole" value="1" />
+                        <label>External Token Reserve
+                            <i class="fa-solid fa-circle-question interactable" title="Tokens held back from Fatbody's injection budget for OTHER extensions that add prompt content after Fatbody runs (e.g. Megumin Suite). Set ~1000-2000 when running Megumin Suite; leave 0 otherwise. Extensions that register their prompts normally (e.g. VectFox) are measured automatically and don't need this."></i>
+                        </label>
+                        <input id="rpg_tracker_external_reserve" type="text" inputmode="numeric" pattern="[0-9]*" class="text_pole" value="0" />
                     </div>
                 </div>
             </div>

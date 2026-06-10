@@ -19,6 +19,7 @@ import { BLOCK_ORDER } from '../module-registry.js';
 const EXPECTED_MEMO_MODULES = {
     character: true, party: true, combat: true, inventory: true,
     abilities: true, spells: true, time: true, xp: true, quests: true,
+    skills: false,   // v3.0 Modern-mode module — opt-in per chat
 };
 const EXPECTED_BLOCK_ORDER_DEFAULT = ['COMBAT', 'CHARACTER', 'PARTY', 'INVENTORY', 'ABILITIES', 'SPELLS', 'XP', 'TIME'];
 
@@ -59,8 +60,8 @@ test('LINCHPIN: routerModules is deep-equal to but not aliased with DEFAULT_MODU
     assert.equal(DEFAULT_MODULES.npc.enabled, true, 'mutating settings must not mutate the hoisted default');
 });
 
-test('byte-equality guard: constants.BLOCK_ORDER literal is stable', () => {
-    assert.deepEqual(BLOCK_ORDER, ['COMBAT', 'CHARACTER', 'PARTY', 'INVENTORY', 'ABILITIES', 'SPELLS', 'XP', 'TIME', 'QUESTS']);
+test('byte-equality guard: BLOCK_ORDER is the historical literal + SKILLS (v3.0)', () => {
+    assert.deepEqual(BLOCK_ORDER, ['COMBAT', 'CHARACTER', 'PARTY', 'INVENTORY', 'ABILITIES', 'SPELLS', 'XP', 'TIME', 'QUESTS', 'SKILLS']);
 });
 
 test('byte-equality guard: settings.modules defaults are stable', () => {
@@ -111,4 +112,65 @@ test('reset-by-delete: getSettings backfills a deleted key with an independent c
     s2.modules.combat = false;
     setSettings({});
     assert.equal(getSettings().modules.combat, true);
+});
+
+// ── Router activation mode (v2.5.1) ───────────────────────────────────────────
+
+test('routerActivationMode defaults to managed; helper normalizes junk values', async () => {
+    const { getActivationMode } = await import('../state-manager.js');
+    setSettings({});
+    assert.equal(getActivationMode(getSettings()), 'managed');
+    setSettings({ routerActivationMode: 'semantic' });
+    assert.equal(getActivationMode(getSettings()), 'semantic');
+    setSettings({ routerActivationMode: 'bogus' });
+    assert.equal(getActivationMode(getSettings()), 'managed', 'unknown values fall back to managed');
+});
+
+test('migration: legacy routerNativeKeywordActivation=true becomes mode native, once', async () => {
+    const { getActivationMode } = await import('../state-manager.js');
+    setSettings({ routerNativeKeywordActivation: true });
+    const s = getSettings();
+    assert.equal(getActivationMode(s), 'native', 'legacy flag mapped to native mode');
+    assert.equal(s.routerNativeKeywordActivation, false, 'legacy flag consumed');
+
+    // User later switches to managed — re-reading settings must NOT force native back.
+    s.routerActivationMode = 'managed';
+    assert.equal(getActivationMode(getSettings()), 'managed', 'migration does not re-fire');
+});
+
+// ── v3.0 campaign mode plumbing ────────────────────────────────────────────────
+
+test('v2→v3 migration stamps campaignMode=dnd on existing chatStates, preserving everything else', async () => {
+    const { migrateCustomFields, getCampaignMode } = await import('../state-manager.js');
+    setSettings({
+        chatStates: {
+            'old-chat': { currentMemo: '[XP]Level: 5 | XP: 6,500/14,000[/XP]', memoHistory: [], campaignBooks: ['Eldoria_NPCs'] },
+            'modern-chat': { campaignMode: 'modern', currentMemo: '' },
+        },
+    });
+    migrateCustomFields();
+    const s = getSettings();
+    assert.equal(s.chatStates['old-chat'].campaignMode, 'dnd', 'legacy chat stamped dnd');
+    assert.equal(s.chatStates['old-chat'].currentMemo, '[XP]Level: 5 | XP: 6,500/14,000[/XP]', 'memo untouched');
+    assert.deepEqual(s.chatStates['old-chat'].campaignBooks, ['Eldoria_NPCs'], 'books untouched');
+    assert.equal(s.chatStates['modern-chat'].campaignMode, 'modern', 'explicit mode never overwritten');
+    assert.equal(getCampaignMode('old-chat'), 'dnd');
+    assert.equal(getCampaignMode('modern-chat'), 'modern');
+    assert.equal(getCampaignMode('never-seen'), 'dnd', 'unknown chats default to dnd');
+});
+
+test('saveChatState carries campaignMode/foundation/progression across normal saves', async () => {
+    const { saveChatState } = await import('../state-manager.js');
+    const foundation = { schemaVersion: 1, mode: 'modern', SETTING: { name: 'Neo-Khelt' } };
+    const progression = { mode: 'modern', level: 4, xp: 1200, skillPoints: { earned: 8, spent: 2 } };
+    setSettings({
+        currentMemo: 'memo-live',
+        chatStates: { c1: { campaignMode: 'modern', foundation, progression } },
+    });
+    saveChatState('c1');   // normal save cycle (e.g. chat switch)
+    const st = getSettings().chatStates.c1;
+    assert.equal(st.campaignMode, 'modern', 'mode survives the save cycle');
+    assert.deepEqual(st.foundation, foundation, 'foundation survives');
+    assert.deepEqual(st.progression, progression, 'progression survives');
+    assert.equal(st.currentMemo, 'memo-live', 'normal fields still snapshot');
 });

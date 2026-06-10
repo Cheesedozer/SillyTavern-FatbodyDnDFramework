@@ -47,3 +47,44 @@ test('rollDie stays within [1, sides]', () => {
         assert.ok(v >= 1 && v <= 6, `rollDie(6) returned ${v}`);
     }
 });
+
+// ── Dice profiles (v3.0) ───────────────────────────────────────────────────────
+
+test('DICE_PROFILES.dnd produces the exact historical queue shape and block format', async () => {
+    const { DICE_PROFILES } = await import('../narrative-hooks.js');
+    const q = makeRngQueue(2, DICE_PROFILES.dnd);
+    assert.equal(q.length, 2);
+    for (const entry of q) {
+        assert.deepEqual(Object.keys(entry), ['d20', 'd4', 'd6', 'd8', 'd10', 'd12'], 'key order matches historical shape');
+    }
+    const block = buildRngBlock([{ d20: 7, d4: 2, d6: 5, d8: 1, d10: 9, d12: 11 }], DICE_PROFILES.dnd);
+    assert.match(block, /queue=\[7\(d4:2,d6:5,d8:1,d10:9,d12:11\)\]/, 'explicit profile is byte-identical to the default');
+});
+
+test('custom (Modern) profiles drive queue composition and block format', async () => {
+    const { profileFromFoundation } = await import('../narrative-hooks.js');
+    const profile = profileFromFoundation({ primary: 'd100', subdice: ['d10', 'd20'], queueLen: 6 });
+    assert.deepEqual(profile, { primary: 'd100', subdice: ['d10', 'd20'], queueLen: 6 });
+
+    const q = makeRngQueue(profile.queueLen, profile);
+    assert.equal(q.length, 6);
+    for (const entry of q) {
+        assert.ok(entry.d100 >= 1 && entry.d100 <= 100);
+        assert.ok(entry.d10 >= 1 && entry.d10 <= 10);
+        assert.ok(entry.d20 >= 1 && entry.d20 <= 20);
+    }
+    const block = buildRngBlock([{ d100: 73, d10: 4, d20: 18 }], profile);
+    assert.match(block, /queue=\[73\(d10:4,d20:18\)\]/);
+
+    // primary-only profile renders bare numbers
+    const solo = profileFromFoundation({ primary: 'd100', subdice: [] });
+    assert.match(buildRngBlock([{ d100: 42 }], solo), /queue=\[42\]/);
+});
+
+test('profileFromFoundation falls back to D&D on malformed input', async () => {
+    const { profileFromFoundation, DICE_PROFILES } = await import('../narrative-hooks.js');
+    assert.deepEqual(profileFromFoundation(null), DICE_PROFILES.dnd);
+    assert.deepEqual(profileFromFoundation({ primary: 'twenty' }), DICE_PROFILES.dnd);
+    const cleaned = profileFromFoundation({ primary: 'd100', subdice: ['d10', 'bogus', 'd100'], queueLen: 999 });
+    assert.deepEqual(cleaned, { primary: 'd100', subdice: ['d10'], queueLen: 12 }, 'junk subdice/queueLen sanitized');
+});

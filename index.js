@@ -1,6 +1,6 @@
 import { EXAMPLES, COLOR_EXAMPLES, DEFAULT_STOCK_PROMPTS, RT_PROMPTS, BLOCK_ICONS, PAGE_SIZE, NO_PAGINATE } from './constants.js';
 import { BLOCK_ORDER } from './module-registry.js';
-import { MODULE_NAME, DEFAULT_MODULES, getSettings, getBarBackground, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
+import { MODULE_NAME, DEFAULT_MODULES, getSettings, getActivationMode, getBarBackground, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
 import { sendStateRequest, fetchOllamaModels, fetchOpenAIModels, testOpenAIConnection, getConnectionProfiles, getCurrentCompletionPreset, setCompletionPreset } from './llm-client.js';
 import { getDiceToolName, getDiceCommandName, getDiceCommandAliases, doDiceRoll, registerDiceFunctionTool, registerDiceSlashCommand, installInterceptor, getNarrativeBlocks, onGenerationEnded, resetRouterTick } from './narrative-hooks.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
@@ -14,7 +14,9 @@ import { openThemeWizard, refreshSavedThemesList, handleRecolor, handleCategoryS
 import { runStateModelPass, handleLevelUp, sendDirectPrompt } from './state-pass.js';
 import { buildRowTypeSelect, openCustomFieldEditor, openPromptEditor, exportModules, openShareModal, importModulesFromJson, refreshOrderList } from './custom-fields-ui.js';
 import { FOLDER_NAME } from './env.js';
-import { autoApplySysprompt, scheduleAutoApply, buildSysprompt } from './sysprompt.js';
+import { autoApplySysprompt, applyAdditiveSysprompt, applySysprompt, scheduleAutoApply, buildSysprompt } from './sysprompt.js';
+import { openFoundationWizard } from './foundation-wizard.js';
+import { openSkillTreeTab, onSkillTreeChatChanged } from './skilltree-bridge.js';
 import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight, makeDraggable, makeResizableTR, setupResizeObserver, setupDeltaResize } from './panel-geometry.js';
 
     // FOLDER_NAME imported from env.js
@@ -1065,6 +1067,13 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
     globalThis._rpgCurrentChatId = () => RT.currentChatId;
     // Expose live prefix derivation for any module that needs the current prefix.
     globalThis._rpgGetCurrentPrefix = () => getEffectiveRouterCampaignPrefix(SillyTavern.getContext().chatId || '');
+    // Cross-extension handshake (VectFox 3.4.0+): how campaign lorebook entries are
+    // activated. 'managed' = Fatbody injects manually (VectFox must skip our books);
+    // 'native' = ST keyword scanner; 'semantic' = VectFox similarity search owns surfacing.
+    globalThis._rpgGetActivationMode = () => getActivationMode(getSettings());
+    // Rendered-view refresh hook for modules that mutate the memo outside the
+    // normal state pass (skilltree-bridge after skill purchases).
+    globalThis._rpgRefreshRenderedView = () => refreshRenderedView();
 
     // [runStateModelPass/handleLevelUp/sendDirectPrompt moved to state-pass.js]
 
@@ -1430,7 +1439,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         const onboardingBtnApply = el.querySelector('#rt_onboarding_btn_update_sysprompt');
         if (onboardingBtnApply) {
             onboardingBtnApply.addEventListener('click', async () => {
-                await autoApplySysprompt();
+                await applySysprompt();
                 toastr['success']('System prompt applied! \u2705', 'RPG Tracker');
             });
         }
@@ -1802,9 +1811,13 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                         <input type="checkbox" id="rt-agent-router-basic" ${settings.routerBasicMode ? 'checked' : ''}>
                     </label>
 
-                    <label style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; cursor: pointer; opacity: 0.8; font-size: 0.846em;" title="When enabled, the extension's keyword scanner is fully disabled. SillyTavern's native lorebook keyword system handles all keyword-based entry activation. The agent will not auto-activate or auto-expire entries based on keywords.">
-                        Native Keyword Activation
-                        <input type="checkbox" id="rt-agent-router-native-kw" ${settings.routerNativeKeywordActivation ? 'checked' : ''}>
+                    <label style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; opacity: 0.8; font-size: 0.846em;" title="Managed: Fatbody's keyword scanner + manual injection control which entries reach the prompt (classic behavior). Native: entries are left enabled and SillyTavern's own World Info keyword scanner activates them. Semantic: entries stay dormant and VectFox's semantic World Info activation surfaces them by similarity — no keywords, no constant entries (requires VectFox 3.4.0+).">
+                        Entry Activation
+                        <select id="rt-agent-router-activation-mode" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); color: white; border-radius: 3px; font-size: 0.923em; padding: 1px 4px;">
+                            <option value="managed" ${getActivationMode(settings) === 'managed' ? 'selected' : ''}>Managed (Fatbody)</option>
+                            <option value="native" ${getActivationMode(settings) === 'native' ? 'selected' : ''}>Native (ST keywords)</option>
+                            <option value="semantic" ${getActivationMode(settings) === 'semantic' ? 'selected' : ''}>Semantic (VectFox)</option>
+                        </select>
                     </label>
 
                     <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
@@ -2397,12 +2410,18 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                 });
             }
 
-            const nativeKwCheck = agentPanel.querySelector('#rt-agent-router-native-kw');
-            if (nativeKwCheck) {
-                nativeKwCheck.addEventListener('change', (e) => {
+            const activationModeSelect = agentPanel.querySelector('#rt-agent-router-activation-mode');
+            if (activationModeSelect) {
+                activationModeSelect.addEventListener('change', (e) => {
                     const s = getSettings();
-                    s.routerNativeKeywordActivation = (/** @type {HTMLInputElement} */ (e.target)).checked;
+                    const mode = (/** @type {HTMLSelectElement} */ (e.target)).value;
+                    s.routerActivationMode = mode;
                     saveSettings();
+                    if (mode === 'semantic' && typeof (/** @type {any} */ (globalThis)).vectfox_invalidateLorebook !== 'function') {
+                        toastr['warning']('Semantic activation needs VectFox 3.4.0+ — entries will stay dormant until it is installed.', 'Lorebook Agent', { timeOut: 10000 });
+                    }
+                    // Entry disable flags follow the mode (native = enabled, others = dormant).
+                    void disableManagedEntries();
                 });
             }
 
@@ -4254,14 +4273,14 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
 
                 if (settings.enabled) {
                     // Re-apply Fatbody's footprint (sysprompt write is gated on enabled).
-                    await autoApplySysprompt();
+                    await applySysprompt();
                     await refreshExtensionPrompt();
                 } else {
                     // True off: remove the D&D sysprompt Fatbody wrote into the Main prompt
                     // box. Only touch it when Fatbody actually owns it (not in Suite/Custom
                     // modes, where Megumin or the user owns the box). Backed up so it's
                     // reversible; re-enabling rewrites it via autoApplySysprompt() anyway.
-                    if (!settings.suiteMode && !settings.customSysprompt) {
+                    if (!settings.suiteMode && !settings.customSysprompt && settings.syspromptDelivery !== 'additive') {
                         const box = /** @type {HTMLTextAreaElement|null} */ (document.getElementById('main_prompt_quick_edit_textarea'));
                         if (box) {
                             settings.mainPromptBackup = box.value;
@@ -4271,7 +4290,8 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                         }
                     }
                     await refreshExtensionPrompt();   // clears router lore (now also gated on enabled)
-                    toastr['info']('Fatbody disabled — D&D system prompt removed from the Main prompt box.', 'RPG Tracker');
+                    await applyAdditiveSysprompt();   // clears the additive rules prompt (gated on enabled)
+                    toastr['info']('Fatbody disabled — D&D system prompt removed.', 'RPG Tracker');
                 }
             });
 
@@ -4339,6 +4359,14 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             // ─── Event Hooks ───
             eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
             eventSource.on(event_types.GENERATION_STOPPED, onGenerationEnded);
+
+            // Sysprompt lifecycle: establish delivery at boot and re-dispatch on chat
+            // switches — campaign mode is per-chat (D&D vs Modern), so the narrator
+            // prompt must follow the active chat. Each path no-ops/clears when inactive.
+            void applySysprompt();
+            eventSource.on(event_types.CHAT_CHANGED, () => void applySysprompt());
+            // Re-anchor the Skill Tree bridge when the active chat changes.
+            eventSource.on(event_types.CHAT_CHANGED, () => onSkillTreeChatChanged(ctx.getCurrentChatId?.() || null));
 
             // ─── Chat Link ───
             eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
@@ -4536,6 +4564,13 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             if (lookbackInput.length) {
                 lookbackInput.val(settings.lookbackMessages !== undefined ? settings.lookbackMessages : 2).on('input', function () {
                     settings.lookbackMessages = parseInt(/** @type {string} */($(this).val())) || 2;
+                    saveSettings();
+                });
+            }
+            const externalReserveInput = $('#rpg_tracker_external_reserve');
+            if (externalReserveInput.length) {
+                externalReserveInput.val(settings.externalReserveTokens || 0).on('input', function () {
+                    settings.externalReserveTokens = parseInt(/** @type {string} */($(this).val())) || 0;
                     saveSettings();
                 });
             }
@@ -4944,7 +4979,17 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                 toastr['success']('Stock modules, order, and prompts reset to factory defaults.', 'RPG Tracker');
             });
 
+            $('#rpg_tracker_btn_foundation_wizard').on('click', () => openFoundationWizard());
+            $('#rpg_tracker_btn_skill_tree').on('click', () => openSkillTreeTab());
+
             $('#rpg_tracker_btn_update_sysprompt').on('click', async function () {
+                // Additive delivery: the Main prompt box is off-limits — refresh the
+                // rules-only extension prompt instead.
+                if (getSettings().syspromptDelivery === 'additive') {
+                    await applyAdditiveSysprompt();
+                    toastr['success']('Additive rules prompt refreshed (Main prompt box untouched).', 'RPG Tracker');
+                    return;
+                }
                 if (getSettings().suiteMode && !confirm('Suite Mode is ON. The Megumin Suite owns the Main prompt and injects Fatbody mechanics via its [[FATBODY]] block. Overwriting the Main prompt will clobber the Suite. Continue anyway?')) return;
                 const fileName = getSettings().diceFunctionTool ? 'sysprompt.txt' : 'sysprompt_legacy.txt';
                 let content;
@@ -5480,14 +5525,40 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             // Suite Mode toggle (Megumin Suite). When on, autoApplySysprompt() leaves the Main
             // prompt box alone — the Suite injects Fatbody mechanics via its [[FATBODY]] block.
             const suiteModeCb = /** @type {HTMLInputElement|null} */ (document.getElementById('rpg_tracker_suite_mode'));
+            const warnSuiteAdditiveOverlap = () => {
+                const fresh = getSettings();
+                if (fresh.suiteMode && fresh.syspromptDelivery === 'additive') {
+                    toastr['warning'](
+                        'Suite Mode + Additive delivery: make sure the Megumin Suite\'s [[FATBODY]] block is NOT in use, or mechanics will be injected twice. Pick one source of Fatbody rules.',
+                        'RPG Tracker', { timeOut: 12000 },
+                    );
+                }
+            };
             if (suiteModeCb) {
                 suiteModeCb.checked = !!getSettings().suiteMode;
                 suiteModeCb.addEventListener('change', function () {
                     const fresh = getSettings();
                     fresh.suiteMode = !!this.checked;
                     saveSettings();
+                    warnSuiteAdditiveOverlap();
+                    scheduleAutoApply();
                 });
             }
+
+            // Sysprompt delivery radios (standalone vs additive rules-only injection).
+            document.querySelectorAll('input[name="rpg_tracker_sysprompt_delivery"]').forEach(radio => {
+                const input = /** @type {HTMLInputElement} */ (radio);
+                input.checked = (getSettings().syspromptDelivery || 'standalone') === input.value;
+                input.addEventListener('change', function () {
+                    if (!this.checked) return;
+                    const fresh = getSettings();
+                    fresh.syspromptDelivery = this.value;
+                    saveSettings();
+                    warnSuiteAdditiveOverlap();
+                    // Re-dispatch both paths: the newly inactive one clears itself.
+                    scheduleAutoApply();
+                });
+            });
 
             $('#rpg_tracker_btn_update').on('click', async function () {
                 const { chat } = SillyTavern.getContext();

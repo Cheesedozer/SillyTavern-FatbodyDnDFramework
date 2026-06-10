@@ -43,6 +43,12 @@ export const MEMO_MODULES = [
     { id: 'xp',        tag: 'XP',        enabledByDefault: true, order: 6, renderType: 'XP',        inDefaultBlockOrder: true },
     { id: 'time',      tag: 'TIME',      enabledByDefault: true, order: 7, renderType: 'TIME',      inDefaultBlockOrder: true },
     { id: 'quests',    tag: 'QUESTS',    enabledByDefault: true, order: 8, renderType: 'QUESTS',    inDefaultBlockOrder: false, isQuest: true },
+    // v3.0 Modern mode: acquired skill list (engine-written; extractor only
+    // tracks usage). Disabled by default — Modern campaign creation enables it
+    // per-chat. Appended LAST and excluded from the default block order so
+    // existing D&D chats see zero reordering. Renders via the ABILITIES list
+    // renderer (same `- Name (resource, description)` shape).
+    { id: 'skills',    tag: 'SKILLS',    enabledByDefault: false, order: 9, renderType: 'ABILITIES', inDefaultBlockOrder: false },
 ];
 
 const ORDERED = [...MEMO_MODULES].sort((a, b) => a.order - b.order);

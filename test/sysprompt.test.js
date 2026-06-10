@@ -6,7 +6,16 @@ import './_bootstrap.js';
 import { setSettings } from './_bootstrap.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSysprompt } from '../sysprompt.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { buildSysprompt, ADDITIVE_TAGS, ADDITIVE_HEADER } from '../sysprompt.js';
+
+const SYSPROMPT_TXT = readFileSync(fileURLToPath(new URL('../sysprompt.txt', import.meta.url)), 'utf8');
+const SYSPROMPT_LEGACY_TXT = readFileSync(fileURLToPath(new URL('../sysprompt_legacy.txt', import.meta.url)), 'utf8');
+const SYSPROMPT_MODERN_TXT = readFileSync(fileURLToPath(new URL('../sysprompt_modern.txt', import.meta.url)), 'utf8');
+
+/** Persona-adjacent tags deliberately excluded from the additive (rules-only) variant. */
+const ADDITIVE_EXCLUDED = ['role', 'narrative', 'party_join_leave'];
 
 test('buildSysprompt returns empty string for empty input', () => {
     setSettings({});
@@ -20,4 +29,64 @@ test('buildSysprompt strips XML blocks for disabled syspromptModules and injects
     assert.ok(out.includes('KEEP'), 'unlisted <bar> block kept');
     assert.ok(!out.includes('{{modulesText}}'), '{{modulesText}} placeholder replaced');
     assert.ok(out.includes('CORE MODULES'), 'module instruction text injected');
+});
+
+// ── Additive (rules-only) variant ──────────────────────────────────────────────
+
+test('standalone variant of the real sysprompt keeps the persona sections', () => {
+    setSettings({});
+    const out = buildSysprompt(SYSPROMPT_TXT);
+    assert.ok(out.includes('<role>'), 'standalone keeps <role>');
+    assert.ok(out.includes('<narrative>'), 'standalone keeps <narrative>');
+    assert.ok(out.includes('<rng_system>'), 'standalone keeps <rng_system>');
+    assert.ok(!out.includes(ADDITIVE_HEADER), 'standalone has no additive header');
+});
+
+test('default variant is standalone (explicit opts and no opts are identical)', () => {
+    setSettings({});
+    assert.equal(buildSysprompt(SYSPROMPT_TXT), buildSysprompt(SYSPROMPT_TXT, { variant: 'standalone' }));
+});
+
+test('additive variant drops persona sections, keeps mechanics, prepends header', () => {
+    setSettings({});
+    const out = buildSysprompt(SYSPROMPT_TXT, { variant: 'additive' });
+    assert.ok(out.startsWith(ADDITIVE_HEADER), 'additive header prepended');
+    for (const tag of ADDITIVE_EXCLUDED) {
+        assert.ok(!out.includes(`<${tag}>`), `additive drops <${tag}>`);
+    }
+    for (const tag of ['rng_system', 'combat', 'xp_system', 'level_up_protocol', 'end_of_output_footer', 'constraints']) {
+        assert.ok(out.includes(`<${tag}>`), `additive keeps <${tag}>`);
+    }
+});
+
+test('additive variant still honors syspromptModules toggles', () => {
+    setSettings({ syspromptModules: { loot: false } });
+    const out = buildSysprompt(SYSPROMPT_TXT, { variant: 'additive' });
+    assert.ok(!out.includes('<loot>'), 'disabled <loot> stripped in additive too');
+    assert.ok(out.includes('<combat>'), '<combat> still present');
+});
+
+test('modern sysprompt: contains the v3.0 sections and foundation placeholders', () => {
+    for (const tag of ['power_system', 'skills', 'lethality', 'level_up_protocol', 'rng_system']) {
+        assert.ok(SYSPROMPT_MODERN_TXT.includes(`<${tag}>`), `<${tag}> present`);
+    }
+    for (const ph of ['foundation_setting', 'foundation_power_system', 'foundation_dice', 'foundation_currency', 'foundation_award_guidance', 'foundation_downed_window', 'foundation_naming']) {
+        assert.ok(SYSPROMPT_MODERN_TXT.includes(`{{${ph}}}`), `{{${ph}}} placeholder present`);
+    }
+    assert.ok(SYSPROMPT_MODERN_TXT.includes('[FALLBACK]'), 'no-tool-call fallback present');
+    assert.ok(SYSPROMPT_MODERN_TXT.includes('SYSTEM DIRECTIVE: LEVEL UP'), 'directive-driven level-up protocol');
+    assert.ok(SYSPROMPT_MODERN_TXT.includes('DOWNED'), 'standard lethality template specced');
+});
+
+test('drift guard: every top-level tag in all sysprompt files is classified', () => {
+    for (const txt of [SYSPROMPT_TXT, SYSPROMPT_LEGACY_TXT, SYSPROMPT_MODERN_TXT]) {
+        const tags = [...txt.matchAll(/^<(\w[\w_-]*)>$/gm)].map(m => m[1]);
+        assert.ok(tags.length >= 10, 'sysprompt file parsed (found top-level tags)');
+        for (const tag of tags) {
+            assert.ok(
+                ADDITIVE_TAGS.includes(tag) || ADDITIVE_EXCLUDED.includes(tag),
+                `tag <${tag}> must be listed in ADDITIVE_TAGS or ADDITIVE_EXCLUDED — classify new sysprompt sections explicitly`,
+            );
+        }
+    }
 });

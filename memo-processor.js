@@ -112,6 +112,37 @@ export const OUTPUT_HEADROOM_FRAC = 0.20;
 const MIN_MEMO_TOKENS = 200;
 
 /**
+ * Estimates the token footprint of OTHER extensions' registered extension
+ * prompts (plus Fatbody's own 'rpg_tracker_lore'/'rpg_tracker_rules' — they
+ * consume context too). ST's prompt builder appends every entry in the
+ * extension-prompt registry, none of which the interceptor's chatTokens count
+ * sees, so without this the injection budget over-promises (e.g. VectFox's
+ * retrieved memories can be several thousand tokens).
+ *
+ * Registry availability varies by ST build — degrades to 0 when absent.
+ * Extensions that inject after the interceptor runs (Megumin Suite at
+ * CHAT_COMPLETION_PROMPT_READY) are invisible here; the user-configurable
+ * `externalReserveTokens` setting covers those.
+ *
+ * @param {any} ctx - SillyTavern.getContext()
+ * @returns {number} estimated tokens
+ */
+export function estimateExternalPromptTokens(ctx) {
+    try {
+        const registry = ctx?.extensionPrompts;
+        if (!registry || typeof registry !== 'object') return 0;
+        let total = 0;
+        for (const entry of Object.values(registry)) {
+            const value = typeof entry === 'string' ? entry : entry?.value;
+            if (typeof value === 'string' && value) total += estimateTokens(value);
+        }
+        return total;
+    } catch (_) {
+        return 0;
+    }
+}
+
+/**
  * Fits the priority-ordered injection items into the remaining context budget.
  * Items are emitted in their original array order, but inclusion is decided by
  * `tier` (lower = kept first). Tier 0 (RNG) is always kept; the trimmable memo
@@ -120,10 +151,12 @@ const MIN_MEMO_TOKENS = 200;
  * @param {object} p
  * @param {number} p.contextSize  max context window in tokens (from ST interceptor)
  * @param {number} p.chatTokens   estimated tokens already in the chat array
+ * @param {number} [p.externalTokens=0]  estimated tokens of other extensions' injections
+ *                 (extension-prompt registry + user-configured reserve)
  * @param {{name:string,text:string,tier:number,trimmable?:boolean}[]} p.items  output-ordered
  * @returns {{injections:string, dropped:string[], trimmed:boolean}}
  */
-export function budgetInjections({ contextSize, chatTokens, items }) {
+export function budgetInjections({ contextSize, chatTokens, externalTokens = 0, items }) {
     const dropped = [];
     let trimmed = false;
 
@@ -133,7 +166,7 @@ export function budgetInjections({ contextSize, chatTokens, items }) {
     }
 
     const reserved = Math.ceil(contextSize * OUTPUT_HEADROOM_FRAC);
-    let budget = contextSize - reserved - chatTokens;
+    let budget = contextSize - reserved - chatTokens - (externalTokens > 0 ? externalTokens : 0);
 
     // Decide inclusion in priority order; remember kept text by original index.
     const order = items
@@ -518,6 +551,60 @@ export function mergeQuestUpdates(jsonText, memoText = null) {
     }
 
     return target;
+}
+
+// ── XP block parsing/writing (shared by renderer.js and the v3.0 progression engine) ──
+
+/**
+ * Parses the [XP] state out of a memo. Recognizes both formats the renderer
+ * draws (kept in lock-step with renderer.js's XP case):
+ *   New:    "Total: 1,200 / 2,700 XP (Level 3)"
+ *   Legacy: "Level: 3 | XP: 1,200/2,700"  or  "XP: 1,200/2,700"
+ * Searches the [XP] block when present, else the whole text.
+ *
+ * @param {string} memoText
+ * @returns {{level: number|null, cur: number, max: number}|null}
+ */
+export function parseXpFromMemo(memoText) {
+    if (!memoText) return null;
+    const blockMatch = memoText.match(/\[XP\]([\s\S]*?)\[\/XP\]/i);
+    const haystack = blockMatch ? blockMatch[1] : memoText;
+
+    let m = haystack.match(/Total:\s*([\d,]+)\s*\/\s*([\d,]+)\s*XP\s*\(Level\s*(\d+)\)/i);
+    if (m) {
+        return {
+            level: Number(m[3]),
+            cur: Number(m[1].replace(/,/g, '')),
+            max: Number(m[2].replace(/,/g, '')),
+        };
+    }
+
+    m = haystack.match(/(?:Level:\s*(\d+)\s*\|?\s*)?XP:\s*([\d,]+)\/([\d,]+)/i);
+    if (m) {
+        return {
+            level: m[1] ? Number(m[1]) : null,
+            cur: Number(m[2].replace(/,/g, '')),
+            max: Number(m[3].replace(/,/g, '')),
+        };
+    }
+
+    return null;
+}
+
+/**
+ * Replaces the [XP] block's contents with a single line (creating the block
+ * if missing). Used by the Modern progression engine to normalize the XP line
+ * to engine truth after each state pass.
+ * @param {string} memoText
+ * @param {string} xpLine - e.g. "Level: 12 | XP: 24,950/28,200"
+ * @returns {string}
+ */
+export function writeXpLineToMemo(memoText, xpLine) {
+    const block = `[XP]\n${xpLine}\n[/XP]`;
+    if (/\[XP\][\s\S]*?\[\/XP\]/i.test(memoText || '')) {
+        return memoText.replace(/\[XP\][\s\S]*?\[\/XP\]/i, block);
+    }
+    return memoText ? `${memoText.trim()}\n\n${block}` : block;
 }
 
 /**

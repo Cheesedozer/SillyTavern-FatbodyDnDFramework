@@ -12,11 +12,79 @@
  */
 
 import { FOLDER_NAME } from './env.js';
-import { getSettings } from './state-manager.js';
+import { getSettings, getCampaignMode } from './state-manager.js';
 import { RT_PROMPTS, QUESTS_NARRATOR_LEGACY, QUESTS_NARRATOR_MODERN } from './constants.js';
 import { buildModulesInstructionText } from './memo-processor.js';
+import { getFoundation, foundationPlaceholders } from './foundation.js';
 
 let _autoApplyTimer = null;
+
+// ── Additive delivery (rules-only) ─────────────────────────────────────────────
+
+/** Extension-prompt key used by additive delivery. Distinct from 'rpg_tracker_lore' (router). */
+export const ADDITIVE_PROMPT_KEY = 'rpg_tracker_rules';
+
+/**
+ * Top-level sysprompt tags included in the additive (rules-only) variant.
+ * Everything persona-adjacent (<role>, <narrative>, <party_join_leave>) is
+ * excluded so another extension/preset (e.g. Megumin Suite) can own the
+ * narrator persona while Fatbody layers pure mechanics on top.
+ * <random_events>/<resting> stay listed: they are plain mechanics and remain
+ * governed by the existing syspromptModules toggles inside buildSysprompt().
+ */
+export const ADDITIVE_TAGS = [
+    'rng_system', 'combat', 'saving_throws', 'loot', 'random_events',
+    'xp_system', 'quests', 'level_up_protocol', 'resting',
+    'end_of_output_footer', 'state_memo', 'constraints',
+    // Modern-mode (sysprompt_modern.txt) mechanics sections
+    'power_system', 'skills', 'lethality',
+];
+
+export const ADDITIVE_HEADER =
+    'The following mechanical subsystems are layered on top of your existing role and narration style. '
+    + 'Do not change persona; apply these rules to all action resolution.';
+
+/** Shared fetch (+ embedded fallback) for the bundled narrator sysprompt file. */
+async function fetchSyspromptText(fileName) {
+    try {
+        const response = await fetch(`/scripts/extensions/third-party/${FOLDER_NAME}/${fileName}`);
+        if (response.ok) return await response.text();
+        throw new Error(`Server returned ${response.status}`);
+    } catch (err) {
+        console.warn(`[Fatbody Framework] could not fetch ${fileName}, using fallback:`, err);
+        return RT_PROMPTS[fileName];
+    }
+}
+
+/**
+ * Resolves the narrator sysprompt source for the active chat:
+ *  - Modern campaigns (committed foundation) → sysprompt_modern.txt with
+ *    `{{foundation_*}}` placeholders substituted from the foundation.
+ *  - Everything else → the classic D&D files (tool-call or legacy variant).
+ * @returns {Promise<{content: string|undefined, mode: 'dnd'|'modern'}>}
+ */
+async function resolveSyspromptSource() {
+    const s = getSettings();
+    const ctx = SillyTavern.getContext();
+    const chatId = ctx.chatId || (typeof globalThis._rpgCurrentChatId === 'function' ? globalThis._rpgCurrentChatId() : '');
+    const foundation = chatId ? getFoundation(chatId) : null;
+    const isModern = !!chatId && getCampaignMode(chatId) === 'modern' && !!foundation;
+
+    if (isModern) {
+        let content = await fetchSyspromptText('sysprompt_modern.txt');
+        if (content) {
+            const placeholders = foundationPlaceholders(foundation);
+            for (const [key, value] of Object.entries(placeholders)) {
+                content = content.split(`{{${key}}}`).join(value);
+            }
+            return { content, mode: 'modern' };
+        }
+        console.error('[Fatbody Framework] sysprompt_modern.txt unavailable — falling back to D&D sysprompt.');
+    }
+
+    const fileName = s.diceFunctionTool ? 'sysprompt.txt' : 'sysprompt_legacy.txt';
+    return { content: await fetchSyspromptText(fileName), mode: 'dnd' };
+}
 
 export async function autoApplySysprompt() {
     const s = getSettings();
@@ -28,49 +96,73 @@ export async function autoApplySysprompt() {
     // Suite Mode: the Megumin Suite owns the Main prompt and injects Fatbody mechanics via its
     // [[FATBODY]] block, so do NOT overwrite the Main prompt box here.
     if (s.suiteMode) return;
+    // Additive delivery: the Main prompt box belongs to the user/another extension.
+    // Mechanics ship via the extension prompt instead (applyAdditiveSysprompt).
+    if (s.syspromptDelivery === 'additive') return;
 
-    const fileName = s.diceFunctionTool ? 'sysprompt.txt' : 'sysprompt_legacy.txt';
-    let content;
-    try {
-        const response = await fetch(`/scripts/extensions/third-party/${FOLDER_NAME}/${fileName}`);
-        if (response.ok) {
-            content = await response.text();
-        } else {
-            throw new Error(`Server returned ${response.status}`);
-        }
-    } catch (err) {
-        console.warn(`[Fatbody Framework] autoApplySysprompt: could not fetch ${fileName}, using fallback:`, err);
-        content = RT_PROMPTS[fileName];
-    }
+    const { content } = await resolveSyspromptSource();
     if (!content) return;
 
-    content = buildSysprompt(content);
+    const built = buildSysprompt(content);
     const mainTextarea = /** @type {HTMLTextAreaElement|null} */ (document.getElementById('main_prompt_quick_edit_textarea'));
     if (mainTextarea) {
-        mainTextarea.value = content;
+        mainTextarea.value = built;
         mainTextarea.dispatchEvent(new Event('blur', { bubbles: true }));
     }
 }
 
+/**
+ * Maintains the rules-only extension prompt for additive delivery.
+ * Persistent like the router's 'rpg_tracker_lore' prompt: set once here, ST
+ * includes it on every generation until cleared. Cleared whenever additive
+ * delivery is not active so switching modes leaves no residue.
+ */
+export async function applyAdditiveSysprompt() {
+    const ctx = SillyTavern.getContext();
+    const setExtensionPrompt = ctx.setExtensionPrompt;
+    if (typeof setExtensionPrompt !== 'function') return;
+
+    const s = getSettings();
+    if (!s.enabled || s.customSysprompt || s.syspromptDelivery !== 'additive') {
+        setExtensionPrompt(ADDITIVE_PROMPT_KEY, '', 0, 0);
+        return;
+    }
+
+    const { content } = await resolveSyspromptSource();
+    if (!content) return;
+
+    setExtensionPrompt(ADDITIVE_PROMPT_KEY, buildSysprompt(content, { variant: 'additive' }), 0, 0);
+}
+
+/** Single dispatcher: keeps both delivery paths consistent (each clears/skips itself when inactive). */
+export async function applySysprompt() {
+    await autoApplySysprompt();
+    await applyAdditiveSysprompt();
+}
+
 export function scheduleAutoApply() {
     if (_autoApplyTimer) clearTimeout(_autoApplyTimer);
-    _autoApplyTimer = setTimeout(() => { _autoApplyTimer = null; autoApplySysprompt(); }, 400);
+    _autoApplyTimer = setTimeout(() => { _autoApplyTimer = null; applySysprompt(); }, 400);
 }
 
 /**
  * Rebuilds the system prompt by stripping out XML blocks that are
  * disabled in settings.syspromptModules.
  * @param {string} rawText
+ * @param {{variant?: 'standalone'|'additive'}} [opts] - 'additive' keeps only
+ *   ADDITIVE_TAGS blocks and prepends ADDITIVE_HEADER (rules-only, no persona).
  * @returns {string}
  */
-export function buildSysprompt(rawText) {
+export function buildSysprompt(rawText, { variant = 'standalone' } = {}) {
     if (!rawText) return "";
     const s = getSettings();
     const mods = s.syspromptModules || {};
+    const additive = variant === 'additive';
 
     // 1. Tag-based module stripping and Quest mode swap
     let content = rawText
         .replace(/<(\w[\w_-]*)>([\s\S]*?)<\/\1>/g, (match, tag) => {
+            if (additive && !ADDITIVE_TAGS.includes(tag)) return '';
             if (mods[tag] === false) return '';
             // Inject correct instructions for quests based on legacy mode
             if (tag === 'quests') {
@@ -111,7 +203,13 @@ export function buildSysprompt(rawText) {
         content = content.replace(/- If a quest is time-sensitive and the deadline passes.*\n/g, '');
     }
 
-    return content
+    content = content
         .replace(/\n{3,}/g, "\n\n")
         .trim();
+
+    if (additive && content) {
+        content = `${ADDITIVE_HEADER}\n\n${content}`;
+    }
+
+    return content;
 }

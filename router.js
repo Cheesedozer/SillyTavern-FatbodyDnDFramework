@@ -1,4 +1,4 @@
-import { getSettings, getEffectiveRouterCampaignPrefix } from './state-manager.js';
+import { getSettings, getEffectiveRouterCampaignPrefix, getActivationMode } from './state-manager.js';
 import { sendStateRequest, sendAgentTurn } from './llm-client.js';
 import { getRequestHeaders } from '../../../../script.js';
 
@@ -32,6 +32,45 @@ function bookBelongsToPrefix(bookName, prefix) {
     if (lowerBook === lowerPref) return true;
     const rest = lowerBook.startsWith(lowerPref + '_') ? lowerBook.slice(lowerPref.length + 1) : null;
     return rest !== null && !rest.includes('_');
+}
+
+/**
+ * Tells VectFox (if installed) that a campaign lorebook's content changed so it
+ * can re-index its vector collection. Nil-safe cross-extension handshake:
+ * VectFox 3.4.0+ exposes `globalThis.vectfox_invalidateLorebook(name)`
+ * (create-or-refresh, debounced on the VectFox side). No-op when absent.
+ * @param {string} bookName
+ */
+export function notifyVectfoxBookChanged(bookName) {
+    if (!bookName) return;
+    try {
+        const fn = /** @type {any} */ (globalThis).vectfox_invalidateLorebook;
+        if (typeof fn === 'function') fn(bookName);
+    } catch (_) { /* never let the handshake break a lore write */ }
+}
+
+/**
+ * Writes a full lorebook to disk via the raw HTTP API (registry-independent —
+ * ctx.saveWorldInfo silently drops books ST hasn't indexed yet), busts ST's
+ * in-memory cache, and notifies VectFox. Shared by the agent's write paths
+ * and the v3.0 foundation persistence.
+ * @param {string} bookName
+ * @param {object} bookData - full world-info book object ({ entries, ... })
+ * @returns {Promise<boolean>}
+ */
+export async function writeBookToDisk(bookName, bookData) {
+    const ctx = SillyTavern.getContext();
+    const res = await fetch('/api/worldinfo/edit', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name: bookName, data: bookData }),
+    });
+    if (!res.ok) throw new Error(`Failed to save ${bookName}: HTTP ${res.status}`);
+    if (typeof ctx.saveWorldInfo === 'function') {
+        try { await ctx.saveWorldInfo(bookName, bookData); } catch (_) { /* cache-bust is non-fatal */ }
+    }
+    notifyVectfoxBookChanged(bookName);
+    return true;
 }
 
 /**
@@ -331,21 +370,40 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
             maxTokens: (settings.routerMaxTokens !== undefined && settings.routerMaxTokens !== null && settings.routerMaxTokens !== '') ? Number(settings.routerMaxTokens) : 1000,
         };
 
+        // Semantic activation mode: the agent is a pure WRITER (create/update/
+        // consolidate). Surfacing is owned by VectFox similarity search, so all
+        // activation tooling, saturation goals, and budget pressure are removed.
+        const semanticMode = getActivationMode(settings) === 'semantic';
+
         // Budget status — computed once and reused in both basic and agent context
         const activeCount = settings.activeRouterKeys?.length || 0;
         const maxActive = settings.routerMaxActivations || 8;
         const overflow = activeCount - maxActive;
-        const budgetLine = `Active entries: ${activeCount} / ${maxActive}`;
-        const overflowInstruction = overflow > 0
+        const budgetLine = semanticMode
+            ? 'Not applicable (semantic activation — VectFox surfaces entries by similarity).'
+            : `Active entries: ${activeCount} / ${maxActive}`;
+        const overflowInstruction = (!semanticMode && overflow > 0)
             ? `\nBUDGET VIOLATION: ${activeCount} entr${activeCount !== 1 ? 'ies' : 'y'} active, limit is ${maxActive}. ` +
               `You MUST deactivate at least ${overflow} entr${overflow > 1 ? 'ies' : 'y'} ` +
               `before this pass ends. Eliminate the narratively least relevant entries first. ` +
               `Justify each deactivation.`
             : '';
 
-        const basePrompt = (settings.routerSystemPromptTemplate || 'You are the Lorebook Agent. Maintain narrative consistency and manage lorebooks.')
+        let basePrompt = (settings.routerSystemPromptTemplate || 'You are the Lorebook Agent. Maintain narrative consistency and manage lorebooks.')
             .replace(/\{\{campaignRoot\}\}/g, prefix || 'World Chronicle')
             .replace(/\{\{user\}\}/g, ctx.name1 || 'User');
+
+        if (semanticMode) {
+            // Drop the activation/saturation doctrine — it instructs behaviors
+            // (activate aggressively, rotate context) that no longer exist.
+            basePrompt = basePrompt
+                .replace(/<context_maximization>[\s\S]*?<\/context_maximization>\s*/gi, '')
+                .replace(/<bravery>[\s\S]*?<\/bravery>\s*/gi, '')
+                + `\n\n<semantic_mode>
+Entry activation is handled automatically by a semantic retrieval system: when the story involves an entity, its entry surfaces by similarity. You do NOT activate or deactivate anything.
+Your whole job is the ARCHIVE: record new entities promptly, append timestamped deltas when they change, and keep entries clean and self-contained. Write content so it stands alone when retrieved (name things explicitly; avoid "as mentioned above").
+</semantic_mode>`;
+        }
 
         // ── Cleanup Mode ─────────────────────────────────────────────────────
         // Triggered by the UI broom button via runRouterPass(null, '__CLEANUP__', null, true).
@@ -843,6 +901,7 @@ Thought: I see a new NPC named Barnaby in Khelt's Rust-Lantern District. I will 
                                         required: ['id', 'content']
                                     }
                                 },
+                                // activate/deactivate are spliced out below in semantic mode
                                 activate:   { type: 'array', items: { type: 'string' }, description: 'Book::UID IDs to move into active context.' },
                                 deactivate: { type: 'array', items: { type: 'string' }, description: 'Book::UID IDs to remove from active context.' },
                                 delete_ids: { type: 'array', items: { type: 'string' }, description: 'Book::UID IDs to permanently delete.' },
@@ -881,19 +940,36 @@ Thought: I see a new NPC named Barnaby in Khelt's Rust-Lantern District. I will 
                 }
             ];
 
+            // Semantic mode: the agent never activates/deactivates — remove the
+            // tools' surface area so the model can't reach for them.
+            if (semanticMode) {
+                const commitTool = agentTools.find(t => t.function?.name === 'commit');
+                if (commitTool?.function?.parameters?.properties) {
+                    delete commitTool.function.parameters.properties.activate;
+                    delete commitTool.function.parameters.properties.deactivate;
+                }
+            }
+
             // Native tool calling is only reliable for direct openai/ollama connections.
             // For profile/default the ConnectionManagerRequestService may not forward tools
             // correctly, causing MALFORMED_FUNCTION_CALL errors. Those connections get a
             // text-format (Action:/Observation:) system prompt and text-based parsing instead.
             const usesNativeTools = ['openai', 'ollama'].includes(routerSettings.connectionSource);
 
-            const sharedContext = `
+            const memoryLimitSection = semanticMode
+                ? `
+## ACTIVATION
+Entry surfacing is automatic (semantic retrieval). There are no activate/deactivate operations and no active-entry budget. Focus entirely on recording and updating the archive.
+- Always use exact Book::UID format (e.g. "Eldoria_NPCs::0") for update/delete_ids.`
+                : `
 ## MEMORY LIMIT
 Maximum Active Entities: **${settings.routerMaxActivations || 8}**.
 - Entries you record are ACTIVATED AUTOMATICALLY. Do NOT also include them in activate.
 - Nothing is archived automatically. If you exceed the limit you will receive a **BUDGET VIOLATION** in the context and you MUST deactivate enough entries in that same commit call to return within budget. Choose the narratively least relevant entries.
 - Entries whose keywords appeared in the latest narrator output may already appear under **NEWLY ACTIVATED THIS TURN** with full content — you do not need to activate those again.
-- Always use exact Book::UID format (e.g. "Eldoria_NPCs::0") for activate/update/deactivate/delete_ids.
+- Always use exact Book::UID format (e.g. "Eldoria_NPCs::0") for activate/update/deactivate/delete_ids.`;
+
+            const sharedContext = `${memoryLimitSection}
 
 ## CAMPAIGN CONTEXT
 Campaign Root: "${prefix || 'World Archive'}"
@@ -930,7 +1006,7 @@ Available actions:
 - grep_lore({"query": "..."}) ? search lorebooks for entries matching a keyword
 - inspect_book({"book_name": "..."}) ? list UIDs in a lorebook
 - read_entry({"uid": "Book::0"}) ? read full content of an entry
-- commit({"record": [...], "update": [...], "activate": [...], "deactivate": [...], "delete_ids": [...]}) ? write all changes and finish
+- commit(${semanticMode ? '{"record": [...], "update": [...], "delete_ids": [...]}' : '{"record": [...], "update": [...], "activate": [...], "deactivate": [...], "delete_ids": [...]}'}) ? write all changes and finish
 
 commit record items: {"label": "Name only (NO tag prefix)", "keys": ["kw1","kw2"], "content": "...", "category": "NPC|LOC|FAC|QUEST|EVENT"}
 commit update items: {"id": "Book::UID", "content": "new text to append"}
@@ -1090,12 +1166,17 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
     let changed = false;
     const errors = [];
     const allBookNames = Object.keys(allBooks);
+    /** Books whose content changed this pass — VectFox is notified once each at the end. */
+    const touchedBooks = new Set();
 
     const timePrefix = currentTime ? `[${currentTime}] ` : '';
 
     // 1. Activate/Deactivate
-    const activate = action.activate || [];
-    const deactivate = action.deactivate || [];
+    // Semantic mode: the agent is a pure writer — VectFox owns surfacing, so
+    // activation state is meaningless and manual injection must stay empty.
+    const semanticMode = getActivationMode(settings) === 'semantic';
+    const activate = semanticMode ? [] : (action.activate || []);
+    const deactivate = semanticMode ? [] : (action.deactivate || []);
     let newActive = [...(settings.activeRouterKeys || [])];
     
     // Remove deactivations
@@ -1148,6 +1229,7 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
             }
             book.entries[uid].content = existing && delta ? `${existing}\n${delta}` : (existing || delta);
             await ctx.saveWorldInfo(bookName, book);
+            touchedBooks.add(bookName);
             changed = true;
         }
     }
@@ -1160,6 +1242,7 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
         if (book?.entries?.[uid]) {
             book.entries[uid].content = rw.content;
             await ctx.saveWorldInfo(bookName, book);
+            touchedBooks.add(bookName);
             rewriteIds.push(rw.id);
             changed = true;
         } else {
@@ -1176,6 +1259,7 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
         if (sBookData?.entries?.[sUid]) {
             sBookData.entries[sUid].content = op.content;
             await ctx.saveWorldInfo(sBook, sBookData);
+            touchedBooks.add(sBook);
             consolidateIds.push(op.survivor);
         } else {
             errors.push(`Consolidate survivor not found: ${op.survivor}`);
@@ -1189,6 +1273,7 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
             if (tBookData?.entries?.[tUid]) {
                 delete tBookData.entries[tUid];
                 await ctx.saveWorldInfo(tBook, tBookData);
+                touchedBooks.add(tBook);
             } else {
                 errors.push(`Consolidate target not found: ${targetId}`);
             }
@@ -1324,7 +1409,7 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
                 const keys = bookData.entries[existingUid].key || [];
                 (rec.keys || []).forEach(k => { if (!keys.includes(k)) keys.push(k); });
                 bookData.entries[existingUid].key = cleanKeys(keys);
-                if (!newActive.includes(fullId)) newActive.push(fullId);
+                if (!semanticMode && !newActive.includes(fullId)) newActive.push(fullId);
                 recordedIds.push(`${fullId} (updated)`);
             } else {
                 // Append new entry with the next sequential UID
@@ -1338,11 +1423,14 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
                     comment: rec.label || 'LORE_GEN',
                     content: rec.content || '',
                     constant: false, selective: false, selectiveLogic: 0, addMemo: true,
-                    order: 100, position: 0, disable: !settings.routerNativeKeywordActivation,
+                    // 'native' = enabled so ST's WI keyword scanner can activate it.
+                    // 'managed'/'semantic' = dormant: managed injects manually,
+                    // semantic is surfaced by VectFox similarity search.
+                    order: 100, position: 0, disable: getActivationMode(settings) !== 'native',
                     probability: 100, useProbability: false,
                     depth: 4, group: '', groupOverride: false, groupWeight: 100,
                 };
-                if (!newActive.includes(fullId)) newActive.push(fullId);
+                if (!semanticMode && !newActive.includes(fullId)) newActive.push(fullId);
                 recordedIds.push(fullId);
             }
             changed = true;
@@ -1398,11 +1486,17 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
         if (book?.entries?.[uid]) {
             delete book.entries[uid];
             await ctx.saveWorldInfo(bookName, book);
+            touchedBooks.add(bookName);
             // Also remove from active keys if present
             settings.activeRouterKeys = settings.activeRouterKeys.filter(k => k !== id);
             changed = true;
         }
     }
+
+    // VectFox handshake: re-index every campaign book whose content changed
+    // (record writes are already in booksWritten; merge both sets).
+    for (const b of booksWritten) touchedBooks.add(b);
+    for (const b of touchedBooks) notifyVectfoxBookChanged(b);
 
     if (changed) {
         const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1500,6 +1594,7 @@ export async function rollbackRouterPass(index = 0) {
                     try { await ctx.saveWorldInfo(bookName, emptyBook); } catch (_) {}
                 }
             }
+            notifyVectfoxBookChanged(bookName);
         }
 
         // Re-index so ST knows about deletions before we start restoring
@@ -1522,6 +1617,7 @@ export async function rollbackRouterPass(index = 0) {
             if (typeof ctx.saveWorldInfo === 'function') {
                 try { await ctx.saveWorldInfo(bookName, bookData); } catch (_) { /* non-fatal */ }
             }
+            notifyVectfoxBookChanged(bookName);
         }
 
         // -- Step 3: Restore active keys ---------------------------------------
@@ -1570,6 +1666,7 @@ export async function reapplyRouterPass(prePassSnapshot, postPassState) {
             if (typeof ctx.saveWorldInfo === 'function') {
                 try { await ctx.saveWorldInfo(bookName, bookData); } catch (_) {}
             }
+            notifyVectfoxBookChanged(bookName);
         }
 
         if (typeof ctx.updateWorldInfoList === 'function') {
@@ -1734,7 +1831,9 @@ async function addLorebookEntry(lorebookName, entryData, allNames) {
         addMemo: true,
         order: 100,
         position: 0,
-        disable: false,
+        // Semantic mode: keep direct-command entries dormant too — VectFox
+        // similarity search surfaces them; keywords/constant-on play no role.
+        disable: getActivationMode(getSettings()) === 'semantic',
         probability: 100,
         useProbability: false,
         depth: 4,
@@ -1742,8 +1841,9 @@ async function addLorebookEntry(lorebookName, entryData, allNames) {
         groupOverride: false,
         groupWeight: 100,
     };
-    
+
     await ctx.saveWorldInfo(lorebookName, writeTarget);
+    notifyVectfoxBookChanged(lorebookName);
     
     // Update allNames cache so subsequent calls know this book now exists
     if (!allNames.includes(lorebookName)) allNames.push(lorebookName);
@@ -2108,7 +2208,9 @@ export async function disableManagedEntries() {
     const settings = getSettings();
     if (!settings.routerEnabled) return;
     // In native keyword mode, entries are left enabled for ST's keyword scanner to manage.
-    if (settings.routerNativeKeywordActivation) return;
+    // ('managed' and 'semantic' both keep entries dormant — semantic surfacing happens
+    // through VectFox's vector search, which ignores the disable flag for Fatbody books.)
+    if (getActivationMode(settings) === 'native') return;
     const ctx = SillyTavern.getContext();
     const prefix = getLivePrefix();
     if (!prefix) return;

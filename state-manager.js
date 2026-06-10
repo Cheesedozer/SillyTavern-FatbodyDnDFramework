@@ -78,10 +78,18 @@ function buildDefaultsTemplate() {
         completionPresetId: "",
         renderedViewActive: true,
         maxTokens: 0,
+        // Token reserve for extensions that inject AFTER the interceptor runs
+        // (e.g. Megumin Suite at CHAT_COMPLETION_PROMPT_READY) and are therefore
+        // invisible to the injection budget. ~1000-2000 recommended with Megumin.
+        externalReserveTokens: 0,
         fontSize: 14,
         agentFontSize: 13,
         customSysprompt: false,
         suiteMode: false,
+        // 'standalone' = Fatbody owns the Main prompt box (current behavior).
+        // 'additive'   = rules-only variant delivered via setExtensionPrompt;
+        //                the Main prompt box is never touched (Megumin/etc owns the role).
+        syspromptDelivery: "standalone",
         rngEnabled: true,
         diceFunctionTool: true,
         barColors: {},
@@ -200,7 +208,14 @@ You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These
         routerDirectLookback: 10,
         routerDirectPrompt: "",
         routerBasicMode: false,
+        /** @deprecated v2.5.1 — folded into routerActivationMode ('native'). Kept for migration. */
         routerNativeKeywordActivation: false,
+        // How agent-managed lorebook entries get activated/injected:
+        //  'managed'  - Fatbody's keyword scanner + manual injection (default, classic behavior)
+        //  'native'   - entries left enabled; ST's native World Info keyword scanner activates them
+        //  'semantic' - entries stay dormant; VectFox semantic World Info activation surfaces them
+        //               by similarity (no keywords, no constant entries). Agent is a pure writer.
+        routerActivationMode: "managed",
         routerPaused: false,
         routerRunEvery: 1,
         routerIncludeHidden: false,
@@ -319,6 +334,14 @@ export function getSettings() {
     // ── MIGRATION: routerModules (v1.8.35+) ───────────────────────────────────
     const s = extensionSettings[MODULE_NAME];
 
+    // routerNativeKeywordActivation (≤2.4.x) → routerActivationMode (2.5.1+).
+    // The legacy boolean is consumed (set false) so this runs exactly once and
+    // routerActivationMode becomes the single source of truth.
+    if (s.routerNativeKeywordActivation) {
+        s.routerActivationMode = 'native';
+        s.routerNativeKeywordActivation = false;
+    }
+
     if (s.routerModules && typeof s.routerModules.npc === 'boolean') {
         const old = s.routerModules;
         s.routerModules = {
@@ -360,6 +383,18 @@ export function getSettings() {
     }
 
     return extensionSettings[MODULE_NAME];
+}
+
+// ── Router activation mode ─────────────────────────────────────────────────────
+
+/**
+ * Resolves the router's lorebook-activation mode: 'managed' | 'native' | 'semantic'.
+ * @param {Record<string, any>} [s] - settings object (defaults to getSettings())
+ * @returns {'managed'|'native'|'semantic'}
+ */
+export function getActivationMode(s = getSettings()) {
+    const mode = s.routerActivationMode;
+    return (mode === 'native' || mode === 'semantic') ? mode : 'managed';
 }
 
 // ── Bar color resolver ─────────────────────────────────────────────────────────
@@ -458,6 +493,14 @@ export function migrateCustomFields() {
 
     migrateSystemPrompt(s);
 
+    // v2→v3: every pre-existing chat IS a D&D-mode campaign. Stamp the mode so
+    // 3.0 code can branch on it without guessing; everything else is untouched.
+    for (const state of Object.values(s.chatStates || {})) {
+        if (state && typeof state === 'object' && state.campaignMode === undefined) {
+            state.campaignMode = 'dnd';
+        }
+    }
+
     // Strip placeholder NEW_TAG entries persisted from previous sessions (one-time cleanup at init)
     if (Array.isArray(s.routerCustomTags)) {
         s.routerCustomTags = s.routerCustomTags.filter(t => t.tag && t.tag !== 'NEW_TAG');
@@ -517,8 +560,25 @@ export function saveChatState(chatId) {
         routerDirectPrompt: s.routerDirectPrompt || '',
         // Preserve lorebook stack link — written by Link button and router, not by normal state saves
         campaignBooks: existing.campaignBooks || [],
+        // v3.0 campaign fields — written at campaign creation / by the progression
+        // engine, never by the normal save cycle. Mode is locked at creation.
+        campaignMode: existing.campaignMode || 'dnd',
+        foundation: existing.foundation,
+        progression: existing.progression,
     };
     SillyTavern.getContext().saveSettingsDebounced();
+}
+
+/**
+ * The locked campaign mode for a chat: 'dnd' (classic) or 'modern' (v3.0).
+ * Chats never seen before default to 'dnd' — Modern is opt-in at creation.
+ * @param {string} chatId
+ * @returns {'dnd'|'modern'}
+ */
+export function getCampaignMode(chatId) {
+    const s = getSettings();
+    const mode = s.chatStates?.[chatId]?.campaignMode;
+    return mode === 'modern' ? 'modern' : 'dnd';
 }
 
 // ── Profile I/O ───────────────────────────────────────────────────────────────

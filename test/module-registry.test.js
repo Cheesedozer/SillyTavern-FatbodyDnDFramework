@@ -12,18 +12,19 @@ import {
 } from '../module-registry.js';
 import { DEFAULT_STOCK_PROMPTS } from '../constants.js';
 
-test('BLOCK_ORDER derives byte-identical to the historical literal', () => {
-    assert.deepEqual(BLOCK_ORDER, ['COMBAT', 'CHARACTER', 'PARTY', 'INVENTORY', 'ABILITIES', 'SPELLS', 'XP', 'TIME', 'QUESTS']);
+test('BLOCK_ORDER: historical literal + SKILLS appended last (v3.0)', () => {
+    assert.deepEqual(BLOCK_ORDER, ['COMBAT', 'CHARACTER', 'PARTY', 'INVENTORY', 'ABILITIES', 'SPELLS', 'XP', 'TIME', 'QUESTS', 'SKILLS']);
 });
 
 test('DEFAULT_BLOCK_ORDER excludes QUESTS (matches the per-chat default)', () => {
     assert.deepEqual(DEFAULT_BLOCK_ORDER, ['COMBAT', 'CHARACTER', 'PARTY', 'INVENTORY', 'ABILITIES', 'SPELLS', 'XP', 'TIME']);
 });
 
-test('default module toggles are all-on for every stock module', () => {
+test('default module toggles: all-on except SKILLS (Modern-mode opt-in)', () => {
     assert.deepEqual(getDefaultModuleToggles(), {
         combat: true, character: true, party: true, inventory: true,
         abilities: true, spells: true, xp: true, time: true, quests: true,
+        skills: false,
     });
 });
 
