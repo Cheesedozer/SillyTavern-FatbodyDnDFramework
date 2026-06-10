@@ -2,6 +2,14 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.2.3] - 2026-06-10
+
+**Re-commit guard & late-pass safety.** The two remaining high-priority findings from the 3.2.2 bug hunt.
+
+### Fixed
+- **Foundation re-commits can no longer orphan a live campaign**: committing a v2+ foundation that drops the locked class id or a resource id that forged skills cost is now blocked with a precise list of what must be kept (display names may still change freely). The Foundation Builder surfaces the errors in the conversation log so "Keep refining" can feed them straight back to the architect. Also fixed the wizard's commit-failure status being immediately overwritten by "Ready." — errors were invisible.
+- **State passes that finish after a chat switch no longer touch the wrong chat**: the memo merge now runs against the pass-start snapshot (previously the merge base was re-read *after* generation, blending one chat's update into another chat's memo), and the result — memo, history snapshots, delta — is committed into the originating chat's saved state instead of the live view, with an info toast. The work of the LLM call is preserved and restores when you switch back.
+
 ## [3.2.2] - 2026-06-10
 
 **Bug hunt.** A systematic sweep of Modern mode and the new onboarding code.

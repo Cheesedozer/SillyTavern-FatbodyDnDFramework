@@ -11,7 +11,7 @@
  */
 import { getSettings, getEffectiveRouterCampaignPrefix, getCampaignMode } from './state-manager.js';
 import { sendStateRequest } from './llm-client.js';
-import { buildLorebookContext, buildModulesInstructionText, cleanToolCallMessage, computeDelta, mergeMemo, parseQuestsFromMemo, parseXpFromMemo, syncQuestsFromMemo, writeQuestsToMemo, writeXpLineToMemo } from './memo-processor.js';
+import { buildLorebookContext, buildModulesInstructionText, cleanToolCallMessage, commitMemoToChatState, computeDelta, mergeMemo, parseQuestsFromMemo, parseXpFromMemo, syncQuestsFromMemo, writeQuestsToMemo, writeXpLineToMemo } from './memo-processor.js';
 import { detectLevelUp, formatXpLine, levelForXp } from './progression-engine.js';
 import { ensureTierPregenerated } from './skill-forge.js';
 import { stripMemoHtml } from './renderer.js';
@@ -19,13 +19,19 @@ import { checkQuestDeadlines } from './quests.js';
 import { RT } from './shared-state.js';
 import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refreshRenderedView } from './index.js';
 
-    export async function runStateModelPass(narrativeOutput, isFullContext = false, overrideLookback = null) {
-        const settings = getSettings();
-        // Captured NOW: the user may switch chats while the LLM generates, and
-        // progression must apply to the chat this pass belongs to.
-        const passChatId = (typeof globalThis._rpgCurrentChatId === 'function'
+    /** The chat currently active in the SillyTavern UI (or null). */
+    function activeChatIdNow() {
+        return (typeof globalThis._rpgCurrentChatId === 'function'
             ? globalThis._rpgCurrentChatId()
             : SillyTavern.getContext().chatId) || null;
+    }
+
+    export async function runStateModelPass(narrativeOutput, isFullContext = false, overrideLookback = null) {
+        const settings = getSettings();
+        // Captured NOW: the user may switch chats while the LLM generates. The
+        // pass must merge against — and commit into — the chat it started on.
+        const passChatId = activeChatIdNow();
+        const passMemo = settings.currentMemo;
 
         // Deterministic logic: Auto-fail quests past deadline (if not using frustration)
         checkQuestDeadlines();
@@ -75,7 +81,7 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                 .filter(line => line !== null)
                 .join('\n\n');
 
-            let priorMemoText = `## TRACKER STATE 0 (Current)\n${stripMemoHtml(settings.currentMemo)}\n\n`;
+            let priorMemoText = `## TRACKER STATE 0 (Current)\n${stripMemoHtml(passMemo)}\n\n`;
             const historyCount = (settings.trackerHistoryCount || 1) - 1;
             if (historyCount > 0 && settings.memoHistory && settings.memoHistory.length > 0) {
                 const historyToInclude = settings.memoHistory.slice(0, historyCount).reverse();
@@ -120,9 +126,12 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                     cleanedOutput = result.replace(/<\/?memo>/gi, '').trim();
                 }
 
-                // Also sanitize the current stored memo in case it was previously
-                // contaminated by a prior session that saved raw tags.
-                const sanitizedCurrent = settings.currentMemo.replace(/<\/?memo>/gi, '').trim();
+                // Also sanitize the stored memo in case it was previously
+                // contaminated by a prior session that saved raw tags. This is
+                // the pass-start snapshot, NOT settings.currentMemo: after a
+                // mid-generation chat switch the live memo belongs to another
+                // chat, and merging against it would cross-contaminate.
+                const sanitizedCurrent = passMemo.replace(/<\/?memo>/gi, '').trim();
 
                 let merged = mergeMemo(sanitizedCurrent, cleanedOutput);
 
@@ -147,6 +156,21 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                 // Modern mode: threshold detection + XP-line normalization (engine truth).
                 // Must run before history archival so snapshots carry the corrected line.
                 merged = applyModernProgression(settings, merged, passChatId);
+
+                // Late completion after a chat switch: the live globals now
+                // belong to ANOTHER chat. Commit the result into the pass
+                // chat's saved state instead of corrupting the active chat's.
+                if (settings.chatLinkEnabled && passChatId && passChatId !== activeChatIdNow()) {
+                    const passState = settings.chatStates?.[passChatId];
+                    if (passState) {
+                        commitMemoToChatState(passState, sanitizedCurrent, merged, delta);
+                        SillyTavern.getContext().saveSettingsDebounced();
+                        toastr['info']('Tracker pass finished after you switched chats — the result was saved to its own chat.', 'RPG Tracker');
+                    } else {
+                        console.warn(`[RPG Tracker] Late state pass for unsaved chat "${passChatId}" — result dropped.`);
+                    }
+                    return delta;
+                }
 
                 // Linear Stone History Logic:
                 // 1. If we were viewing/committed to a past state, delete the "abandoned" future.
@@ -186,12 +210,12 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                 saveSettings();
 
                 if (settings.debugMode) console.log("[RPG Tracker] State Model pass complete.");
-                
+
                 // Check for Level Up
                 if (/LEVEL_UP=true/i.test(merged)) {
                     handleLevelUp();
                 }
-                
+
                 return delta;
             }
         } catch (error) {
@@ -366,6 +390,22 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
 
                 if (merged !== sanitizedCurrent) {
                     const delta = computeDelta(sanitizedCurrent, merged);
+
+                    // Late completion after a chat switch: commit into the
+                    // originating chat's saved state, not the live globals
+                    // (which now belong to whatever chat the user is viewing).
+                    if (settings.chatLinkEnabled && passChatId && passChatId !== activeChatIdNow()) {
+                        const passState = settings.chatStates?.[passChatId];
+                        if (passState) {
+                            commitMemoToChatState(passState, sanitizedCurrent, merged, delta);
+                            SillyTavern.getContext().saveSettingsDebounced();
+                            toastr['info']('Tracker update finished after you switched chats — the result was saved to its own chat.', 'RPG Tracker');
+                        } else {
+                            console.warn(`[RPG Tracker] Late direct prompt for unsaved chat "${passChatId}" — result dropped.`);
+                        }
+                        return;
+                    }
+
                     settings.lastDelta = delta;
 
                     // Linear Stone History Logic

@@ -394,6 +394,41 @@ export function isModernCharacterPrompt(prompt) {
 }
 
 /**
+ * Validates a foundation against a LIVE campaign's progression state before a
+ * re-commit (v2+). Acquired skills are never retconned, so the new contract
+ * must keep every id the progression already references: the locked class and
+ * every resource that forged skills cost. Display names may change freely —
+ * only ids are load-bearing. Pure (node-testable).
+ *
+ * @param {object} foundation - candidate (already schema-valid) foundation
+ * @param {object|null|undefined} progression - chatStates[chatId].progression
+ * @returns {{ok: boolean, errors: string[]}}
+ */
+export function validateFoundationCompatibility(foundation, progression) {
+    const errors = [];
+    if (!progression) return { ok: true, errors };
+
+    if (progression.classId) {
+        const classIds = new Set((foundation?.CLASS_ROSTER || []).map(c => c.id));
+        if (!classIds.has(progression.classId)) {
+            errors.push(`CLASS_ROSTER no longer contains the locked class id "${progression.classId}" — keep that id in the roster (its display name may change).`);
+        }
+    }
+
+    const resourceIds = new Set((foundation?.POWER_SYSTEM?.resources || []).map(r => r.id));
+    const missing = new Set();
+    for (const node of Object.values(progression.tree?.nodes || {})) {
+        const rid = node?.resourceCost?.resourceId;
+        if (rid && !resourceIds.has(rid)) missing.add(rid);
+    }
+    for (const rid of missing) {
+        errors.push(`POWER_SYSTEM.resources no longer contains "${rid}", but forged skills cost it — keep that resource id (its display name may change).`);
+    }
+
+    return { ok: errors.length === 0, errors };
+}
+
+/**
  * Commits a validated foundation and performs first-commit campaign setup:
  * seeds the progression state, enables the [SKILLS] memo module, and clears
  * the onboarding flow flag. Shared by the Foundation Builder's Commit button
@@ -405,6 +440,15 @@ export function isModernCharacterPrompt(prompt) {
  * @returns {Promise<object>} the stamped foundation
  */
 export async function commitFoundationAndInit(chatId, foundationDoc) {
+    // Re-commit guard: a v2+ foundation must stay compatible with what the
+    // campaign already locked in (class id, resource ids on forged skills).
+    // Blocking here keeps the wizard's "Keep refining" loop as the fix path.
+    const liveProgression = getSettings().chatStates?.[chatId]?.progression;
+    const compat = validateFoundationCompatibility(foundationDoc, liveProgression);
+    if (!compat.ok) {
+        throw new Error(`Incompatible with the live campaign — refine and regenerate:\n- ${compat.errors.join('\n- ')}`);
+    }
+
     const prefix = getEffectiveRouterCampaignPrefix(chatId);
     const stamped = await commitFoundation(chatId, foundationDoc, prefix || 'Campaign');
 

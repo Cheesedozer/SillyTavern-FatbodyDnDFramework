@@ -919,6 +919,35 @@ export function computeDelta(oldMemo, newMemo) {
     return html.join('');
 }
 
+/**
+ * Commits a finished state-pass result into a chat's SAVED state instead of
+ * the live globals. Used when a pass completes after the user switched chats:
+ * the live settings now belong to a different chat, so the merged memo, the
+ * history snapshots, and the delta are written into chatStates[chatId]
+ * directly — they restore when the user switches back. Mirrors the live
+ * commit's linear-stone history logic. Pure (node-testable).
+ *
+ * @param {object} chatState - settings.chatStates[chatId] (mutated in place)
+ * @param {string} priorMemo - the memo the pass started from
+ * @param {string} mergedMemo - the merged result
+ * @param {string} delta - computeDelta(priorMemo, mergedMemo)
+ */
+export function commitMemoToChatState(chatState, priorMemo, mergedMemo, delta) {
+    if (!chatState) return;
+    if (!Array.isArray(chatState.memoHistory)) chatState.memoHistory = [];
+    // Linear Stone History: if the chat was parked on a past snapshot, the
+    // "abandoned future" is dropped, exactly like the live path.
+    if (chatState.historyIndex !== undefined && chatState.historyIndex !== -1) {
+        chatState.memoHistory = chatState.memoHistory.slice(chatState.historyIndex);
+    }
+    if (chatState.memoHistory[0] !== priorMemo) chatState.memoHistory.unshift(priorMemo);
+    chatState.memoHistory.unshift(mergedMemo);
+    if (chatState.memoHistory.length > 1000) chatState.memoHistory.length = 1000;
+    chatState.historyIndex = 0;
+    chatState.currentMemo = mergedMemo;
+    chatState.lastDelta = delta;
+}
+
 // ── Tool-call message detection ───────────────────────────────────────────────
 
 /**
