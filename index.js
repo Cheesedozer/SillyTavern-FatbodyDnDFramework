@@ -1,6 +1,6 @@
 import { EXAMPLES, COLOR_EXAMPLES, DEFAULT_STOCK_PROMPTS, RT_PROMPTS, BLOCK_ICONS, PAGE_SIZE, NO_PAGINATE } from './constants.js';
 import { BLOCK_ORDER } from './module-registry.js';
-import { MODULE_NAME, DEFAULT_MODULES, getSettings, getActivationMode, getBarBackground, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
+import { MODULE_NAME, DEFAULT_MODULES, getSettings, getActivationMode, getBarBackground, getCampaignMode, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
 import { sendStateRequest, fetchOllamaModels, fetchOpenAIModels, testOpenAIConnection, getConnectionProfiles, getCurrentCompletionPreset, setCompletionPreset } from './llm-client.js';
 import { getDiceToolName, getDiceCommandName, getDiceCommandAliases, doDiceRoll, registerDiceFunctionTool, registerDiceSlashCommand, installInterceptor, getNarrativeBlocks, onGenerationEnded, resetRouterTick } from './narrative-hooks.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
@@ -16,11 +16,11 @@ import { buildRowTypeSelect, openCustomFieldEditor, openPromptEditor, exportModu
 import { FOLDER_NAME } from './env.js';
 import { autoApplySysprompt, applyAdditiveSysprompt, applySysprompt, scheduleAutoApply, buildSysprompt } from './sysprompt.js';
 import { openFoundationWizard } from './foundation-wizard.js';
-import { commitFoundationAndInit } from './foundation.js';
+import { commitFoundationAndInit, isModernCharacterPrompt } from './foundation.js';
 import { defaultFoundation } from './default-foundation.js';
 import { selectClassAndForge } from './skill-forge.js';
 import { initSettingsOverlay, openSettingsOverlay } from './settings-overlay.js';
-import { openSkillTreeTab, onSkillTreeChatChanged } from './skilltree-bridge.js';
+import { openSkillTreeTab, onSkillTreeChatChanged, pushSkillTreeState } from './skilltree-bridge.js';
 import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight, makeDraggable, makeResizableTR, setupResizeObserver, setupDeltaResize } from './panel-geometry.js';
 
     // FOLDER_NAME imported from env.js
@@ -706,6 +706,13 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         s.activeRouterKeys    = JSON.parse(JSON.stringify(saved.activeRouterKeys    || []));
         s.keywordActivatedKeys = JSON.parse(JSON.stringify(saved.keywordActivatedKeys || []));
         s.routerLog           = JSON.parse(JSON.stringify(saved.routerLog || []));
+        // These two are saved per chat (saveChatState) and must round-trip, or
+        // the previous chat's values silently carry over on every switch. The
+        // agent panel re-reads them on the renderRouterUI rebuild that follows.
+        s.routerLookback      = saved.routerLookback ?? 4;
+        s.routerDirectPrompt  = saved.routerDirectPrompt ?? '';
+        const lookbackInput = document.getElementById('rpg_tracker_router_lookback');
+        if (lookbackInput instanceof HTMLInputElement) lookbackInput.value = String(s.routerLookback);
         // Don't restore routerCampaignPrefix from per-chat saved state — the prefix
         // is fully derivable from the chat ID and must be re-derived live by
         // onChatChanged. Restoring a stale value (e.g. a bare "Assistant" from
@@ -970,6 +977,18 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
 
             updateUIMemo('');
             refreshRenderedView();
+        }
+
+        // Modern campaigns mutate the LIVE modules/stockPrompts at foundation
+        // commit (skills module on, foundation-aware [CHARACTER] prompt). Those
+        // are per-campaign: never let them leak into a chat without its own
+        // committed foundation (fresh chats, or snapshots predating the keys).
+        if (newChatId && getCampaignMode(newChatId) !== 'modern') {
+            const savedModules = s.chatStates?.[newChatId]?.modules;
+            if (!savedModules || !('skills' in savedModules)) s.modules.skills = false;
+            if (isModernCharacterPrompt(s.stockPrompts?.character)) {
+                s.stockPrompts.character = DEFAULT_STOCK_PROMPTS.character;
+            }
         }
 
         applyChatStateSideEffects();
@@ -1266,6 +1285,9 @@ ${resourceList}
         try {
             setStatus(`Forging ${cls.name}'s starting skill tiers… (this takes a minute)`);
             const { nodeCount } = await selectClassAndForge(chatId, classId, setStatus);
+            // An already-open Skill Tree tab only pulls state on hello/apply —
+            // push the freshly forged constellation to it explicitly.
+            pushSkillTreeState(chatId);
             if (nodeCount) {
                 toastr['success'](`${cls.name} locked in — ${nodeCount} skills forged. Open the Skill Tree (🌳) to spend your points!`, 'Fatbody Framework', { timeOut: 10000 });
             }

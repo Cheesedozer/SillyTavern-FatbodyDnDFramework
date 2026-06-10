@@ -2,6 +2,46 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.2.4] - 2026-06-10
+
+### Fixed
+- **Lorebook Agent lookback & direct prompt now round-trip per chat**: both fields were saved with the chat but never restored on switch, so the previous chat's values silently carried over. They restore with the chat's saved state (lookback defaults to 4, direct prompt clears), and the settings input syncs.
+- **Custom foundation resources no longer shadowed by D&D field rules**: a Modern resource named e.g. "Status" or "Skills" rendered via the stock D&D pill/text rule instead of as a pool bar. Foundation resources now take precedence in Modern chats; non-`X/Y` values (e.g. "Status: Poisoned") still use the stock rules.
+
+## [3.2.3] - 2026-06-10
+
+**Re-commit guard & late-pass safety.** The two remaining high-priority findings from the 3.2.2 bug hunt.
+
+### Fixed
+- **Foundation re-commits can no longer orphan a live campaign**: committing a v2+ foundation that drops the locked class id or a resource id that forged skills cost is now blocked with a precise list of what must be kept (display names may still change freely). The Foundation Builder surfaces the errors in the conversation log so "Keep refining" can feed them straight back to the architect. Also fixed the wizard's commit-failure status being immediately overwritten by "Ready." — errors were invisible.
+- **State passes that finish after a chat switch no longer touch the wrong chat**: the memo merge now runs against the pass-start snapshot (previously the merge base was re-read *after* generation, blending one chat's update into another chat's memo), and the result — memo, history snapshots, delta — is committed into the originating chat's saved state instead of the live view, with an info toast. The work of the LLM call is preserved and restores when you switch back.
+
+## [3.2.2] - 2026-06-10
+
+**Bug hunt.** A systematic sweep of Modern mode and the new onboarding code.
+
+### Fixed
+- **Cross-chat state corruption from the Skill Tree tab**: applying or resetting skills in a tab whose chat was no longer the active chat snapshotted the *currently viewed* chat's memo/history into the tab's chat (wholesale overwrite) and wrote the [SKILLS] block into the wrong chat's live memo. Bridge mutations are now active-chat-aware: inactive chats are edited only in their own saved state, and the passive-skill extractor pass is deferred with a hint instead of running against the wrong chat.
+- **Onboarding UI duplicated into detached panels**: a detached block panel on an empty chat rendered the full onboarding flow (duplicate element IDs, double-bound action buttons). Detached panels now show a simple placeholder until the campaign starts.
+- **Modern settings leaking into other chats**: committing a foundation enables the [SKILLS] module and swaps the [CHARACTER] prompt for the campaign — but those live mutations carried into freshly created chats and into chats saved before the keys existed. Entering a non-Modern chat now resets both.
+- **Class choice trapped after a failed forge**: picking a class locks it before the skill forge runs; if the forge failed before producing anything, the dead choice stayed locked. The lock is now released when nothing was forged (partially-forged classes still resume).
+- **Level-ups applied to the wrong chat**: a state pass finishing after a chat switch resolved the chat *at completion time*, applying XP/level-ups to whichever chat the user had switched to. The chat is now captured when the pass starts.
+- **XP line unparseable at max level**: the `(MAX)` form written at the level cap didn't match the XP parser.
+- **Skill Tree tab hardening**: AI-generated rarity colors are escaped before being interpolated into tooltip markup; a global `[hidden] { display: none !important; }` rule prevents any future author-CSS/hidden conflicts; null-safe node lookups.
+
+## [3.2.1] - 2026-06-10
+
+**Skill tree unblocked & Modern HUD stats.** Fixes the invisible click-blocker over the skill tree and makes Level, Stamina, Mana (and any custom foundation resource) visible in the tracker right after Modern character creation.
+
+### Fixed
+- **Skill tree "No skills forged yet" overlay**: a CSS `display` rule defeated the `[hidden]` attribute, so the overlay stayed visible over a fully forged constellation and — spanning the whole canvas — swallowed every click, making nodes unselectable. The overlay now hides properly and is click-through even when shown.
+- **Stale skill tree tab**: a tab left open during class selection or background tier pre-generation now receives the freshly forged nodes immediately instead of waiting for a reopen.
+- **Level missing after Modern character creation**: the direct-prompt path used for initial setup skipped the modern progression step, so the `[XP]` block (level + XP bar) was never written. It now runs the same engine normalization as regular state passes.
+
+### Added
+- **Resource pool bars**: `[CHARACTER]` lines matching a foundation resource (Stamina/Mana/Focus by default, any name in custom foundations) render as recolorable bars with distinct default colors, like HP.
+- **Foundation-aware character prompt**: committing a foundation swaps the per-chat `[CHARACTER]` module prompt to one built from the foundation's resources, so the state model keeps Level and every pool line alive across turns (D&D chats keep the stock prompt).
+
 ## [3.2.0] - 2026-06-10
 
 **Onboarding flow.** New chats now start from a mode picker in the Stat Tracking HUD, and Modern campaign setup lives in the HUD instead of the Foundation Builder modal.

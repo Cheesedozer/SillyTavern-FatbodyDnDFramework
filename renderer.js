@@ -27,8 +27,36 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
         'att/def': 'highlight',
         'primary weapon': 'highlight',
         'spells': 'spell_group',
-        'ac': 'text'
+        'ac': 'text',
+        'level': 'text'
     };
+
+    /** Default bar colors for modern resource pools, by foundation resource
+     *  index (default foundation: Stamina → green, Mana → blue, Focus → purple).
+     *  Users can still recolor per-bar via the existing click-to-recolor flow. */
+    const RESOURCE_BAR_COLORS = [
+        'linear-gradient(90deg,#27ae60,#2ecc71)',
+        'linear-gradient(90deg,#2980b9,#3498db)',
+        'linear-gradient(90deg,#8e44ad,#9b59b6)',
+        'linear-gradient(90deg,#d35400,#e67e22)',
+    ];
+
+    /**
+     * Resolves the current chat's modern foundation resource matching a line
+     * label (case-insensitive name match), e.g. "Mana" → the mana resource.
+     * Returns null for D&D chats (no foundation) or unknown labels.
+     * @param {string} label
+     * @returns {{resource: object, index: number}|null}
+     */
+    function modernResourceFor(label) {
+        const ctx = (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) ? SillyTavern.getContext() : null;
+        const chatId = ctx?.chatId || RT.currentChatId || null;
+        const resources = getSettings().chatStates?.[chatId]?.foundation?.POWER_SYSTEM?.resources;
+        if (!Array.isArray(resources)) return null;
+        const wanted = label.trim().toLowerCase();
+        const index = resources.findIndex(r => (r?.name || '').trim().toLowerCase() === wanted);
+        return index === -1 ? null : { resource: resources[index], index };
+    }
 
     export function renderSubFieldByRule(rule, line, barId = null) {
         const colonIdx = line.indexOf(':');
@@ -208,7 +236,24 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
         const ll = line.toLowerCase();
         const colonIdx = line.indexOf(':');
 
-        // 2. Try known stock keywords
+        // 2. Modern resource pools ("Stamina: 30/30", or any custom foundation
+        //    resource name) render as recolorable bars, like HP. Checked BEFORE
+        //    the stock D&D rules: in a Modern chat the foundation defines what
+        //    a label means, so a resource named e.g. "Status" or "Skills" must
+        //    not be shadowed by the D&D pill/text rules for those labels.
+        if (colonIdx !== -1) {
+            const match = modernResourceFor(line.substring(0, colonIdx));
+            if (match && /\d[\d,]*\s*\/\s*\d[\d,]*/.test(line.substring(colonIdx + 1))) {
+                const barId = `${tag}:${entityName}:${match.resource.name}`;
+                return renderSubFieldByRule(
+                    { renderType: 'hp_bar', color: RESOURCE_BAR_COLORS[match.index % RESOURCE_BAR_COLORS.length] },
+                    line,
+                    barId,
+                );
+            }
+        }
+
+        // 3. Try known stock keywords
         for (const [key, ruleType] of Object.entries(STOCK_FIELD_RULES)) {
             if (ll.startsWith(key + ':') || ll === key) {
                 const val = colonIdx !== -1 ? line.substring(colonIdx + 1).trim() : '';
@@ -218,7 +263,7 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
             }
         }
 
-        // 3. Fallback: unknown KV pair or plain line (always attached to entity if we are here)
+        // 4. Fallback: unknown KV pair or plain line (always attached to entity if we are here)
         if (colonIdx !== -1) {
             return renderSubFieldByRule({ renderType: 'highlight' }, line);
         }
@@ -957,6 +1002,12 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
 
     export function renderMemoAsCards(memo, filterTag, sectionPages) {
         if (!memo || !memo.trim()) {
+            // Detached single-tag panels must NOT render the onboarding flow:
+            // it would duplicate the main view's element IDs (rt-ob-status,
+            // rt-modern-*, …) and double-bind its action buttons.
+            if (filterTag) {
+                return `<div class="rt-empty">No ${escapeHtml(filterTag)} data yet.<br><small>This panel fills in once the campaign starts.</small></div>`;
+            }
             const ctx = (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) ? SillyTavern.getContext() : null;
             const chatId = ctx?.chatId || RT.currentChatId || null;
             const st = getSettings().chatStates?.[chatId] || null;

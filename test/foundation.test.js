@@ -12,7 +12,9 @@ import {
     extractFoundationJson,
     foundationPlaceholders,
     renderFoundationProse,
+    buildModernCharacterPrompt,
 } from '../foundation.js';
+import { defaultFoundation } from '../default-foundation.js';
 
 /** Minimal but complete valid foundation fixture. */
 function validFoundation() {
@@ -175,4 +177,59 @@ test('renderFoundationProse produces a stable full document', () => {
         assert.ok(doc.includes(heading), `${heading} present`);
     }
     assert.ok(doc.includes('Memory Contractor'), 'job seeds listed');
+});
+
+test('buildModernCharacterPrompt lists Level and every foundation resource pool', () => {
+    const p = buildModernCharacterPrompt(defaultFoundation());
+    assert.ok(p.includes('Level: N'), 'Level line present');
+    for (const name of ['Stamina', 'Mana', 'Focus']) {
+        assert.ok(p.includes(`${name}: current/max`), `${name} pool line present`);
+        assert.ok(p.includes(name), `${name} named in the keep-alive instruction`);
+    }
+    assert.ok(/no spell slots/i.test(p), 'D&D constructs explicitly excluded');
+});
+
+test('isModernCharacterPrompt distinguishes engine-written prompts from stock/custom ones', async () => {
+    const { isModernCharacterPrompt } = await import('../foundation.js');
+    assert.equal(isModernCharacterPrompt(buildModernCharacterPrompt(defaultFoundation())), true);
+    assert.equal(isModernCharacterPrompt('Main character core stats with spell slots and AC.'), false);
+    assert.equal(isModernCharacterPrompt(undefined), false);
+});
+
+test('validateFoundationCompatibility guards re-commits against a live campaign', async () => {
+    const { validateFoundationCompatibility } = await import('../foundation.js');
+    const f = validFoundation();
+
+    // No progression yet (first commit) → always compatible.
+    assert.equal(validateFoundationCompatibility(f, null).ok, true);
+    assert.equal(validateFoundationCompatibility(f, undefined).ok, true);
+
+    const progression = {
+        classId: 'render',
+        tree: { nodes: {
+            a: { resourceCost: { resourceId: 'focus', amount: 2 } },
+            b: { resourceCost: { resourceId: 'strain', amount: 1 } },
+            c: {},   // passive, no cost — must not crash
+        } },
+    };
+
+    // Same ids → compatible (display names are free to change).
+    assert.equal(validateFoundationCompatibility(f, progression).ok, true);
+
+    // Locked class id removed from the roster → blocked.
+    const noClass = validFoundation();
+    noClass.CLASS_ROSTER = noClass.CLASS_ROSTER.filter(c => c.id !== 'render');
+    const r1 = validateFoundationCompatibility(noClass, progression);
+    assert.equal(r1.ok, false);
+    assert.ok(r1.errors.some(e => e.includes('"render"')), 'names the missing class id');
+
+    // Resource id that forged skills cost removed → blocked.
+    const noStrain = validFoundation();
+    noStrain.POWER_SYSTEM.resources = noStrain.POWER_SYSTEM.resources.filter(r => r.id !== 'strain');
+    const r2 = validateFoundationCompatibility(noStrain, progression);
+    assert.equal(r2.ok, false);
+    assert.ok(r2.errors.some(e => e.includes('"strain"')), 'names the missing resource id');
+
+    // Class not yet locked → roster changes are fine.
+    assert.equal(validateFoundationCompatibility(noClass, { classId: null, tree: { nodes: {} } }).ok, true);
 });

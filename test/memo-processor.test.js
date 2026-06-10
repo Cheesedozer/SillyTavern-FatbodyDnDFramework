@@ -160,3 +160,39 @@ test('writeXpLineToMemo replaces the block or appends a new one', async () => {
     const appended = writeXpLineToMemo('[CHARACTER]x[/CHARACTER]', 'Level: 1 | XP: 0/100');
     assert.deepEqual(parseXpFromMemo(appended), { level: 1, cur: 0, max: 100 });
 });
+
+test('parseXpFromMemo handles the max-level "(MAX)" line written by formatXpLine', async () => {
+    const { parseXpFromMemo } = await import('../memo-processor.js');
+    const parsed = parseXpFromMemo('[XP]Level: 100 | XP: 999,999 (MAX)[/XP]');
+    assert.ok(parsed, 'MAX line parses');
+    assert.equal(parsed.level, 100);
+    assert.equal(parsed.cur, 999999);
+    assert.equal(parsed.max, 999999, 'cap equals running total at max level');
+});
+
+test('commitMemoToChatState commits a late pass into the saved chat state', async () => {
+    const { commitMemoToChatState } = await import('../memo-processor.js');
+    const st = { currentMemo: 'old', memoHistory: ['old', 'older'], historyIndex: -1, lastDelta: '' };
+    commitMemoToChatState(st, 'old', 'new', '+ new');
+    assert.equal(st.currentMemo, 'new');
+    assert.deepEqual(st.memoHistory.slice(0, 2), ['new', 'old'], 'new state on top, prior preserved');
+    assert.equal(st.historyIndex, 0);
+    assert.equal(st.lastDelta, '+ new');
+});
+
+test('commitMemoToChatState drops the abandoned future when parked on a snapshot', async () => {
+    const { commitMemoToChatState } = await import('../memo-processor.js');
+    const st = { currentMemo: 'b', memoHistory: ['future2', 'future1', 'b', 'a'], historyIndex: 2 };
+    commitMemoToChatState(st, 'b', 'c', 'd');
+    assert.deepEqual(st.memoHistory, ['c', 'b', 'a'], 'futures spliced, prior not duplicated');
+    assert.equal(st.historyIndex, 0);
+});
+
+test('commitMemoToChatState tolerates a chat state without history', async () => {
+    const { commitMemoToChatState } = await import('../memo-processor.js');
+    const st = { currentMemo: '' };
+    commitMemoToChatState(st, '', 'first', '+ first');
+    assert.equal(st.currentMemo, 'first');
+    assert.equal(st.memoHistory[0], 'first');
+    commitMemoToChatState(null, 'x', 'y', 'z');   // must not throw
+});

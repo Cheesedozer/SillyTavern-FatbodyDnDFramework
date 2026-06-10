@@ -157,3 +157,35 @@ test('batch size limits enforced', () => {
     assert.ok(r.errors.some(e => e.includes('nodes (got')));
     assert.equal(validateSkillBatch([], { foundation: FOUNDATION, tier: 1 }).ok, false);
 });
+
+test('selectClassAndForge releases the class lock when nothing was forged', async () => {
+    const { selectClassAndForge } = await import('../skill-forge.js');
+    const foundation = {
+        ...FOUNDATION,
+        CLASS_ROSTER: [{ id: 'render', name: 'Render', fantasy: 'x', role: 'damage', primaryResource: 'focus', treeThemes: ['force'] }],
+    };
+    const progression = { classId: null, tree: { nodes: {}, layout: {}, tiersGenerated: {} } };
+    setSettings({
+        connectionSource: 'openai', // no URL configured → sendAgentTurn throws before any network
+        chatStates: { c1: { campaignMode: 'modern', foundation, progression } },
+    });
+
+    await assert.rejects(() => selectClassAndForge('c1', 'render'));
+    assert.equal(progression.classId, null, 'class unlocked again — user can pick another class');
+});
+
+test('selectClassAndForge keeps the class lock when a tier already forged (resume semantics)', async () => {
+    const { selectClassAndForge } = await import('../skill-forge.js');
+    const foundation = {
+        ...FOUNDATION,
+        CLASS_ROSTER: [{ id: 'render', name: 'Render', fantasy: 'x', role: 'damage', primaryResource: 'focus', treeThemes: ['force'] }],
+    };
+    const progression = { classId: 'render', tree: { nodes: {}, layout: {}, tiersGenerated: { render: 1 } } };
+    setSettings({
+        connectionSource: 'openai',
+        chatStates: { c1: { campaignMode: 'modern', foundation, progression } },
+    });
+
+    await assert.rejects(() => selectClassAndForge('c1', 'render'), 'tier 2 forge still fails');
+    assert.equal(progression.classId, 'render', 'partially-forged class stays locked for retry');
+});

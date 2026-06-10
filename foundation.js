@@ -350,6 +350,85 @@ export async function commitFoundation(chatId, foundation, prefix) {
 }
 
 /**
+ * Builds the [CHARACTER] module prompt for a Modern campaign from its
+ * foundation: the state model must keep Level and every resource pool line
+ * alive across passes (the stock prompt is D&D-shaped and would drop them).
+ * Pure (node-testable).
+ *
+ * @param {object} foundation
+ * @returns {string}
+ */
+/** Marker sentence present in every generated modern character prompt —
+ *  isModernCharacterPrompt() keys on it to tell engine-written prompts apart
+ *  from user-customized ones. */
+const MODERN_CHARACTER_PROMPT_SENTINEL = 'This is NOT a D&D character';
+
+export function buildModernCharacterPrompt(foundation) {
+    const resources = foundation?.POWER_SYSTEM?.resources || [];
+    const resourceLines = resources.map(r => `${r.name}: current/max`).join('\n');
+    const resourceNames = resources.map(r => r.name).join(', ');
+    return `Main character's core stats. Use this format:
+[CHARACTER]
+{{user}} (Class): current/max HP
+Level: N
+${resourceLines}
+Attr: STR X, DEX X, CON X, INT X, WIS X, CHA X
+Traits: Trait1 (effect), Trait2 (effect)
+Status: Effect (duration Xh Xm)
+[/CHARACTER]
+
+Keep the Level line and EVERY resource pool line (${resourceNames}) on every update, even when unchanged. ${MODERN_CHARACTER_PROMPT_SENTINEL}: no spell slots, no AC, no saves, no hit dice.
+
+Upon LEVEL UP, incorporate attribute changes.`;
+}
+
+/**
+ * Whether a [CHARACTER] module prompt is an engine-generated Modern prompt
+ * (as opposed to the stock D&D prompt or a user customization). Used on chat
+ * switch to keep per-campaign prompt swaps from leaking into other chats.
+ * @param {unknown} prompt
+ * @returns {boolean}
+ */
+export function isModernCharacterPrompt(prompt) {
+    return typeof prompt === 'string' && prompt.includes(MODERN_CHARACTER_PROMPT_SENTINEL);
+}
+
+/**
+ * Validates a foundation against a LIVE campaign's progression state before a
+ * re-commit (v2+). Acquired skills are never retconned, so the new contract
+ * must keep every id the progression already references: the locked class and
+ * every resource that forged skills cost. Display names may change freely —
+ * only ids are load-bearing. Pure (node-testable).
+ *
+ * @param {object} foundation - candidate (already schema-valid) foundation
+ * @param {object|null|undefined} progression - chatStates[chatId].progression
+ * @returns {{ok: boolean, errors: string[]}}
+ */
+export function validateFoundationCompatibility(foundation, progression) {
+    const errors = [];
+    if (!progression) return { ok: true, errors };
+
+    if (progression.classId) {
+        const classIds = new Set((foundation?.CLASS_ROSTER || []).map(c => c.id));
+        if (!classIds.has(progression.classId)) {
+            errors.push(`CLASS_ROSTER no longer contains the locked class id "${progression.classId}" — keep that id in the roster (its display name may change).`);
+        }
+    }
+
+    const resourceIds = new Set((foundation?.POWER_SYSTEM?.resources || []).map(r => r.id));
+    const missing = new Set();
+    for (const node of Object.values(progression.tree?.nodes || {})) {
+        const rid = node?.resourceCost?.resourceId;
+        if (rid && !resourceIds.has(rid)) missing.add(rid);
+    }
+    for (const rid of missing) {
+        errors.push(`POWER_SYSTEM.resources no longer contains "${rid}", but forged skills cost it — keep that resource id (its display name may change).`);
+    }
+
+    return { ok: errors.length === 0, errors };
+}
+
+/**
  * Commits a validated foundation and performs first-commit campaign setup:
  * seeds the progression state, enables the [SKILLS] memo module, and clears
  * the onboarding flow flag. Shared by the Foundation Builder's Commit button
@@ -361,6 +440,15 @@ export async function commitFoundation(chatId, foundation, prefix) {
  * @returns {Promise<object>} the stamped foundation
  */
 export async function commitFoundationAndInit(chatId, foundationDoc) {
+    // Re-commit guard: a v2+ foundation must stay compatible with what the
+    // campaign already locked in (class id, resource ids on forged skills).
+    // Blocking here keeps the wizard's "Keep refining" loop as the fix path.
+    const liveProgression = getSettings().chatStates?.[chatId]?.progression;
+    const compat = validateFoundationCompatibility(foundationDoc, liveProgression);
+    if (!compat.ok) {
+        throw new Error(`Incompatible with the live campaign — refine and regenerate:\n- ${compat.errors.join('\n- ')}`);
+    }
+
     const prefix = getEffectiveRouterCampaignPrefix(chatId);
     const stamped = await commitFoundation(chatId, foundationDoc, prefix || 'Campaign');
 
@@ -391,6 +479,11 @@ export async function commitFoundationAndInit(chatId, foundationDoc) {
     const live = getSettings();
     if (!live.modules) live.modules = {};
     live.modules.skills = true;
+    // Swap the [CHARACTER] module prompt to a foundation-aware one so the
+    // state model maintains Level and resource pools (`stockPrompts` is also
+    // snapshotted per chat — D&D chats keep the stock D&D prompt).
+    if (!live.stockPrompts) live.stockPrompts = {};
+    live.stockPrompts.character = buildModernCharacterPrompt(stamped);
     SillyTavern.getContext().saveSettingsDebounced();
 
     toastr['success'](`Foundation v${stamped.foundationVersion} committed — campaign locked to Modern mode.`, 'Foundation Builder');

@@ -73,10 +73,24 @@ function postState(chatId) {
     });
 }
 
+/** Whether `chatId` is the chat currently active in the SillyTavern UI.
+ *  The tab can outlive a chat switch, so bridge mutations must never assume
+ *  the live globals (settings.currentMemo etc.) belong to the tab's chat. */
+function isActiveChat(chatId) {
+    const ctx = SillyTavern.getContext();
+    const active = ctx.chatId || (typeof globalThis._rpgCurrentChatId === 'function' ? globalThis._rpgCurrentChatId() : null);
+    return !!chatId && chatId === active;
+}
+
 /**
- * Refreshes the [SKILLS] block inside settings.currentMemo from acquired
+ * Refreshes the [SKILLS] block inside the tab-chat's memo from acquired
  * actives, and kicks a state-extractor pass for newly acquired PASSIVES so
  * their effects get baked into [CHARACTER] with (P: Name) restoration anchors.
+ *
+ * When the tab's chat is NOT the active chat, only the per-chat snapshot
+ * (chatStates[chatId].currentMemo) is edited — touching settings.currentMemo
+ * would corrupt the chat the user is currently viewing — and the passive
+ * extractor pass is skipped (it can only run against the active chat).
  * @param {string} chatId
  * @param {string[]} allocatedIds
  */
@@ -84,36 +98,44 @@ async function syncMemoAfterApply(chatId, allocatedIds) {
     const settings = getSettings();
     const st = settings.chatStates?.[chatId];
     if (!st?.progression) return;
+    const active = isActiveChat(chatId);
 
     // 1. [SKILLS] block (actives) — deterministic, in-place.
     const block = buildSkillsMemoBlock(st.progression, st.foundation);
-    const memo = settings.currentMemo || '';
+    const memo = (active ? settings.currentMemo : st.currentMemo) || '';
+    let updated = memo;
     if (/\[SKILLS\][\s\S]*?\[\/SKILLS\]/i.test(memo)) {
-        settings.currentMemo = block
+        updated = block
             ? memo.replace(/\[SKILLS\][\s\S]*?\[\/SKILLS\]/i, block)
             : memo.replace(/\s*\[SKILLS\][\s\S]*?\[\/SKILLS\]/i, '').trim();
     } else if (block) {
-        settings.currentMemo = memo ? `${memo.trim()}\n\n${block}` : block;
+        updated = memo ? `${memo.trim()}\n\n${block}` : block;
     }
+    if (active) settings.currentMemo = updated;
+    else st.currentMemo = updated;
 
     // 2. Passives → one setup-time extractor pass (menu action, not a turn).
     const nodes = st.progression.tree?.nodes || {};
     const passives = allocatedIds.map(id => nodes[id]).filter(n => n?.type === 'passive');
     if (passives.length) {
-        const lines = passives.map(n => `- ${n.name}: ${n.effect} (narrative: ${n.descriptor})`).join('\n');
-        try {
-            const { sendDirectPrompt } = await import('./state-pass.js');
-            await sendDirectPrompt(
-                `{{user}} acquired the following PASSIVE skills from the skill tree. Apply each one's mechanical effect directly to the [CHARACTER] block stats (attack lines, Defense, attributes, resource maximums, etc) and annotate each modified value with a restoration anchor in the form (P: Skill Name) so the bonus can be reversed on respec. Do NOT add these to [SKILLS] or [ABILITIES] — they are stat modifications only.\n\n${lines}`,
-            );
-        } catch (e) {
-            console.warn('[RPG Tracker] Passive application pass failed (apply manually via 💬):', e);
-            toastr['warning']('Passive skill effects could not be auto-applied — use the tracker 💬 to apply them.', 'Skill Tree');
+        if (!active) {
+            toastr['warning']('Passive skills applied while another chat is open — switch back and use the tracker 💬 to bake their effects into [CHARACTER].', 'Skill Tree');
+        } else {
+            const lines = passives.map(n => `- ${n.name}: ${n.effect} (narrative: ${n.descriptor})`).join('\n');
+            try {
+                const { sendDirectPrompt } = await import('./state-pass.js');
+                await sendDirectPrompt(
+                    `{{user}} acquired the following PASSIVE skills from the skill tree. Apply each one's mechanical effect directly to the [CHARACTER] block stats (attack lines, Defense, attributes, resource maximums, etc) and annotate each modified value with a restoration anchor in the form (P: Skill Name) so the bonus can be reversed on respec. Do NOT add these to [SKILLS] or [ABILITIES] — they are stat modifications only.\n\n${lines}`,
+                );
+            } catch (e) {
+                console.warn('[RPG Tracker] Passive application pass failed (apply manually via 💬):', e);
+                toastr['warning']('Passive skill effects could not be auto-applied — use the tracker 💬 to apply them.', 'Skill Tree');
+            }
         }
     }
 
     // UI refresh (rendered tracker view)
-    if (typeof globalThis._rpgRefreshRenderedView === 'function') globalThis._rpgRefreshRenderedView();
+    if (active && typeof globalThis._rpgRefreshRenderedView === 'function') globalThis._rpgRefreshRenderedView();
 }
 
 function installChannel(chatId) {
@@ -144,7 +166,13 @@ function installChannel(chatId) {
                 const validation = validateApply(st.progression, st.foundation, request);
                 if (validation.ok) {
                     applyValidatedRequest(st.progression, request, validation);
-                    saveChatState(chatId);
+                    // saveChatState snapshots the LIVE globals (currentMemo, history,
+                    // modules…) into chatStates[chatId] — only valid when chatId IS
+                    // the active chat. Otherwise the in-place chatStates mutations
+                    // above are the persistence; a snapshot would overwrite this
+                    // chat's saved state with the currently-viewed chat's data.
+                    if (isActiveChat(chatId)) saveChatState(chatId);
+                    else SillyTavern.getContext().saveSettingsDebounced();
                     await syncMemoAfterApply(chatId, request.allocate);
                     if (validation.currencyCost > 0) {
                         const currency = st.foundation?.PROGRESSION_RULES?.respec?.currencyName || 'currency';
@@ -166,7 +194,8 @@ function installChannel(chatId) {
                 const validation = validateApply(st.progression, st.foundation, { refund: acquiredIds });
                 if (validation.ok) {
                     applyValidatedRequest(st.progression, { allocate: [], refund: acquiredIds }, validation);
-                    saveChatState(chatId);
+                    if (isActiveChat(chatId)) saveChatState(chatId);
+                    else SillyTavern.getContext().saveSettingsDebounced();
                     await syncMemoAfterApply(chatId, []);
                 }
                 _channel.postMessage({
@@ -212,6 +241,16 @@ export function openSkillTreeTab() {
     // First state push happens on the tab's 'hello', but also push proactively
     // in case the tab was already open and just got focused.
     setTimeout(() => postState(chatId), 400);
+}
+
+/**
+ * Pushes fresh state to an already-open tab after an out-of-band progression
+ * change (class forge, background tier pre-generation). No-op when no tab
+ * channel is installed or it belongs to another chat.
+ * @param {string} chatId
+ */
+export function pushSkillTreeState(chatId) {
+    if (_channel && _channelChatId === chatId) postState(chatId);
 }
 
 /** Re-anchors the bridge when the active chat changes while a tab is open. */

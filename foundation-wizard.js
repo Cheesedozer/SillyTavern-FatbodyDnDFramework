@@ -282,8 +282,12 @@ export function openFoundationWizard() {
             close();
             globalThis._rpgRefreshRenderedView?.();
         } catch (e) {
-            statusEl.textContent = `Commit failed: ${e.message || e}`;
-            setBusy(false);
+            // Surface the failure in the conversation too, so "Keep refining"
+            // lands on a log that tells the architect what to change (e.g. the
+            // re-commit compatibility guard's list of missing ids).
+            append('assistant', `❌ Commit failed: ${e.message || e}`);
+            setBusy(false);   // setBusy resets the status line — write after it
+            statusEl.textContent = 'Commit failed — see the conversation log.';
         }
     });
 }
