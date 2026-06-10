@@ -493,6 +493,14 @@ export function migrateCustomFields() {
 
     migrateSystemPrompt(s);
 
+    // v2→v3: every pre-existing chat IS a D&D-mode campaign. Stamp the mode so
+    // 3.0 code can branch on it without guessing; everything else is untouched.
+    for (const state of Object.values(s.chatStates || {})) {
+        if (state && typeof state === 'object' && state.campaignMode === undefined) {
+            state.campaignMode = 'dnd';
+        }
+    }
+
     // Strip placeholder NEW_TAG entries persisted from previous sessions (one-time cleanup at init)
     if (Array.isArray(s.routerCustomTags)) {
         s.routerCustomTags = s.routerCustomTags.filter(t => t.tag && t.tag !== 'NEW_TAG');
@@ -552,8 +560,25 @@ export function saveChatState(chatId) {
         routerDirectPrompt: s.routerDirectPrompt || '',
         // Preserve lorebook stack link — written by Link button and router, not by normal state saves
         campaignBooks: existing.campaignBooks || [],
+        // v3.0 campaign fields — written at campaign creation / by the progression
+        // engine, never by the normal save cycle. Mode is locked at creation.
+        campaignMode: existing.campaignMode || 'dnd',
+        foundation: existing.foundation,
+        progression: existing.progression,
     };
     SillyTavern.getContext().saveSettingsDebounced();
+}
+
+/**
+ * The locked campaign mode for a chat: 'dnd' (classic) or 'modern' (v3.0).
+ * Chats never seen before default to 'dnd' — Modern is opt-in at creation.
+ * @param {string} chatId
+ * @returns {'dnd'|'modern'}
+ */
+export function getCampaignMode(chatId) {
+    const s = getSettings();
+    const mode = s.chatStates?.[chatId]?.campaignMode;
+    return mode === 'modern' ? 'modern' : 'dnd';
 }
 
 // ── Profile I/O ───────────────────────────────────────────────────────────────
