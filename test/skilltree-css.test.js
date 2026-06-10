@@ -20,3 +20,7 @@ test('#st-empty never intercepts pointer events', () => {
 test('#st-empty respects the [hidden] attribute despite its display rule', () => {
     assert.ok(/#st-empty\[hidden\]\s*\{\s*display:\s*none;?\s*\}/.test(css), '[hidden] override present');
 });
+
+test('global [hidden] rule wins over author display rules', () => {
+    assert.ok(/\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}/.test(css), 'global [hidden] override present');
+});

@@ -52,3 +52,11 @@ test('renderMemoAsCards with empty memo renders the mode picker (no chatId in st
     assert.ok(html.includes('data-mode="dnd"'), 'D&D option present');
     assert.ok(html.includes('data-mode="modern"'), 'Modern option present');
 });
+
+test('empty memo with a filterTag (detached panel) does NOT render the onboarding flow', () => {
+    setSettings({});
+    const html = renderMemoAsCards('', 'QUESTS');
+    assert.ok(!html.includes('rt-mode-btn'), 'no mode picker in detached panels');
+    assert.ok(!html.includes('rt-ob-status'), 'no duplicate onboarding IDs in detached panels');
+    assert.ok(html.includes('rt-empty'), 'renders a simple placeholder instead');
+});

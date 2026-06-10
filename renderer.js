@@ -999,6 +999,12 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
 
     export function renderMemoAsCards(memo, filterTag, sectionPages) {
         if (!memo || !memo.trim()) {
+            // Detached single-tag panels must NOT render the onboarding flow:
+            // it would duplicate the main view's element IDs (rt-ob-status,
+            // rt-modern-*, …) and double-bind its action buttons.
+            if (filterTag) {
+                return `<div class="rt-empty">No ${escapeHtml(filterTag)} data yet.<br><small>This panel fills in once the campaign starts.</small></div>`;
+            }
             const ctx = (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) ? SillyTavern.getContext() : null;
             const chatId = ctx?.chatId || RT.currentChatId || null;
             const st = getSettings().chatStates?.[chatId] || null;

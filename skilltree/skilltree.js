@@ -164,7 +164,7 @@ function nodeState(id) {
     if (staged.refund.has(id)) return 'st-refund';
     if (staged.allocate.has(id)) return 'st-staged';
     if (progression.acquired?.[id]) return 'st-acquired';
-    if ((progression.level || 1) < (n.levelGate || 0)) return 'st-locked';
+    if ((progression.level || 1) < (n?.levelGate || 0)) return 'st-locked';
     // prereq-reachable with current acquired+staged set?
     const owned = new Set([...Object.keys(progression.acquired || {}), ...staged.allocate]);
     for (const id2 of staged.refund) owned.delete(id2);
@@ -284,7 +284,7 @@ function showTooltip(n, e) {
     if (n.cooldown) costBits.push(`CD ${n.cooldown.turns} turns`);
     const rc = rarityColor(n);
     tt.innerHTML = `
-        <div class="tt-name" ${rc ? `style="color:${rc}"` : ''}>${escapeHtml(n.name)}</div>
+        <div class="tt-name" ${rc ? `style="color:${escapeHtml(rc)}"` : ''}>${escapeHtml(n.name)}</div>
         <div class="tt-meta">Tier ${n.tier} ${n.jobId ? `· ${escapeHtml(n.jobId)} (job)` : ''} · ${n.type} · ${n.cost} pt${n.cost > 1 ? 's' : ''}${costBits.length ? ' · ' + escapeHtml(costBits.join(', ')) : ''}</div>
         <div class="tt-effect">${escapeHtml(n.effect)}</div>
         <div class="tt-desc">${escapeHtml(n.descriptor)}</div>

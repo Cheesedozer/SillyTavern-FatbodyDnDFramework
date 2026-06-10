@@ -160,3 +160,12 @@ test('writeXpLineToMemo replaces the block or appends a new one', async () => {
     const appended = writeXpLineToMemo('[CHARACTER]x[/CHARACTER]', 'Level: 1 | XP: 0/100');
     assert.deepEqual(parseXpFromMemo(appended), { level: 1, cur: 0, max: 100 });
 });
+
+test('parseXpFromMemo handles the max-level "(MAX)" line written by formatXpLine', async () => {
+    const { parseXpFromMemo } = await import('../memo-processor.js');
+    const parsed = parseXpFromMemo('[XP]Level: 100 | XP: 999,999 (MAX)[/XP]');
+    assert.ok(parsed, 'MAX line parses');
+    assert.equal(parsed.level, 100);
+    assert.equal(parsed.cur, 999999);
+    assert.equal(parsed.max, 999999, 'cap equals running total at max level');
+});

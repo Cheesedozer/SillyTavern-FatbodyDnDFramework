@@ -21,7 +21,12 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
 
     export async function runStateModelPass(narrativeOutput, isFullContext = false, overrideLookback = null) {
         const settings = getSettings();
-        
+        // Captured NOW: the user may switch chats while the LLM generates, and
+        // progression must apply to the chat this pass belongs to.
+        const passChatId = (typeof globalThis._rpgCurrentChatId === 'function'
+            ? globalThis._rpgCurrentChatId()
+            : SillyTavern.getContext().chatId) || null;
+
         // Deterministic logic: Auto-fail quests past deadline (if not using frustration)
         checkQuestDeadlines();
 
@@ -141,7 +146,7 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
 
                 // Modern mode: threshold detection + XP-line normalization (engine truth).
                 // Must run before history archival so snapshots carry the corrected line.
-                merged = applyModernProgression(settings, merged);
+                merged = applyModernProgression(settings, merged, passChatId);
 
                 // Linear Stone History Logic:
                 // 1. If we were viewing/committed to a past state, delete the "abandoned" future.
@@ -217,13 +222,16 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
      *
      * @param {ReturnType<typeof getSettings>} settings
      * @param {string} merged - merged memo text
+     * @param {string|null} [passChatId] - chat the pass STARTED on. Callers must
+     *        capture it at pass start: resolving the chat here would target
+     *        whatever chat the user switched to while the LLM was generating.
      * @returns {string} memo with the normalized [XP] line
      */
-    export function applyModernProgression(settings, merged) {
+    export function applyModernProgression(settings, merged, passChatId = null) {
         try {
-            const chatId = typeof globalThis._rpgCurrentChatId === 'function'
+            const chatId = passChatId || (typeof globalThis._rpgCurrentChatId === 'function'
                 ? globalThis._rpgCurrentChatId()
-                : SillyTavern.getContext().chatId;
+                : SillyTavern.getContext().chatId);
             if (!chatId || getCampaignMode(chatId) !== 'modern') return merged;
 
             const prog = settings.chatStates?.[chatId]?.progression;
@@ -290,6 +298,11 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
         const settings = getSettings();
         const { generateRaw } = SillyTavern.getContext();
         if (!generateRaw) return;
+        // Captured at start — progression must target the chat this prompt
+        // belongs to even if the user switches chats during generation.
+        const passChatId = (typeof globalThis._rpgCurrentChatId === 'function'
+            ? globalThis._rpgCurrentChatId()
+            : SillyTavern.getContext().chatId) || null;
 
         try {
             RT.stateModelRunning = true;
@@ -349,7 +362,7 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                 // exactly like runStateModelPass — without this, initial character
                 // creation (which goes through this direct path) never gets the
                 // Level/XP line. No-op for D&D chats.
-                merged = applyModernProgression(settings, merged);
+                merged = applyModernProgression(settings, merged, passChatId);
 
                 if (merged !== sanitizedCurrent) {
                     const delta = computeDelta(sanitizedCurrent, merged);

@@ -2,6 +2,19 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.2.2] - 2026-06-10
+
+**Bug hunt.** A systematic sweep of Modern mode and the new onboarding code.
+
+### Fixed
+- **Cross-chat state corruption from the Skill Tree tab**: applying or resetting skills in a tab whose chat was no longer the active chat snapshotted the *currently viewed* chat's memo/history into the tab's chat (wholesale overwrite) and wrote the [SKILLS] block into the wrong chat's live memo. Bridge mutations are now active-chat-aware: inactive chats are edited only in their own saved state, and the passive-skill extractor pass is deferred with a hint instead of running against the wrong chat.
+- **Onboarding UI duplicated into detached panels**: a detached block panel on an empty chat rendered the full onboarding flow (duplicate element IDs, double-bound action buttons). Detached panels now show a simple placeholder until the campaign starts.
+- **Modern settings leaking into other chats**: committing a foundation enables the [SKILLS] module and swaps the [CHARACTER] prompt for the campaign — but those live mutations carried into freshly created chats and into chats saved before the keys existed. Entering a non-Modern chat now resets both.
+- **Class choice trapped after a failed forge**: picking a class locks it before the skill forge runs; if the forge failed before producing anything, the dead choice stayed locked. The lock is now released when nothing was forged (partially-forged classes still resume).
+- **Level-ups applied to the wrong chat**: a state pass finishing after a chat switch resolved the chat *at completion time*, applying XP/level-ups to whichever chat the user had switched to. The chat is now captured when the pass starts.
+- **XP line unparseable at max level**: the `(MAX)` form written at the level cap didn't match the XP parser.
+- **Skill Tree tab hardening**: AI-generated rarity colors are escaped before being interpolated into tooltip markup; a global `[hidden] { display: none !important; }` rule prevents any future author-CSS/hidden conflicts; null-safe node lookups.
+
 ## [3.2.1] - 2026-06-10
 
 **Skill tree unblocked & Modern HUD stats.** Fixes the invisible click-blocker over the skill tree and makes Level, Stamina, Mana (and any custom foundation resource) visible in the tracker right after Modern character creation.

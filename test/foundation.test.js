@@ -188,3 +188,10 @@ test('buildModernCharacterPrompt lists Level and every foundation resource pool'
     }
     assert.ok(/no spell slots/i.test(p), 'D&D constructs explicitly excluded');
 });
+
+test('isModernCharacterPrompt distinguishes engine-written prompts from stock/custom ones', async () => {
+    const { isModernCharacterPrompt } = await import('../foundation.js');
+    assert.equal(isModernCharacterPrompt(buildModernCharacterPrompt(defaultFoundation())), true);
+    assert.equal(isModernCharacterPrompt('Main character core stats with spell slots and AC.'), false);
+    assert.equal(isModernCharacterPrompt(undefined), false);
+});

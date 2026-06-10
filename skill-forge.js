@@ -376,14 +376,25 @@ export async function selectClassAndForge(chatId, classId, onProgress = () => {}
     if (!prog.tree) prog.tree = { nodes: {}, layout: {}, tiersGenerated: {} };
 
     let total = 0;
-    for (const tier of [1, 2]) {
-        if ((prog.tree.tiersGenerated[classId] || 0) >= tier) continue;
-        onProgress(`Forging ${branch.name} — tier ${tier}…`);
-        const { nodes } = await forgeTier({ foundation, branch, tier, existingTree: prog.tree.nodes });
-        for (const n of nodes) prog.tree.nodes[n.id] = n;
-        prog.tree.tiersGenerated[classId] = tier;
-        total += nodes.length;
-        SillyTavern.getContext().saveSettingsDebounced();
+    try {
+        for (const tier of [1, 2]) {
+            if ((prog.tree.tiersGenerated[classId] || 0) >= tier) continue;
+            onProgress(`Forging ${branch.name} — tier ${tier}…`);
+            const { nodes } = await forgeTier({ foundation, branch, tier, existingTree: prog.tree.nodes });
+            for (const n of nodes) prog.tree.nodes[n.id] = n;
+            prog.tree.tiersGenerated[classId] = tier;
+            total += nodes.length;
+            SillyTavern.getContext().saveSettingsDebounced();
+        }
+    } catch (e) {
+        // The class only locks once something was actually forged for it. If
+        // tier 1 never landed, release the lock so the user can still pick a
+        // different class instead of being trapped on a dead choice.
+        if ((prog.tree.tiersGenerated[classId] || 0) === 0) {
+            prog.classId = null;
+            SillyTavern.getContext().saveSettingsDebounced();
+        }
+        throw e;
     }
     return { nodeCount: total };
 }

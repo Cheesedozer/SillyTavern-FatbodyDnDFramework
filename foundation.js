@@ -358,6 +358,11 @@ export async function commitFoundation(chatId, foundation, prefix) {
  * @param {object} foundation
  * @returns {string}
  */
+/** Marker sentence present in every generated modern character prompt —
+ *  isModernCharacterPrompt() keys on it to tell engine-written prompts apart
+ *  from user-customized ones. */
+const MODERN_CHARACTER_PROMPT_SENTINEL = 'This is NOT a D&D character';
+
 export function buildModernCharacterPrompt(foundation) {
     const resources = foundation?.POWER_SYSTEM?.resources || [];
     const resourceLines = resources.map(r => `${r.name}: current/max`).join('\n');
@@ -372,9 +377,20 @@ Traits: Trait1 (effect), Trait2 (effect)
 Status: Effect (duration Xh Xm)
 [/CHARACTER]
 
-Keep the Level line and EVERY resource pool line (${resourceNames}) on every update, even when unchanged. This is NOT a D&D character: no spell slots, no AC, no saves, no hit dice.
+Keep the Level line and EVERY resource pool line (${resourceNames}) on every update, even when unchanged. ${MODERN_CHARACTER_PROMPT_SENTINEL}: no spell slots, no AC, no saves, no hit dice.
 
 Upon LEVEL UP, incorporate attribute changes.`;
+}
+
+/**
+ * Whether a [CHARACTER] module prompt is an engine-generated Modern prompt
+ * (as opposed to the stock D&D prompt or a user customization). Used on chat
+ * switch to keep per-campaign prompt swaps from leaking into other chats.
+ * @param {unknown} prompt
+ * @returns {boolean}
+ */
+export function isModernCharacterPrompt(prompt) {
+    return typeof prompt === 'string' && prompt.includes(MODERN_CHARACTER_PROMPT_SENTINEL);
 }
 
 /**

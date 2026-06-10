@@ -588,6 +588,14 @@ export function parseXpFromMemo(memoText) {
         };
     }
 
+    // Max-level form written by formatXpLine: "Level: 100 | XP: 999,999 (MAX)" —
+    // no denominator, so the cap equals the running total.
+    m = haystack.match(/(?:Level:\s*(\d+)\s*\|?\s*)?XP:\s*([\d,]+)\s*\(MAX\)/i);
+    if (m) {
+        const cur = Number(m[2].replace(/,/g, ''));
+        return { level: m[1] ? Number(m[1]) : null, cur, max: cur };
+    }
+
     return null;
 }
 
