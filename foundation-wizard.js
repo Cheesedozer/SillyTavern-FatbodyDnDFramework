@@ -298,6 +298,11 @@ export function openFoundationWizard() {
             } else {
                 st.progression.foundationVersion = stamped.foundationVersion;
             }
+            // Enable the [SKILLS] memo module for this campaign (chat-linked saves
+            // snapshot `modules` per chat, so D&D chats keep it off).
+            const live = getSettings();
+            if (!live.modules) live.modules = {};
+            live.modules.skills = true;
             SillyTavern.getContext().saveSettingsDebounced();
 
             toastr['success'](`Foundation v${stamped.foundationVersion} committed — campaign locked to Modern mode.`, 'Foundation Builder');

@@ -9,9 +9,10 @@
  * index.js keeps the globalThis._rpgRunStateModelPass bridge (re-exported here),
  * so narrative-hooks.js's interceptor path is unaffected.
  */
-import { getSettings, getEffectiveRouterCampaignPrefix } from './state-manager.js';
+import { getSettings, getEffectiveRouterCampaignPrefix, getCampaignMode } from './state-manager.js';
 import { sendStateRequest } from './llm-client.js';
-import { buildLorebookContext, buildModulesInstructionText, cleanToolCallMessage, computeDelta, mergeMemo, parseQuestsFromMemo, syncQuestsFromMemo, writeQuestsToMemo } from './memo-processor.js';
+import { buildLorebookContext, buildModulesInstructionText, cleanToolCallMessage, computeDelta, mergeMemo, parseQuestsFromMemo, parseXpFromMemo, syncQuestsFromMemo, writeQuestsToMemo, writeXpLineToMemo } from './memo-processor.js';
+import { detectLevelUp, formatXpLine, levelForXp } from './progression-engine.js';
 import { stripMemoHtml } from './renderer.js';
 import { checkQuestDeadlines } from './quests.js';
 import { RT } from './shared-state.js';
@@ -137,6 +138,10 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                     if (settings.debugMode) console.log(`[RPG Tracker] Flushed ${count} pending quest(s) into merged memo.`);
                 }
 
+                // Modern mode: threshold detection + XP-line normalization (engine truth).
+                // Must run before history archival so snapshots carry the corrected line.
+                merged = applyModernProgression(settings, merged);
+
                 // Linear Stone History Logic:
                 // 1. If we were viewing/committed to a past state, delete the "abandoned" future.
                 if (settings.historyIndex !== undefined && settings.historyIndex !== -1) {
@@ -193,6 +198,69 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
             RT.stateModelRunning = false;
             RT.stateController = null;
             updateStatusIndicator('active');
+        }
+    }
+
+    /**
+     * Modern-mode progression step, run on every merged memo (no-op for D&D
+     * chats). This is the v3.0 "level-up inversion": the narrator only awards
+     * XP inline; JS owns the thresholds.
+     *
+     * 1. Parse the cumulative XP from the merged [XP] block.
+     * 2. Detect threshold crossings (progression-engine), award skill points,
+     *    and stage `pendingLevelUp` — the interceptor injects the
+     *    [SYSTEM DIRECTIVE: LEVEL UP ...] on the next generation.
+     * 3. Normalize the [XP] line to engine truth (level + next-threshold),
+     *    so extractor drift can shift pacing slightly but never skip or
+     *    duplicate a level-up.
+     *
+     * @param {ReturnType<typeof getSettings>} settings
+     * @param {string} merged - merged memo text
+     * @returns {string} memo with the normalized [XP] line
+     */
+    export function applyModernProgression(settings, merged) {
+        try {
+            const chatId = typeof globalThis._rpgCurrentChatId === 'function'
+                ? globalThis._rpgCurrentChatId()
+                : SillyTavern.getContext().chatId;
+            if (!chatId || getCampaignMode(chatId) !== 'modern') return merged;
+
+            const prog = settings.chatStates?.[chatId]?.progression;
+            if (!prog) return merged;
+
+            const parsed = parseXpFromMemo(merged);
+            if (parsed && Number.isFinite(parsed.cur)) {
+                const prevXp = prog.xp || 0;
+                // XP only ever accrues — extractor regressions (re-emitting an old
+                // line, dropping a digit) are ignored in favor of engine truth.
+                if (parsed.cur > prevXp) {
+                    const up = detectLevelUp(prevXp, parsed.cur);
+                    prog.xp = parsed.cur;
+                    if (up) {
+                        prog.level = up.toLevel;
+                        if (!prog.skillPoints) prog.skillPoints = { earned: 0, spent: 0 };
+                        prog.skillPoints.earned += up.points;
+                        prog.pendingLevelUp = {
+                            toLevel: up.toLevel,
+                            points: up.points,
+                            milestone: up.milestone,
+                            delivered: false,
+                        };
+                        toastr['success'](
+                            `Level ${up.toLevel}${up.milestone ? ' — milestone!' : ''} (+${up.points} skill points)`,
+                            'RPG Tracker',
+                        );
+                    }
+                } else {
+                    prog.level = levelForXp(prog.xp || 0);
+                }
+            }
+
+            // Normalize the XP line to engine truth on every pass.
+            return writeXpLineToMemo(merged, formatXpLine(prog.xp || 0));
+        } catch (e) {
+            console.warn('[RPG Tracker] Modern progression step failed open:', e);
+            return merged;
         }
     }
 

@@ -129,3 +129,34 @@ test('parseQuestsFromMemo returns [] when no block present', () => {
     setSettings({ debugMode: false });
     assert.deepEqual(parseQuestsFromMemo('[TIME]\nDay 1\n[/TIME]'), []);
 });
+
+// ── XP block parsing/writing (v3.0) ────────────────────────────────────────────
+
+test('parseXpFromMemo reads both renderer formats, preferring the [XP] block', async () => {
+    const { parseXpFromMemo } = await import('../memo-processor.js');
+    assert.deepEqual(
+        parseXpFromMemo('[XP]Level: 12 | XP: 24,950/28,200[/XP]'),
+        { level: 12, cur: 24950, max: 28200 });
+    assert.deepEqual(
+        parseXpFromMemo('[XP]Total: 1,200 / 2,700 XP (Level 3)[/XP]'),
+        { level: 3, cur: 1200, max: 2700 });
+    assert.deepEqual(
+        parseXpFromMemo('XP: 300/900'),
+        { level: null, cur: 300, max: 900 });
+    // [XP] block wins over stray XP text elsewhere
+    assert.deepEqual(
+        parseXpFromMemo('footer XP: 1/2\n[XP]Level: 5 | XP: 6,500/14,000[/XP]'),
+        { level: 5, cur: 6500, max: 14000 });
+    assert.equal(parseXpFromMemo('no xp here'), null);
+    assert.equal(parseXpFromMemo(''), null);
+});
+
+test('writeXpLineToMemo replaces the block or appends a new one', async () => {
+    const { writeXpLineToMemo, parseXpFromMemo } = await import('../memo-processor.js');
+    const replaced = writeXpLineToMemo('[CHARACTER]x[/CHARACTER]\n[XP]Level: 3 | XP: 900/2,700[/XP]', 'Level: 4 | XP: 2,700/6,500');
+    assert.deepEqual(parseXpFromMemo(replaced), { level: 4, cur: 2700, max: 6500 });
+    assert.ok(replaced.includes('[CHARACTER]x[/CHARACTER]'), 'other blocks untouched');
+
+    const appended = writeXpLineToMemo('[CHARACTER]x[/CHARACTER]', 'Level: 1 | XP: 0/100');
+    assert.deepEqual(parseXpFromMemo(appended), { level: 1, cur: 0, max: 100 });
+});

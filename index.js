@@ -4356,10 +4356,11 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
             eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
             eventSource.on(event_types.GENERATION_STOPPED, onGenerationEnded);
 
-            // Additive sysprompt delivery: establish the rules-only extension prompt at
-            // boot and keep it fresh across chat switches (no-op/clears in standalone mode).
-            void applyAdditiveSysprompt();
-            eventSource.on(event_types.CHAT_CHANGED, () => void applyAdditiveSysprompt());
+            // Sysprompt lifecycle: establish delivery at boot and re-dispatch on chat
+            // switches — campaign mode is per-chat (D&D vs Modern), so the narrator
+            // prompt must follow the active chat. Each path no-ops/clears when inactive.
+            void applySysprompt();
+            eventSource.on(event_types.CHAT_CHANGED, () => void applySysprompt());
 
             // ─── Chat Link ───
             eventSource.on(event_types.CHAT_CHANGED, onChatChanged);

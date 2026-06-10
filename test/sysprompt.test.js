@@ -12,6 +12,7 @@ import { buildSysprompt, ADDITIVE_TAGS, ADDITIVE_HEADER } from '../sysprompt.js'
 
 const SYSPROMPT_TXT = readFileSync(fileURLToPath(new URL('../sysprompt.txt', import.meta.url)), 'utf8');
 const SYSPROMPT_LEGACY_TXT = readFileSync(fileURLToPath(new URL('../sysprompt_legacy.txt', import.meta.url)), 'utf8');
+const SYSPROMPT_MODERN_TXT = readFileSync(fileURLToPath(new URL('../sysprompt_modern.txt', import.meta.url)), 'utf8');
 
 /** Persona-adjacent tags deliberately excluded from the additive (rules-only) variant. */
 const ADDITIVE_EXCLUDED = ['role', 'narrative', 'party_join_leave'];
@@ -65,8 +66,20 @@ test('additive variant still honors syspromptModules toggles', () => {
     assert.ok(out.includes('<combat>'), '<combat> still present');
 });
 
-test('drift guard: every top-level tag in both sysprompt files is classified', () => {
-    for (const txt of [SYSPROMPT_TXT, SYSPROMPT_LEGACY_TXT]) {
+test('modern sysprompt: contains the v3.0 sections and foundation placeholders', () => {
+    for (const tag of ['power_system', 'skills', 'lethality', 'level_up_protocol', 'rng_system']) {
+        assert.ok(SYSPROMPT_MODERN_TXT.includes(`<${tag}>`), `<${tag}> present`);
+    }
+    for (const ph of ['foundation_setting', 'foundation_power_system', 'foundation_dice', 'foundation_currency', 'foundation_award_guidance', 'foundation_downed_window', 'foundation_naming']) {
+        assert.ok(SYSPROMPT_MODERN_TXT.includes(`{{${ph}}}`), `{{${ph}}} placeholder present`);
+    }
+    assert.ok(SYSPROMPT_MODERN_TXT.includes('[FALLBACK]'), 'no-tool-call fallback present');
+    assert.ok(SYSPROMPT_MODERN_TXT.includes('SYSTEM DIRECTIVE: LEVEL UP'), 'directive-driven level-up protocol');
+    assert.ok(SYSPROMPT_MODERN_TXT.includes('DOWNED'), 'standard lethality template specced');
+});
+
+test('drift guard: every top-level tag in all sysprompt files is classified', () => {
+    for (const txt of [SYSPROMPT_TXT, SYSPROMPT_LEGACY_TXT, SYSPROMPT_MODERN_TXT]) {
         const tags = [...txt.matchAll(/^<(\w[\w_-]*)>$/gm)].map(m => m[1]);
         assert.ok(tags.length >= 10, 'sysprompt file parsed (found top-level tags)');
         for (const tag of tags) {

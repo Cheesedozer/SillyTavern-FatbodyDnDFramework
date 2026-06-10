@@ -553,6 +553,60 @@ export function mergeQuestUpdates(jsonText, memoText = null) {
     return target;
 }
 
+// ── XP block parsing/writing (shared by renderer.js and the v3.0 progression engine) ──
+
+/**
+ * Parses the [XP] state out of a memo. Recognizes both formats the renderer
+ * draws (kept in lock-step with renderer.js's XP case):
+ *   New:    "Total: 1,200 / 2,700 XP (Level 3)"
+ *   Legacy: "Level: 3 | XP: 1,200/2,700"  or  "XP: 1,200/2,700"
+ * Searches the [XP] block when present, else the whole text.
+ *
+ * @param {string} memoText
+ * @returns {{level: number|null, cur: number, max: number}|null}
+ */
+export function parseXpFromMemo(memoText) {
+    if (!memoText) return null;
+    const blockMatch = memoText.match(/\[XP\]([\s\S]*?)\[\/XP\]/i);
+    const haystack = blockMatch ? blockMatch[1] : memoText;
+
+    let m = haystack.match(/Total:\s*([\d,]+)\s*\/\s*([\d,]+)\s*XP\s*\(Level\s*(\d+)\)/i);
+    if (m) {
+        return {
+            level: Number(m[3]),
+            cur: Number(m[1].replace(/,/g, '')),
+            max: Number(m[2].replace(/,/g, '')),
+        };
+    }
+
+    m = haystack.match(/(?:Level:\s*(\d+)\s*\|?\s*)?XP:\s*([\d,]+)\/([\d,]+)/i);
+    if (m) {
+        return {
+            level: m[1] ? Number(m[1]) : null,
+            cur: Number(m[2].replace(/,/g, '')),
+            max: Number(m[3].replace(/,/g, '')),
+        };
+    }
+
+    return null;
+}
+
+/**
+ * Replaces the [XP] block's contents with a single line (creating the block
+ * if missing). Used by the Modern progression engine to normalize the XP line
+ * to engine truth after each state pass.
+ * @param {string} memoText
+ * @param {string} xpLine - e.g. "Level: 12 | XP: 24,950/28,200"
+ * @returns {string}
+ */
+export function writeXpLineToMemo(memoText, xpLine) {
+    const block = `[XP]\n${xpLine}\n[/XP]`;
+    if (/\[XP\][\s\S]*?\[\/XP\]/i.test(memoText || '')) {
+        return memoText.replace(/\[XP\][\s\S]*?\[\/XP\]/i, block);
+    }
+    return memoText ? `${memoText.trim()}\n\n${block}` : block;
+}
+
 /**
  * Writes a quest array into a [QUESTS] block.
  * If memoText is provided, returns the updated string.

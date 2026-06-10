@@ -12,9 +12,10 @@
  */
 
 import { FOLDER_NAME } from './env.js';
-import { getSettings } from './state-manager.js';
+import { getSettings, getCampaignMode } from './state-manager.js';
 import { RT_PROMPTS, QUESTS_NARRATOR_LEGACY, QUESTS_NARRATOR_MODERN } from './constants.js';
 import { buildModulesInstructionText } from './memo-processor.js';
+import { getFoundation, foundationPlaceholders } from './foundation.js';
 
 let _autoApplyTimer = null;
 
@@ -35,6 +36,8 @@ export const ADDITIVE_TAGS = [
     'rng_system', 'combat', 'saving_throws', 'loot', 'random_events',
     'xp_system', 'quests', 'level_up_protocol', 'resting',
     'end_of_output_footer', 'state_memo', 'constraints',
+    // Modern-mode (sysprompt_modern.txt) mechanics sections
+    'power_system', 'skills', 'lethality',
 ];
 
 export const ADDITIVE_HEADER =
@@ -53,6 +56,36 @@ async function fetchSyspromptText(fileName) {
     }
 }
 
+/**
+ * Resolves the narrator sysprompt source for the active chat:
+ *  - Modern campaigns (committed foundation) → sysprompt_modern.txt with
+ *    `{{foundation_*}}` placeholders substituted from the foundation.
+ *  - Everything else → the classic D&D files (tool-call or legacy variant).
+ * @returns {Promise<{content: string|undefined, mode: 'dnd'|'modern'}>}
+ */
+async function resolveSyspromptSource() {
+    const s = getSettings();
+    const ctx = SillyTavern.getContext();
+    const chatId = ctx.chatId || (typeof globalThis._rpgCurrentChatId === 'function' ? globalThis._rpgCurrentChatId() : '');
+    const foundation = chatId ? getFoundation(chatId) : null;
+    const isModern = !!chatId && getCampaignMode(chatId) === 'modern' && !!foundation;
+
+    if (isModern) {
+        let content = await fetchSyspromptText('sysprompt_modern.txt');
+        if (content) {
+            const placeholders = foundationPlaceholders(foundation);
+            for (const [key, value] of Object.entries(placeholders)) {
+                content = content.split(`{{${key}}}`).join(value);
+            }
+            return { content, mode: 'modern' };
+        }
+        console.error('[Fatbody Framework] sysprompt_modern.txt unavailable — falling back to D&D sysprompt.');
+    }
+
+    const fileName = s.diceFunctionTool ? 'sysprompt.txt' : 'sysprompt_legacy.txt';
+    return { content: await fetchSyspromptText(fileName), mode: 'dnd' };
+}
+
 export async function autoApplySysprompt() {
     const s = getSettings();
     // Master switch: never (re)write the Main prompt box while the extension is
@@ -67,8 +100,7 @@ export async function autoApplySysprompt() {
     // Mechanics ship via the extension prompt instead (applyAdditiveSysprompt).
     if (s.syspromptDelivery === 'additive') return;
 
-    const fileName = s.diceFunctionTool ? 'sysprompt.txt' : 'sysprompt_legacy.txt';
-    const content = await fetchSyspromptText(fileName);
+    const { content } = await resolveSyspromptSource();
     if (!content) return;
 
     const built = buildSysprompt(content);
@@ -96,8 +128,7 @@ export async function applyAdditiveSysprompt() {
         return;
     }
 
-    const fileName = s.diceFunctionTool ? 'sysprompt.txt' : 'sysprompt_legacy.txt';
-    const content = await fetchSyspromptText(fileName);
+    const { content } = await resolveSyspromptSource();
     if (!content) return;
 
     setExtensionPrompt(ADDITIVE_PROMPT_KEY, buildSysprompt(content, { variant: 'additive' }), 0, 0);

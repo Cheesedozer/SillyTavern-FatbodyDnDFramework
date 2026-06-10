@@ -12,7 +12,7 @@
  * circular import. This will be cleaned up when index.js is split.
  */
 
-import { getSettings, getActivationMode } from './state-manager.js';
+import { getSettings, getActivationMode, getCampaignMode } from './state-manager.js';
 import { parseQuestsFromMemo, buildActiveLorebookContext, estimateTokens, estimateExternalPromptTokens, budgetInjections, OUTPUT_HEADROOM_FRAC } from './memo-processor.js';
 import { runRouterPass, saveSceneToLorebook, scanAssistantOutputForKeywords } from './router.js';
 import { logTransaction } from './debug-viewer.js';
@@ -35,6 +35,31 @@ export function getDiceCommandAliases() {
 
 export const RNG_QUEUE_LEN = 12;
 
+/**
+ * Per-mode dice compositions for the RNG queue. The D&D profile is the
+ * historical byte-locked shape (test/narrative-hooks.test.js); Modern
+ * campaigns derive theirs from the foundation's POWER_SYSTEM.diceProfile.
+ */
+export const DICE_PROFILES = {
+    dnd: { primary: 'd20', subdice: ['d4', 'd6', 'd8', 'd10', 'd12'], queueLen: RNG_QUEUE_LEN },
+};
+
+/**
+ * Builds a dice profile from a foundation's POWER_SYSTEM.diceProfile, falling
+ * back to D&D for missing/malformed input.
+ * @param {{primary?: string, subdice?: string[], queueLen?: number}|null} dp
+ * @returns {{primary: string, subdice: string[], queueLen: number}}
+ */
+export function profileFromFoundation(dp) {
+    if (!dp || !/^d\d{1,3}$/.test(dp.primary || '')) return DICE_PROFILES.dnd;
+    const subdice = Array.isArray(dp.subdice)
+        ? dp.subdice.filter(d => /^d\d{1,3}$/.test(d) && d !== dp.primary)
+        : [];
+    const queueLen = (Number.isFinite(dp.queueLen) && dp.queueLen >= 1 && dp.queueLen <= 24)
+        ? Math.floor(dp.queueLen) : RNG_QUEUE_LEN;
+    return { primary: dp.primary, subdice, queueLen };
+}
+
 export function rollDie(sides) {
     const buf = new Uint32Array(1);
     const limit = Math.floor(4294967296 / sides) * sides;
@@ -43,26 +68,24 @@ export function rollDie(sides) {
     return (roll % sides) + 1;
 }
 
-export function makeRngQueue(n = RNG_QUEUE_LEN) {
+const dieSides = (d) => parseInt(String(d).slice(1), 10);
+
+export function makeRngQueue(n = RNG_QUEUE_LEN, profile = DICE_PROFILES.dnd) {
     const out = [];
     for (let i = 0; i < n; i++) {
-        out.push({
-            d20: rollDie(20),
-            d4:  rollDie(4),
-            d6:  rollDie(6),
-            d8:  rollDie(8),
-            d10: rollDie(10),
-            d12: rollDie(12),
-        });
+        const entry = { [profile.primary]: rollDie(dieSides(profile.primary)) };
+        for (const d of profile.subdice) entry[d] = rollDie(dieSides(d));
+        out.push(entry);
     }
     return out;
 }
 
-export function buildRngBlock(queue) {
+export function buildRngBlock(queue, profile = DICE_PROFILES.dnd) {
     const turnId = Date.now();
-    const formattedQueue = queue.map(dice =>
-        `${dice.d20}(d4:${dice.d4},d6:${dice.d6},d8:${dice.d8},d10:${dice.d10},d12:${dice.d12})`
-    ).join(", ");
+    const formattedQueue = queue.map(dice => {
+        const subs = profile.subdice.map(d => `${d}:${dice[d]}`).join(',');
+        return subs ? `${dice[profile.primary]}(${subs})` : `${dice[profile.primary]}`;
+    }).join(", ");
     return `[RNG_QUEUE v6.0_PROPER]\nturn_id=${turnId}\nscope=this_response\nqueue=[${formattedQueue}]\n[/RNG_QUEUE]\n\n`;
 }
 
@@ -257,10 +280,32 @@ export function installInterceptor() {
             const msg = chat[idx];
             const content = msg['content'] || msg.mes || '';
 
+            // ── Campaign mode context (v3.0): Modern chats swap the dice profile
+            // and may carry a pending level-up directive. ──
+            const chatId = typeof globalThis._rpgCurrentChatId === 'function'
+                ? globalThis._rpgCurrentChatId()
+                : SillyTavern.getContext().chatId;
+            const isModern = !!chatId && getCampaignMode(chatId) === 'modern';
+            const chatState = isModern ? settings.chatStates?.[chatId] : null;
+
             // ── Tier 0: RNG queue (tiny, combat-critical — never dropped) ──
             let rngBlock = '';
             if (settings.rngEnabled && !content.includes("[RNG_QUEUE v6.0_PROPER]")) {
-                rngBlock = buildRngBlock(makeRngQueue(RNG_QUEUE_LEN));
+                const profile = isModern
+                    ? profileFromFoundation(chatState?.foundation?.POWER_SYSTEM?.diceProfile)
+                    : DICE_PROFILES.dnd;
+                rngBlock = buildRngBlock(makeRngQueue(profile.queueLen, profile), profile);
+            }
+
+            // ── Tier 0b: pending level-up directive (Modern) — tiny, never dropped ──
+            let levelUpDirective = '';
+            const pending = chatState?.progression?.pendingLevelUp;
+            if (pending) {
+                levelUpDirective = `[SYSTEM DIRECTIVE: LEVEL UP — {{user}} reached Level ${pending.toLevel}. `
+                    + `Follow the <level_up_protocol> NOW: pause the narrative, announce the level-up, `
+                    + `grant +${pending.points} skill points${pending.milestone ? ' (milestone bonus included)' : ''}, `
+                    + `and await the player before continuing.]\n\n`;
+                pending.delivered = true;   // cleared in onGenerationEnded after this generation lands
             }
 
             // ── Tier 5: STATE MEMO (largest contributor — trimmed/dropped last) ──
@@ -379,6 +424,7 @@ export function installInterceptor() {
                 externalTokens,
                 items: [
                     { name: 'RNG',             tier: 0, text: rngBlock },
+                    { name: 'LEVEL UP',        tier: 0, text: levelUpDirective },
                     { name: 'STATE MEMO',      tier: 5, text: memoBlock, trimmable: true },
                     { name: 'quests',          tier: 1, text: questText },
                     { name: 'keyword lore',    tier: 2, text: keywordLore },
@@ -492,6 +538,15 @@ export async function onGenerationEnded() {
     const settings = getSettings();
     const isStateRunning = typeof globalThis._rpgStateModelRunning === 'function' && globalThis._rpgStateModelRunning();
     if (!settings.enabled || settings.paused || isStateRunning) return;
+
+    // Modern mode: a level-up directive that was delivered with the generation
+    // that just finished is consumed (fail-open — one delivery per level-up;
+    // the state pass below may stage a NEW one from this generation's XP).
+    try {
+        const chatId = typeof globalThis._rpgCurrentChatId === 'function' ? globalThis._rpgCurrentChatId() : null;
+        const prog = chatId ? settings.chatStates?.[chatId]?.progression : null;
+        if (prog?.pendingLevelUp?.delivered) prog.pendingLevelUp = null;
+    } catch (_) { /* never block the pipeline */ }
 
     const { chat } = SillyTavern.getContext();
     const combinedNarrative = getNarrativeBlocks(chat, -1, !!settings.routerIncludeHidden);
