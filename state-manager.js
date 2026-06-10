@@ -204,7 +204,14 @@ You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These
         routerDirectLookback: 10,
         routerDirectPrompt: "",
         routerBasicMode: false,
+        /** @deprecated v2.5.1 — folded into routerActivationMode ('native'). Kept for migration. */
         routerNativeKeywordActivation: false,
+        // How agent-managed lorebook entries get activated/injected:
+        //  'managed'  - Fatbody's keyword scanner + manual injection (default, classic behavior)
+        //  'native'   - entries left enabled; ST's native World Info keyword scanner activates them
+        //  'semantic' - entries stay dormant; VectFox semantic World Info activation surfaces them
+        //               by similarity (no keywords, no constant entries). Agent is a pure writer.
+        routerActivationMode: "managed",
         routerPaused: false,
         routerRunEvery: 1,
         routerIncludeHidden: false,
@@ -323,6 +330,14 @@ export function getSettings() {
     // ── MIGRATION: routerModules (v1.8.35+) ───────────────────────────────────
     const s = extensionSettings[MODULE_NAME];
 
+    // routerNativeKeywordActivation (≤2.4.x) → routerActivationMode (2.5.1+).
+    // The legacy boolean is consumed (set false) so this runs exactly once and
+    // routerActivationMode becomes the single source of truth.
+    if (s.routerNativeKeywordActivation) {
+        s.routerActivationMode = 'native';
+        s.routerNativeKeywordActivation = false;
+    }
+
     if (s.routerModules && typeof s.routerModules.npc === 'boolean') {
         const old = s.routerModules;
         s.routerModules = {
@@ -364,6 +379,18 @@ export function getSettings() {
     }
 
     return extensionSettings[MODULE_NAME];
+}
+
+// ── Router activation mode ─────────────────────────────────────────────────────
+
+/**
+ * Resolves the router's lorebook-activation mode: 'managed' | 'native' | 'semantic'.
+ * @param {Record<string, any>} [s] - settings object (defaults to getSettings())
+ * @returns {'managed'|'native'|'semantic'}
+ */
+export function getActivationMode(s = getSettings()) {
+    const mode = s.routerActivationMode;
+    return (mode === 'native' || mode === 'semantic') ? mode : 'managed';
 }
 
 // ── Bar color resolver ─────────────────────────────────────────────────────────

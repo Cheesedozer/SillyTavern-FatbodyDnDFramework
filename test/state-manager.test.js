@@ -112,3 +112,27 @@ test('reset-by-delete: getSettings backfills a deleted key with an independent c
     setSettings({});
     assert.equal(getSettings().modules.combat, true);
 });
+
+// ── Router activation mode (v2.5.1) ───────────────────────────────────────────
+
+test('routerActivationMode defaults to managed; helper normalizes junk values', async () => {
+    const { getActivationMode } = await import('../state-manager.js');
+    setSettings({});
+    assert.equal(getActivationMode(getSettings()), 'managed');
+    setSettings({ routerActivationMode: 'semantic' });
+    assert.equal(getActivationMode(getSettings()), 'semantic');
+    setSettings({ routerActivationMode: 'bogus' });
+    assert.equal(getActivationMode(getSettings()), 'managed', 'unknown values fall back to managed');
+});
+
+test('migration: legacy routerNativeKeywordActivation=true becomes mode native, once', async () => {
+    const { getActivationMode } = await import('../state-manager.js');
+    setSettings({ routerNativeKeywordActivation: true });
+    const s = getSettings();
+    assert.equal(getActivationMode(s), 'native', 'legacy flag mapped to native mode');
+    assert.equal(s.routerNativeKeywordActivation, false, 'legacy flag consumed');
+
+    // User later switches to managed — re-reading settings must NOT force native back.
+    s.routerActivationMode = 'managed';
+    assert.equal(getActivationMode(getSettings()), 'managed', 'migration does not re-fire');
+});

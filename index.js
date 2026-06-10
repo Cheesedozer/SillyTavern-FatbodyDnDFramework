@@ -1,6 +1,6 @@
 import { EXAMPLES, COLOR_EXAMPLES, DEFAULT_STOCK_PROMPTS, RT_PROMPTS, BLOCK_ICONS, PAGE_SIZE, NO_PAGINATE } from './constants.js';
 import { BLOCK_ORDER } from './module-registry.js';
-import { MODULE_NAME, DEFAULT_MODULES, getSettings, getBarBackground, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
+import { MODULE_NAME, DEFAULT_MODULES, getSettings, getActivationMode, getBarBackground, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
 import { sendStateRequest, fetchOllamaModels, fetchOpenAIModels, testOpenAIConnection, getConnectionProfiles, getCurrentCompletionPreset, setCompletionPreset } from './llm-client.js';
 import { getDiceToolName, getDiceCommandName, getDiceCommandAliases, doDiceRoll, registerDiceFunctionTool, registerDiceSlashCommand, installInterceptor, getNarrativeBlocks, onGenerationEnded, resetRouterTick } from './narrative-hooks.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
@@ -1065,6 +1065,10 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
     globalThis._rpgCurrentChatId = () => RT.currentChatId;
     // Expose live prefix derivation for any module that needs the current prefix.
     globalThis._rpgGetCurrentPrefix = () => getEffectiveRouterCampaignPrefix(SillyTavern.getContext().chatId || '');
+    // Cross-extension handshake (VectFox 3.4.1+): how campaign lorebook entries are
+    // activated. 'managed' = Fatbody injects manually (VectFox must skip our books);
+    // 'native' = ST keyword scanner; 'semantic' = VectFox similarity search owns surfacing.
+    globalThis._rpgGetActivationMode = () => getActivationMode(getSettings());
 
     // [runStateModelPass/handleLevelUp/sendDirectPrompt moved to state-pass.js]
 
@@ -1802,9 +1806,13 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                         <input type="checkbox" id="rt-agent-router-basic" ${settings.routerBasicMode ? 'checked' : ''}>
                     </label>
 
-                    <label style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; cursor: pointer; opacity: 0.8; font-size: 0.846em;" title="When enabled, the extension's keyword scanner is fully disabled. SillyTavern's native lorebook keyword system handles all keyword-based entry activation. The agent will not auto-activate or auto-expire entries based on keywords.">
-                        Native Keyword Activation
-                        <input type="checkbox" id="rt-agent-router-native-kw" ${settings.routerNativeKeywordActivation ? 'checked' : ''}>
+                    <label style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; opacity: 0.8; font-size: 0.846em;" title="Managed: Fatbody's keyword scanner + manual injection control which entries reach the prompt (classic behavior). Native: entries are left enabled and SillyTavern's own World Info keyword scanner activates them. Semantic: entries stay dormant and VectFox's semantic World Info activation surfaces them by similarity — no keywords, no constant entries (requires VectFox 3.4.1+).">
+                        Entry Activation
+                        <select id="rt-agent-router-activation-mode" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); color: white; border-radius: 3px; font-size: 0.923em; padding: 1px 4px;">
+                            <option value="managed" ${getActivationMode(settings) === 'managed' ? 'selected' : ''}>Managed (Fatbody)</option>
+                            <option value="native" ${getActivationMode(settings) === 'native' ? 'selected' : ''}>Native (ST keywords)</option>
+                            <option value="semantic" ${getActivationMode(settings) === 'semantic' ? 'selected' : ''}>Semantic (VectFox)</option>
+                        </select>
                     </label>
 
                     <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
@@ -2397,12 +2405,18 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                 });
             }
 
-            const nativeKwCheck = agentPanel.querySelector('#rt-agent-router-native-kw');
-            if (nativeKwCheck) {
-                nativeKwCheck.addEventListener('change', (e) => {
+            const activationModeSelect = agentPanel.querySelector('#rt-agent-router-activation-mode');
+            if (activationModeSelect) {
+                activationModeSelect.addEventListener('change', (e) => {
                     const s = getSettings();
-                    s.routerNativeKeywordActivation = (/** @type {HTMLInputElement} */ (e.target)).checked;
+                    const mode = (/** @type {HTMLSelectElement} */ (e.target)).value;
+                    s.routerActivationMode = mode;
                     saveSettings();
+                    if (mode === 'semantic' && typeof (/** @type {any} */ (globalThis)).vectfox_invalidateLorebook !== 'function') {
+                        toastr['warning']('Semantic activation needs VectFox 3.4.1+ — entries will stay dormant until it is installed.', 'Lorebook Agent', { timeOut: 10000 });
+                    }
+                    // Entry disable flags follow the mode (native = enabled, others = dormant).
+                    void disableManagedEntries();
                 });
             }
 

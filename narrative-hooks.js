@@ -12,7 +12,7 @@
  * circular import. This will be cleaned up when index.js is split.
  */
 
-import { getSettings } from './state-manager.js';
+import { getSettings, getActivationMode } from './state-manager.js';
 import { parseQuestsFromMemo, buildActiveLorebookContext, estimateTokens, budgetInjections, OUTPUT_HEADROOM_FRAC } from './memo-processor.js';
 import { runRouterPass, saveSceneToLorebook, scanAssistantOutputForKeywords } from './router.js';
 import { logTransaction } from './debug-viewer.js';
@@ -294,11 +294,13 @@ export function installInterceptor() {
             // activeRouterKeys is always one turn late on that path.
             // Fix: entries activated THIS scan are injected directly into the user message —
             // the same pattern as state memo and quests — guaranteeing same-turn presence.
-            // Skipped when routerNativeKeywordActivation is enabled (native ST system handles keywords).
+            // Skipped outside 'managed' mode: 'native' hands keywords to ST's WI scanner,
+            // 'semantic' hands activation to VectFox similarity search — neither wants
+            // Fatbody's keyword scanner or manual lore injection.
             let keywordLore = '';   // tier 2: newly activated this turn
             let agentLore = '';     // tier 3: agent/direct-command owned
             let persistentLore = '';// tier 4: previously keyword-activated, re-injected
-            if (settings.routerEnabled && !settings.routerNativeKeywordActivation && content) {
+            if (settings.routerEnabled && getActivationMode(settings) === 'managed' && content) {
                 const t0 = performance.now().toFixed(1);
                 console.group(`[RPG|INTERCEPT] rpgTrackerInterceptor keyword pre-scan @ ${t0}ms`);
                 console.log('activeRouterKeys BEFORE scan:', JSON.stringify(settings.activeRouterKeys || []));
@@ -492,8 +494,8 @@ export async function onGenerationEnded() {
     // Step 1: Scan assistant output for entry keywords and activate matches immediately.
     // Must run before the state model pass and on EVERY generation, regardless of throttle,
     // so entries are never one turn behind the narrator even when the agent is skipped.
-    // Skipped when routerNativeKeywordActivation is enabled (native ST system handles keywords).
-    if (settings.routerEnabled && !settings.routerNativeKeywordActivation) {
+    // Skipped outside 'managed' mode (native = ST WI scanner, semantic = VectFox similarity).
+    if (settings.routerEnabled && getActivationMode(settings) === 'managed') {
         const thisGenTriggered = await scanAssistantOutputForKeywords(combinedNarrative);
         if (thisGenTriggered.length > 0) {
             // Accumulate across throttled turns — deduplicate so IDs are not repeated.
