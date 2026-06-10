@@ -50,6 +50,30 @@ export function notifyVectfoxBookChanged(bookName) {
 }
 
 /**
+ * Writes a full lorebook to disk via the raw HTTP API (registry-independent —
+ * ctx.saveWorldInfo silently drops books ST hasn't indexed yet), busts ST's
+ * in-memory cache, and notifies VectFox. Shared by the agent's write paths
+ * and the v3.0 foundation persistence.
+ * @param {string} bookName
+ * @param {object} bookData - full world-info book object ({ entries, ... })
+ * @returns {Promise<boolean>}
+ */
+export async function writeBookToDisk(bookName, bookData) {
+    const ctx = SillyTavern.getContext();
+    const res = await fetch('/api/worldinfo/edit', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name: bookName, data: bookData }),
+    });
+    if (!res.ok) throw new Error(`Failed to save ${bookName}: HTTP ${res.status}`);
+    if (typeof ctx.saveWorldInfo === 'function') {
+        try { await ctx.saveWorldInfo(bookName, bookData); } catch (_) { /* cache-bust is non-fatal */ }
+    }
+    notifyVectfoxBookChanged(bookName);
+    return true;
+}
+
+/**
  * Parses a single Action: toolname({...}) call from a text response.
  * Used as a fallback for profile/default connections that don't support native tool calling.
  * Safe because the caller always passes a single-turn response (multi-turn messages mean

@@ -15,6 +15,7 @@ import { runStateModelPass, handleLevelUp, sendDirectPrompt } from './state-pass
 import { buildRowTypeSelect, openCustomFieldEditor, openPromptEditor, exportModules, openShareModal, importModulesFromJson, refreshOrderList } from './custom-fields-ui.js';
 import { FOLDER_NAME } from './env.js';
 import { autoApplySysprompt, applyAdditiveSysprompt, applySysprompt, scheduleAutoApply, buildSysprompt } from './sysprompt.js';
+import { openFoundationWizard } from './foundation-wizard.js';
 import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight, makeDraggable, makeResizableTR, setupResizeObserver, setupDeltaResize } from './panel-geometry.js';
 
     // FOLDER_NAME imported from env.js
@@ -4970,6 +4971,8 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                 saveSettings();
                 toastr['success']('Stock modules, order, and prompts reset to factory defaults.', 'RPG Tracker');
             });
+
+            $('#rpg_tracker_btn_foundation_wizard').on('click', () => openFoundationWizard());
 
             $('#rpg_tracker_btn_update_sysprompt').on('click', async function () {
                 // Additive delivery: the Main prompt box is off-limits — refresh the
