@@ -1,0 +1,35 @@
+<div class="rpg-tracker-settings rt-settings-stub">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>Fatbody D&D Framework</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div class="flex-container flexFlowColumn gap-1">
+                <label class="checkbox_label">
+                    <input id="rpg_tracker_enabled" type="checkbox" />
+                    <span>Enable RPG Tracker</span>
+                    <i class="fa-solid fa-circle-question interactable"
+                        title="Master on/off. OFF removes Fatbody's D&amp;D system prompt from your Main prompt box and stops all injection (memo, RNG, quests, lore) — the model no longer runs the level/XP framing. ON re-applies it. (In Suite/Custom Sysprompt modes the Main prompt box is left untouched.)"></i>
+                </label>
+
+                <button id="rpg_tracker_btn_open_settings" class="menu_button interactable"
+                    style="width: 100%; margin-top: 6px; background: rgba(80, 140, 255, 0.18); border-color: #5588ff;"
+                    title="Open the full Fatbody settings window.">
+                    <i class="fa-solid fa-gears"></i> Open Settings
+                </button>
+
+                <div style="display: flex; gap: 6px; margin-top: 6px;">
+                    <button id="rpg_tracker_btn_foundation_wizard" class="menu_button interactable" style="flex: 1; background: rgba(170, 85, 255, 0.15); border-color: #aa55ff;"
+                        title="Custom RPG Progression (Modern mode): an AI architect interviews you about your world, then generates the campaign foundation — power system, classes, skill taxonomy, lethality. Commits lock the chat to Modern mode (level 1-100, skill trees).">
+                        🏗️ Foundation Builder
+                    </button>
+                    <button id="rpg_tracker_btn_skill_tree" class="menu_button interactable" style="flex: 1; background: rgba(0, 200, 140, 0.12); border-color: #00c88c;"
+                        title="Open the Skill Tree in a separate browser tab (Modern campaigns). Spend skill points, plan builds, and respec without touching the chat window.">
+                        🌳 Skill Tree
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

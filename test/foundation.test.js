@@ -101,9 +101,24 @@ test('validateFoundation reports every problem at once (batch errors for the ret
     assert.equal(r.ok, false);
     assert.ok(r.errors.length >= 4, `found ${r.errors.length} errors: ${r.errors.join(' | ')}`);
     assert.ok(r.errors.some(e => e.includes("mode must be 'modern'")));
-    assert.ok(r.errors.some(e => e.includes('3 to 5 classes')));
+    assert.ok(r.errors.some(e => e.includes('3 to 6 classes')));
     assert.ok(r.errors.some(e => e.includes('resources')));
     assert.ok(r.errors.some(e => e.includes('currencyName')));
+});
+
+test('validateFoundation accepts 6 classes but rejects 7', () => {
+    setSettings({});
+    const six = validFoundation();
+    for (let i = 0; i < 3; i++) {
+        six.CLASS_ROSTER.push({ id: `extra${i}`, name: `Extra ${i}`, fantasy: 'Filler class.', role: 'hybrid', primaryResource: 'focus', treeThemes: ['filler'] });
+    }
+    assert.equal(six.CLASS_ROSTER.length, 6);
+    assert.equal(validateFoundation(six).ok, true, 'six classes accepted');
+
+    six.CLASS_ROSTER.push({ id: 'extra3', name: 'Extra 3', fantasy: 'One too many.', role: 'hybrid', primaryResource: 'focus', treeThemes: ['filler'] });
+    const r = validateFoundation(six);
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some(e => e.includes('3 to 6 classes')), 'seven classes rejected');
 });
 
 test('validateFoundation catches cross-references: class resource must exist', () => {
