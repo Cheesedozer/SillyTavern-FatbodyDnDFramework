@@ -1065,7 +1065,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
     globalThis._rpgCurrentChatId = () => RT.currentChatId;
     // Expose live prefix derivation for any module that needs the current prefix.
     globalThis._rpgGetCurrentPrefix = () => getEffectiveRouterCampaignPrefix(SillyTavern.getContext().chatId || '');
-    // Cross-extension handshake (VectFox 3.4.1+): how campaign lorebook entries are
+    // Cross-extension handshake (VectFox 3.4.0+): how campaign lorebook entries are
     // activated. 'managed' = Fatbody injects manually (VectFox must skip our books);
     // 'native' = ST keyword scanner; 'semantic' = VectFox similarity search owns surfacing.
     globalThis._rpgGetActivationMode = () => getActivationMode(getSettings());
@@ -1806,7 +1806,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                         <input type="checkbox" id="rt-agent-router-basic" ${settings.routerBasicMode ? 'checked' : ''}>
                     </label>
 
-                    <label style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; opacity: 0.8; font-size: 0.846em;" title="Managed: Fatbody's keyword scanner + manual injection control which entries reach the prompt (classic behavior). Native: entries are left enabled and SillyTavern's own World Info keyword scanner activates them. Semantic: entries stay dormant and VectFox's semantic World Info activation surfaces them by similarity — no keywords, no constant entries (requires VectFox 3.4.1+).">
+                    <label style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; opacity: 0.8; font-size: 0.846em;" title="Managed: Fatbody's keyword scanner + manual injection control which entries reach the prompt (classic behavior). Native: entries are left enabled and SillyTavern's own World Info keyword scanner activates them. Semantic: entries stay dormant and VectFox's semantic World Info activation surfaces them by similarity — no keywords, no constant entries (requires VectFox 3.4.0+).">
                         Entry Activation
                         <select id="rt-agent-router-activation-mode" style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); color: white; border-radius: 3px; font-size: 0.923em; padding: 1px 4px;">
                             <option value="managed" ${getActivationMode(settings) === 'managed' ? 'selected' : ''}>Managed (Fatbody)</option>
@@ -2413,7 +2413,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                     s.routerActivationMode = mode;
                     saveSettings();
                     if (mode === 'semantic' && typeof (/** @type {any} */ (globalThis)).vectfox_invalidateLorebook !== 'function') {
-                        toastr['warning']('Semantic activation needs VectFox 3.4.1+ — entries will stay dormant until it is installed.', 'Lorebook Agent', { timeOut: 10000 });
+                        toastr['warning']('Semantic activation needs VectFox 3.4.0+ — entries will stay dormant until it is installed.', 'Lorebook Agent', { timeOut: 10000 });
                     }
                     // Entry disable flags follow the mode (native = enabled, others = dormant).
                     void disableManagedEntries();

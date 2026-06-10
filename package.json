@@ -1,6 +1,6 @@
 {
     "name": "fatbody-dnd-framework",
-    "version": "2.4.3",
+    "version": "2.5.0",
     "private": true,
     "type": "module",
     "description": "Dev-only tooling for characterization tests. SillyTavern loads index.js per manifest.json and ignores this file.",

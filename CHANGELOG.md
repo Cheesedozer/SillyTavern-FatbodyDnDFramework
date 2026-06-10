@@ -2,6 +2,17 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [2.5.0] - 2026-06-10
+
+### Added
+- **Additive Sysprompt Delivery**: New "Sysprompt Delivery" setting. *Standalone* keeps the classic behavior (Fatbody owns the Main prompt box). *Additive* never touches the Main prompt — a rules-only variant (no `<role>`/`<narrative>`/`<party_join_leave>`) is injected via a persistent extension prompt, so another extension or preset (e.g. Megumin Suite narrative engines) can own the narrator persona while Fatbody layers pure mechanics on top. One-time warning when Suite Mode + Additive could double-inject mechanics via the `[[FATBODY]]` block.
+- **Semantic Entry Activation (VectFox handshake)**: The Lorebook Agent's activation control is now a three-way mode — *Managed* (classic keyword scanner + manual injection), *Native* (ST's World Info keyword scanner), and *Semantic* (VectFox 3.4.0+ similarity search surfaces entries naturally as the story involves them — no keywords, no constant-active entries). In Semantic mode the agent becomes a pure archive writer: activate/deactivate tools are removed and the saturation/budget doctrine is replaced with archive-focused guidance. Fatbody publishes `_rpgGetActivationMode` and notifies VectFox (`vectfox_invalidateLorebook`) after every campaign-book write so vector collections stay current.
+- **External Token Awareness**: The injection budget now measures other extensions' registered extension prompts (e.g. VectFox memories) and subtracts them from the available context. New "External Token Reserve" setting (Advanced Options) covers injectors invisible at interceptor time (e.g. Megumin Suite); included in the `[RPG|BUDGET]` diagnostics line.
+- **README**: New "Running with Other Extensions" compatibility guide (Megumin Suite, VectFox).
+
+### Changed
+- Legacy `routerNativeKeywordActivation` setting migrates automatically to the new activation mode (one-time).
+
 ## [2.4.2] - 2026-05-18
 
 ### Fixed

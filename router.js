@@ -37,7 +37,7 @@ function bookBelongsToPrefix(bookName, prefix) {
 /**
  * Tells VectFox (if installed) that a campaign lorebook's content changed so it
  * can re-index its vector collection. Nil-safe cross-extension handshake:
- * VectFox 3.4.1+ exposes `globalThis.vectfox_invalidateLorebook(name)`
+ * VectFox 3.4.0+ exposes `globalThis.vectfox_invalidateLorebook(name)`
  * (create-or-refresh, debounced on the VectFox side). No-op when absent.
  * @param {string} bookName
  */
