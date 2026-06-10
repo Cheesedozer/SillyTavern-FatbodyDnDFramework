@@ -236,18 +236,11 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
         const ll = line.toLowerCase();
         const colonIdx = line.indexOf(':');
 
-        // 2. Try known stock keywords
-        for (const [key, ruleType] of Object.entries(STOCK_FIELD_RULES)) {
-            if (ll.startsWith(key + ':') || ll === key) {
-                const val = colonIdx !== -1 ? line.substring(colonIdx + 1).trim() : '';
-                if (ruleType === 'hd_pips') return renderHDPips(val);
-                if (ruleType === 'spell_group') return renderSpellGroups(val);
-                return renderSubFieldByRule({ renderType: ruleType }, line);
-            }
-        }
-
-        // 3. Modern resource pools ("Stamina: 30/30", or any custom foundation
-        //    resource name) render as recolorable bars, like HP.
+        // 2. Modern resource pools ("Stamina: 30/30", or any custom foundation
+        //    resource name) render as recolorable bars, like HP. Checked BEFORE
+        //    the stock D&D rules: in a Modern chat the foundation defines what
+        //    a label means, so a resource named e.g. "Status" or "Skills" must
+        //    not be shadowed by the D&D pill/text rules for those labels.
         if (colonIdx !== -1) {
             const match = modernResourceFor(line.substring(0, colonIdx));
             if (match && /\d[\d,]*\s*\/\s*\d[\d,]*/.test(line.substring(colonIdx + 1))) {
@@ -257,6 +250,16 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
                     line,
                     barId,
                 );
+            }
+        }
+
+        // 3. Try known stock keywords
+        for (const [key, ruleType] of Object.entries(STOCK_FIELD_RULES)) {
+            if (ll.startsWith(key + ':') || ll === key) {
+                const val = colonIdx !== -1 ? line.substring(colonIdx + 1).trim() : '';
+                if (ruleType === 'hd_pips') return renderHDPips(val);
+                if (ruleType === 'spell_group') return renderSpellGroups(val);
+                return renderSubFieldByRule({ renderType: ruleType }, line);
             }
         }
 

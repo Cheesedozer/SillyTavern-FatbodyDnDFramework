@@ -2,6 +2,12 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.2.4] - 2026-06-10
+
+### Fixed
+- **Lorebook Agent lookback & direct prompt now round-trip per chat**: both fields were saved with the chat but never restored on switch, so the previous chat's values silently carried over. They restore with the chat's saved state (lookback defaults to 4, direct prompt clears), and the settings input syncs.
+- **Custom foundation resources no longer shadowed by D&D field rules**: a Modern resource named e.g. "Status" or "Skills" rendered via the stock D&D pill/text rule instead of as a pool bar. Foundation resources now take precedence in Modern chats; non-`X/Y` values (e.g. "Status: Poisoned") still use the stock rules.
+
 ## [3.2.3] - 2026-06-10
 
 **Re-commit guard & late-pass safety.** The two remaining high-priority findings from the 3.2.2 bug hunt.

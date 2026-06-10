@@ -706,6 +706,13 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         s.activeRouterKeys    = JSON.parse(JSON.stringify(saved.activeRouterKeys    || []));
         s.keywordActivatedKeys = JSON.parse(JSON.stringify(saved.keywordActivatedKeys || []));
         s.routerLog           = JSON.parse(JSON.stringify(saved.routerLog || []));
+        // These two are saved per chat (saveChatState) and must round-trip, or
+        // the previous chat's values silently carry over on every switch. The
+        // agent panel re-reads them on the renderRouterUI rebuild that follows.
+        s.routerLookback      = saved.routerLookback ?? 4;
+        s.routerDirectPrompt  = saved.routerDirectPrompt ?? '';
+        const lookbackInput = document.getElementById('rpg_tracker_router_lookback');
+        if (lookbackInput instanceof HTMLInputElement) lookbackInput.value = String(s.routerLookback);
         // Don't restore routerCampaignPrefix from per-chat saved state — the prefix
         // is fully derivable from the chat ID and must be re-derived live by
         // onChatChanged. Restoring a stale value (e.g. a bare "Assistant" from

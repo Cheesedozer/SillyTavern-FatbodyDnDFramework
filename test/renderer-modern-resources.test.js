@@ -57,3 +57,24 @@ test('non-resource labels and D&D chats keep the generic fallback', () => {
     const dnd = renderLineInEntityContext('CHARACTER', 'Mana: 20/30', 'Hero', 'Mana: 20/30');
     assert.ok(!dnd.includes('rt-hp-bar'), 'no foundation → no resource bar');
 });
+
+test('foundation resources shadowing stock D&D labels still render as bars', () => {
+    RT.currentChatId = 'modern-chat';
+    setSettings({
+        chatStates: {
+            'modern-chat': {
+                campaignMode: 'modern',
+                foundation: {
+                    POWER_SYSTEM: {
+                        resources: [{ id: 'status', name: 'Status', description: 'a pool that collides with a stock rule key' }],
+                    },
+                },
+            },
+        },
+    });
+    const bar = renderLineInEntityContext('CHARACTER', 'Status: 5/10', 'Hero', 'Status: 5/10');
+    assert.ok(bar.includes('rt-hp-bar'), 'resource wins over the stock pills rule in a Modern chat');
+    const pills = renderLineInEntityContext('CHARACTER', 'Status: Poisoned (2h)', 'Hero', 'Status: Poisoned (2h)');
+    assert.ok(!pills.includes('rt-hp-bar'), 'non-X/Y values still fall through to the stock rule');
+    RT.currentChatId = null;
+});
