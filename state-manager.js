@@ -565,6 +565,9 @@ export function saveChatState(chatId) {
         campaignMode: existing.campaignMode || 'dnd',
         foundation: existing.foundation,
         progression: existing.progression,
+        // Onboarding flow flag (mode picked on the empty-state HUD) — written by
+        // the onboarding UI, must survive the save cycle until a memo exists.
+        onboarding: existing.onboarding,
     };
     SillyTavern.getContext().saveSettingsDebounced();
 }

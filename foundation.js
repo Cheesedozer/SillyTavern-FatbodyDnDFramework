@@ -19,7 +19,7 @@
  * Imported by: foundation-wizard.js, sysprompt.js (placeholders), skill-forge.js
  */
 
-import { getSettings } from './state-manager.js';
+import { getSettings, getEffectiveRouterCampaignPrefix } from './state-manager.js';
 import { writeBookToDisk } from './router.js';
 
 export const FOUNDATION_SCHEMA_VERSION = 1;
@@ -346,5 +346,53 @@ export async function commitFoundation(chatId, foundation, prefix) {
     s.chatStates[chatId].campaignBooks = [...books];
     SillyTavern.getContext().saveSettingsDebounced();
 
+    return stamped;
+}
+
+/**
+ * Commits a validated foundation and performs first-commit campaign setup:
+ * seeds the progression state, enables the [SKILLS] memo module, and clears
+ * the onboarding flow flag. Shared by the Foundation Builder's Commit button
+ * and the HUD's Modern "Default" path. Class selection is NOT handled here —
+ * callers re-render and the HUD onboarding derives the class-selection step.
+ *
+ * @param {string} chatId
+ * @param {object} foundationDoc - MUST already pass validateFoundation
+ * @returns {Promise<object>} the stamped foundation
+ */
+export async function commitFoundationAndInit(chatId, foundationDoc) {
+    const prefix = getEffectiveRouterCampaignPrefix(chatId);
+    const stamped = await commitFoundation(chatId, foundationDoc, prefix || 'Campaign');
+
+    // Initialize progression state on first commit only — never reset a live campaign.
+    const st = getSettings().chatStates[chatId];
+    if (!st.progression) {
+        st.progression = {
+            mode: 'modern',
+            foundationVersion: stamped.foundationVersion,
+            level: 1,
+            xp: 0,
+            skillPoints: { earned: stamped.PROGRESSION_RULES?.skillPointsPerLevel ?? 2, spent: 0 },
+            respecSpentTotal: 0,
+            classId: null,
+            jobIds: [],
+            tree: { nodes: {}, layout: {}, tiersGenerated: {} },
+            acquired: {},
+            pendingLevelUp: null,
+        };
+    } else {
+        st.progression.foundationVersion = stamped.foundationVersion;
+    }
+    // The onboarding flow flag has served its purpose — the committed
+    // foundation now drives step derivation.
+    delete st.onboarding;
+    // Enable the [SKILLS] memo module for this campaign (chat-linked saves
+    // snapshot `modules` per chat, so D&D chats keep it off).
+    const live = getSettings();
+    if (!live.modules) live.modules = {};
+    live.modules.skills = true;
+    SillyTavern.getContext().saveSettingsDebounced();
+
+    toastr['success'](`Foundation v${stamped.foundationVersion} committed — campaign locked to Modern mode.`, 'Foundation Builder');
     return stamped;
 }

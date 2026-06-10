@@ -16,6 +16,9 @@ import { buildRowTypeSelect, openCustomFieldEditor, openPromptEditor, exportModu
 import { FOLDER_NAME } from './env.js';
 import { autoApplySysprompt, applyAdditiveSysprompt, applySysprompt, scheduleAutoApply, buildSysprompt } from './sysprompt.js';
 import { openFoundationWizard } from './foundation-wizard.js';
+import { commitFoundationAndInit } from './foundation.js';
+import { defaultFoundation } from './default-foundation.js';
+import { selectClassAndForge } from './skill-forge.js';
 import { initSettingsOverlay, openSettingsOverlay } from './settings-overlay.js';
 import { openSkillTreeTab, onSkillTreeChatChanged } from './skilltree-bridge.js';
 import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight, makeDraggable, makeResizableTR, setupResizeObserver, setupDeltaResize } from './panel-geometry.js';
@@ -1191,9 +1194,100 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         await Popup.show.confirm('🧩 Components Explained', popupBody, { okButton: 'Got it', cancelButton: false });
     }
 
+    /** Resolves the active SillyTavern persona, warning via toastr when unset.
+     *  @returns {string} the persona description, or '' when none is set. */
+    function resolvePersonaOrWarn() {
+        const { substituteParams } = SillyTavern.getContext();
+        const resolved = substituteParams ? substituteParams('{{persona}}').trim() : '';
+        if (!resolved || resolved === '{{persona}}') {
+            toastr['warning'](
+                'No persona is set. Set a persona in SillyTavern (User Settings → Personas) and try again.',
+                'RPG Tracker'
+            );
+            return '';
+        }
+        return resolved;
+    }
+
+    /**
+     * Character-generation prompt for a Modern class — the foundation's
+     * resources replace D&D constructs (no spell slots, no [SPELLS] block).
+     * @param {object} foundation - committed foundation
+     * @param {object} cls - CLASS_ROSTER entry
+     * @param {string|null} personaText - persona description, or null for a random character
+     */
+    function modernCharacterPrompt(foundation, cls, personaText) {
+        const resources = foundation.POWER_SYSTEM?.resources || [];
+        const primary = resources.find(r => r.id === cls.primaryResource);
+        const resourceList = resources.map(r => `- ${r.name} — ${r.description}`).join('\n');
+        const currency = foundation.PROGRESSION_RULES?.respec?.currencyName || 'currency';
+        const basis = personaText
+            ? `Using the following persona description as the basis for the player character, create a Level 1 ${cls.name} who faithfully embodies this persona. Translate the personality, background, and traits into fitting attributes, appearance notes, and starting equipment.\n\nPersona:\n${personaText}`
+            : `Generate a random Level 1 ${cls.name} for this campaign. Give them a random fitting name (do NOT use {{user}}).`;
+        return `${basis}
+
+Campaign setting: ${foundation.SETTING?.name} — ${foundation.SETTING?.synopsis}
+Power system: ${foundation.POWER_SYSTEM?.name} — ${foundation.POWER_SYSTEM?.description}
+Class fantasy: ${cls.name} (${cls.role}) — ${cls.fantasy}
+
+Output [CHARACTER], [INVENTORY], and [ABILITIES] blocks. Rules:
+- [CHARACTER] must state Level 1, HP (current/max), and a current/max pool line for EACH resource below, with the class's primary resource (${primary?.name || cls.primaryResource}) as the largest pool:
+${resourceList}
+- This is NOT a D&D character: no spell slots, no D&D classes. Do NOT output a [SPELLS] block.
+- Do NOT output a [SKILLS] block — skill-tree skills are managed by the framework.
+- [ABILITIES] lists 2-3 modest baseline class techniques fitting a Level 1 ${cls.name} (innate knacks, not skill-tree skills), each with its resource cost.
+- [INVENTORY] holds mundane starting gear and a small amount of ${currency} consistent with Level 1.`;
+    }
+
+    /**
+     * Modern onboarding class setup: locks the class and forges tiers 1–2
+     * (idempotent — already-forged tiers are skipped on retry), then generates
+     * the starting character into the chat so the memo/HUD populates.
+     * Busy state lives in RT.onboardingForge so re-renders keep the disabled UI.
+     * @param {string} chatId
+     * @param {string} classId - CLASS_ROSTER id
+     * @param {string|null} personaText - persona basis, or null for random
+     */
+    async function startModernClassFlow(chatId, classId, personaText) {
+        if (RT.onboardingForge) return;
+        const st = getSettings().chatStates?.[chatId];
+        const cls = (st?.foundation?.CLASS_ROSTER || []).find(c => c.id === classId);
+        if (!cls) {
+            toastr['error'](`Unknown class "${classId}".`, 'Fatbody Framework');
+            return;
+        }
+        const setStatus = (m) => {
+            RT.onboardingForge = { chatId, label: m };
+            const statusEl = document.getElementById('rt-ob-status');
+            if (statusEl) statusEl.textContent = m;
+        };
+        RT.onboardingForge = { chatId, label: 'Starting…' };
+        refreshRenderedView();   // re-render: buttons disabled + status line live
+        try {
+            setStatus(`Forging ${cls.name}'s starting skill tiers… (this takes a minute)`);
+            const { nodeCount } = await selectClassAndForge(chatId, classId, setStatus);
+            if (nodeCount) {
+                toastr['success'](`${cls.name} locked in — ${nodeCount} skills forged. Open the Skill Tree (🌳) to spend your points!`, 'Fatbody Framework', { timeOut: 10000 });
+            }
+            if (RT.stateModelRunning) {
+                toastr['info']('State Model is busy — use the character buttons to generate your character when it finishes.', 'Fatbody Framework');
+                return;
+            }
+            setStatus(`Creating your ${cls.name}…`);
+            await sendDirectPrompt(modernCharacterPrompt(st.foundation, cls, personaText));
+        } catch (e) {
+            toastr['error'](`${e.message || e}`, 'Class setup failed — click again to resume', { timeOut: 10000 });
+        } finally {
+            RT.onboardingForge = null;
+            refreshRenderedView();
+        }
+    }
+
     export function bindRenderedCardEvents(el, memo, isDetachedContext = false, onRefresh = null) {
         const refresh = onRefresh || refreshRenderedView;
-        el.querySelectorAll('.rt-random-char-btn').forEach(btn => {
+        // [data-archetype] scope: the modern onboarding buttons share the
+        // .rt-random-char-btn styling but have their own handlers below.
+        el.querySelectorAll('.rt-random-char-btn[data-archetype]').forEach(btn => {
             btn.addEventListener('click', async () => {
                 const archetype = btn.dataset.archetype;
                 const level = el.querySelector('#rt-starting-level')?.value || 1;
@@ -1206,18 +1300,16 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
 
                 // ── Persona archetype: derive character from the active SillyTavern persona ──
                 if (archetype === 'persona') {
-                    const { substituteParams } = SillyTavern.getContext();
-                    const resolvedPersona = substituteParams ? substituteParams('{{persona}}').trim() : '';
-                    if (!resolvedPersona || resolvedPersona === '{{persona}}') {
-                        toastr['warning'](
-                            'No persona is set. Set a persona in SillyTavern (User Settings → Personas) and try again.',
-                            'RPG Tracker'
-                        );
-                        return;
-                    }
+                    const resolvedPersona = resolvePersonaOrWarn();
+                    if (!resolvedPersona) return;
                     el.querySelectorAll('.rt-random-char-btn').forEach(b => b.disabled = true);
                     btn.textContent = labels.persona;
-                    const personaPrompt = `Using the following persona description as the basis for the player character, create a Level ${level} D&D character that faithfully embodies this persona. Translate the personality, background, and traits into appropriate D&D stats, class, race, and equipment. Output [CHARACTER], [INVENTORY], and [ABILITIES] blocks (and [SPELLS] if the class is a spellcaster, using 'Cantrips:' for level 0 spells). All attributes and gear should be consistent with Level ${level}.\n\nPersona:\n${resolvedPersona}`;
+                    // Optional class choice from the persona-class dropdown; empty = AI decides.
+                    const chosenClass = el.querySelector('#rt-dnd-persona-class')?.value || '';
+                    const classClause = chosenClass
+                        ? `Build them as a Level ${level} ${chosenClass}, translating the personality, background, and traits into appropriate stats, race, subclass flavor, and equipment.`
+                        : `Translate the personality, background, and traits into appropriate D&D stats, class, race, and equipment.`;
+                    const personaPrompt = `Using the following persona description as the basis for the player character, create a Level ${level} D&D character that faithfully embodies this persona. ${classClause} Output [CHARACTER], [INVENTORY], and [ABILITIES] blocks (and [SPELLS] if the class is a spellcaster, using 'Cantrips:' for level 0 spells). All attributes and gear should be consistent with Level ${level}.\n\nPersona:\n${resolvedPersona}`;
                     await sendDirectPrompt(personaPrompt);
                     return;
                 }
@@ -1226,6 +1318,69 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
                 btn.textContent = labels[archetype] || '🎲 Rolling...';
                 await sendDirectPrompt(prompts[archetype]);
             });
+        });
+
+        // ── Onboarding flow: mode picker → D&D / Modern setup (empty memo only) ──
+        const onboardingChatId = () => SillyTavern.getContext().chatId || RT.currentChatId || null;
+
+        // Step 1: pick a ruleset. Persisted per chat so the flow survives reloads.
+        el.querySelectorAll('.rt-mode-btn[data-mode]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const chatId = onboardingChatId();
+                if (!chatId) { toastr['warning']('Open a chat first.', 'Fatbody Framework'); return; }
+                const s = getSettings();
+                if (!s.chatStates) s.chatStates = {};
+                if (!s.chatStates[chatId]) s.chatStates[chatId] = {};
+                s.chatStates[chatId].onboarding = { mode: btn.dataset.mode };
+                saveSettings();
+                refresh();
+            });
+        });
+
+        // Back: returns to the mode picker (pre-commit steps only).
+        el.querySelector('.rt-ob-back')?.addEventListener('click', () => {
+            const st = getSettings().chatStates?.[onboardingChatId()];
+            if (st) delete st.onboarding;
+            saveSettings();
+            refresh();
+        });
+
+        // Modern path: Custom opens the Foundation Builder; Default commits the
+        // built-in foundation and the re-render derives the class-selection step.
+        el.querySelector('#rt-modern-custom')?.addEventListener('click', () => openFoundationWizard());
+        el.querySelector('#rt-modern-default')?.addEventListener('click', async (e) => {
+            const chatId = onboardingChatId();
+            if (!chatId) { toastr['warning']('Open a chat first.', 'Fatbody Framework'); return; }
+            if (RT.onboardingForge) return;
+            const btn = /** @type {HTMLButtonElement} */ (e.currentTarget);
+            btn.disabled = true;
+            try {
+                await commitFoundationAndInit(chatId, defaultFoundation());
+            } catch (err) {
+                toastr['error'](`${err.message || err}`, 'Default foundation failed');
+                btn.disabled = false;
+                return;
+            }
+            refresh();
+        });
+
+        // Modern class selection / character creation.
+        el.querySelectorAll('.rt-class-pick-btn').forEach(btn => {
+            btn.addEventListener('click', () => startModernClassFlow(onboardingChatId(), btn.dataset.classId, null));
+        });
+        el.querySelector('#rt-modern-persona-btn')?.addEventListener('click', () => {
+            const chatId = onboardingChatId();
+            const persona = resolvePersonaOrWarn();
+            if (!persona) return;
+            // Class from the dropdown (class-selection step) or the locked class
+            // (character-creation step, where there is no dropdown).
+            const classId = el.querySelector('#rt-modern-persona-class')?.value
+                || getSettings().chatStates?.[chatId]?.progression?.classId;
+            startModernClassFlow(chatId, classId, persona);
+        });
+        el.querySelector('#rt-modern-random-btn')?.addEventListener('click', () => {
+            const chatId = onboardingChatId();
+            startModernClassFlow(chatId, getSettings().chatStates?.[chatId]?.progression?.classId, null);
         });
 
         el.querySelectorAll('.rt-hp-bar-wrap[data-recolor-id], .rt-xp-bar-wrap[data-recolor-id]').forEach(wrap => {

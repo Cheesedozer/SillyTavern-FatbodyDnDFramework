@@ -2,6 +2,20 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.2.0] - 2026-06-10
+
+**Onboarding flow.** New chats now start from a mode picker in the Stat Tracking HUD, and Modern campaign setup lives in the HUD instead of the Foundation Builder modal.
+
+### Added
+- **Mode picker**: an empty chat first asks **🐉 D&D** or **🛠️ Modern**. D&D leads to the classic archetype window; Modern offers **⚡ Default** (commits the built-in "Awakened World" foundation immediately) or **🏗️ Custom** (the Foundation Builder interview). Back navigation between pre-commit steps; the flow resumes where you left off after a reload or chat switch.
+- **HUD class selection (Modern)**: starting classes are now picked directly in the HUD. Picking a class forges its starting skill tiers **and generates a Level 1 starting character** into the chat (foundation-aware: resource pools instead of spell slots), so the tracker populates immediately. Forge progress and a resumable retry surface are built in.
+- **Persona class choice**: both modes now let you pick the class your persona character is built as — a classic-class dropdown next to the D&D 🎭 Persona button ("Let AI decide" remains the default), and the foundation's roster in Modern.
+
+### Changed
+- **Class crests → emojis**: Modern classes show emoji crests (⚔️ 🥋 🎶 🗡️ 🏹 🧙); AI-generated custom classes fall back to a role-based emoji.
+- **Foundation Builder**: the Quick Start (⚡) button moved out of the wizard — it is now the Modern "Default" path in the HUD. Committing a custom foundation closes the wizard and hands off to the HUD class-selection screen.
+- Pre-existing chats with an empty memo now see the mode picker (one extra click); existing campaigns with tracked state are unaffected.
+
 ## [3.1.0] - 2026-06-10
 
 **Settings window & Modern Quick Start.** Settings move out of the cramped extensions dropdown into a full-screen window, and Modern mode gets a one-click default foundation so any character can start playing immediately.
