@@ -36,4 +36,6 @@ export const RT = {
     loreRedoStack: [],
     /** Per-tag pagination page index for the rendered memo sections. */
     sectionPages: {},
+    /** Modern onboarding class setup in flight: { chatId, label } or null. */
+    onboardingForge: null,
 };

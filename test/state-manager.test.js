@@ -159,18 +159,19 @@ test('v2→v3 migration stamps campaignMode=dnd on existing chatStates, preservi
     assert.equal(getCampaignMode('never-seen'), 'dnd', 'unknown chats default to dnd');
 });
 
-test('saveChatState carries campaignMode/foundation/progression across normal saves', async () => {
+test('saveChatState carries campaignMode/foundation/progression/onboarding across normal saves', async () => {
     const { saveChatState } = await import('../state-manager.js');
     const foundation = { schemaVersion: 1, mode: 'modern', SETTING: { name: 'Neo-Khelt' } };
     const progression = { mode: 'modern', level: 4, xp: 1200, skillPoints: { earned: 8, spent: 2 } };
     setSettings({
         currentMemo: 'memo-live',
-        chatStates: { c1: { campaignMode: 'modern', foundation, progression } },
+        chatStates: { c1: { campaignMode: 'modern', foundation, progression, onboarding: { mode: 'modern' } } },
     });
     saveChatState('c1');   // normal save cycle (e.g. chat switch)
     const st = getSettings().chatStates.c1;
     assert.equal(st.campaignMode, 'modern', 'mode survives the save cycle');
     assert.deepEqual(st.foundation, foundation, 'foundation survives');
     assert.deepEqual(st.progression, progression, 'progression survives');
+    assert.deepEqual(st.onboarding, { mode: 'modern' }, 'onboarding flow flag survives');
     assert.equal(st.currentMemo, 'memo-live', 'normal fields still snapshot');
 });

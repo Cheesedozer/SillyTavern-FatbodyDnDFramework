@@ -2,6 +2,8 @@ import { getSettings, getBarBackground } from './state-manager.js';
 import { escapeHtml, highlightParens, parseInWorldTime, formatTimeDiff } from './memo-processor.js';
 import { BLOCK_ICONS, PAGE_SIZE, NO_PAGINATE, SPELL_SLUG_OVERRIDES } from './constants.js';
 import { BLOCK_ORDER } from './module-registry.js';
+import { classEmoji } from './default-foundation.js';
+import { RT } from './shared-state.js';
 
 // ── Renderer module: pure HTML string producers, localStorage helpers ──
 // No live DOM mutations. All functions return strings or void (localStorage).
@@ -695,28 +697,46 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
         }
     }
 
-    export function renderMemoAsCards(memo, filterTag, sectionPages) {
-        if (!memo || !memo.trim()) {
-            return `<div class="rt-empty" style="text-align: left; align-items: flex-start; padding: 12px; gap: 10px; overflow-y: auto;">
+    // ── Onboarding (empty-memo) flow ───────────────────────────────────────────
+    // The empty state is a small step machine: mode-select → (dnd | modern-path)
+    // → modern-class → modern-character. The step is derived from persisted
+    // chat state, so the flow survives re-renders and reloads.
+
+    /**
+     * Derives the onboarding step for an empty-memo chat.
+     * A committed foundation always wins over the pre-commit `onboarding` flag.
+     * @param {object|null|undefined} chatState - settings.chatStates[chatId]
+     * @returns {'mode-select'|'dnd'|'modern-path'|'modern-class'|'modern-character'}
+     */
+    export function deriveOnboardingStep(chatState) {
+        const st = chatState || {};
+        if (st.foundation && st.progression) {
+            return st.progression.classId ? 'modern-character' : 'modern-class';
+        }
+        if (st.onboarding?.mode === 'dnd') return 'dnd';
+        if (st.onboarding?.mode === 'modern') return 'modern-path';
+        return 'mode-select';
+    }
+
+    /** The 12 classic 5e classes offered by the D&D persona class selector. */
+    export const DND_PERSONA_CLASSES = [
+        'Barbarian', 'Bard', 'Cleric', 'Druid', 'Fighter', 'Monk',
+        'Paladin', 'Ranger', 'Rogue', 'Sorcerer', 'Warlock', 'Wizard',
+    ];
+
+    /** 📜 header; `withBack` renders the ← Back button for pre-commit steps. */
+    function renderOnboardingHeader(subtitle, withBack) {
+        return `${withBack ? '<div style="width: 100%; flex-shrink: 0;"><button class="rt-ob-back" title="Back to the previous step">← Back</button></div>' : ''}
                 <div style="text-align: center; width: 100%; margin-bottom: 4px; flex-shrink: 0;">
                     <div class="rt-empty-icon">📜</div>
                     <div style="font-size: 17px; font-weight: bold; color: var(--rt-text);">Fatbody D&D Framework</div>
-                </div>
+                    ${subtitle ? `<div style="font-size: 12px; opacity: 0.7; font-style: italic; margin-top: 2px;">${subtitle}</div>` : ''}
+                </div>`;
+    }
 
-                <div style="display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 8px 0 4px 0; flex-shrink: 0;">
-                    <span style="font-size: 12px; opacity: 0.8; font-weight: bold; font-style: italic;">Starting Level:</span>
-                    <select id="rt-starting-level" class="text_pole" style="width: auto; min-width: 60px; padding: 2px 4px; font-size: 12px; height: 24px; border-radius: 4px; background: var(--black70a);">
-                        ${[...Array(20).keys()].map(i => `<option value="${i + 1}">Level ${i + 1}</option>`).join('')}
-                    </select>
-                </div>
-                <div class="rt-onboarding-buttons" style="width: 100%; justify-content: center; margin: 4px 0; flex-shrink: 0;">
-                    <button class="rt-random-char-btn" data-archetype="magic">✨ Magic</button>
-                    <button class="rt-random-char-btn" data-archetype="melee">⚔️ Melee</button>
-                    <button class="rt-random-char-btn" data-archetype="rogue">🗡️ Rogue</button>
-                    <button class="rt-random-char-btn" data-archetype="persona">🎭 Persona</button>
-                </div>
-
-                <div style="font-size: 13px; opacity: 0.9; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; line-height: 1.4;">
+    /** Mode-agnostic feature explainer shown on the mode-select step. */
+    function renderTrackerExplainer() {
+        return `<div style="font-size: 13px; opacity: 0.9; display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; line-height: 1.4;">
                     <div><b style="color: var(--rt-accent);">Auto-Tracking:</b> As you roleplay, the extension intelligently parses assistant responses. It detects losses of HP, new loot, or combat triggers, running background passes to update the state.</div>
 
                     <div><b style="color: var(--rt-accent);">Prompt Injection:</b> The State Memo and RNG Queue are injected seamlessly into your outgoing prompt. It acts as the "source of truth," assuring the model accurately remembers HP, inventory, and mechanical outcomes.</div>
@@ -724,9 +744,13 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
                     <div><b style="color: var(--rt-accent);">Validation:</b> Use the Delta Log (δ) to verify changes. If the AI ever makes a mistake, step backwards using the Snapshot Navigation (←/→) to restore a clean state. A capable model like Gemini 3 Flash should almost never make a mistake, so you probably will not need the Delta Log often — but it is there when you want it.</div>
 
                     <div><b style="color: var(--rt-accent);">Lorebook Agent &#x1F916;:</b> Open it from the robot button in the header. It autonomously manages your lorebook — creating, updating, activating, deactivating, and deleting entries as your story evolves. Click <b>?</b> inside the agent panel for full documentation.</div>
-                </div>
+                </div>`;
+    }
 
-                <!-- Narrator Configuration (Salad Bar) -->
+    /** Narrator Configuration ("Salad Bar") panel — IDs are load-bearing:
+     *  bindRenderedCardEvents wires every rt_onboarding_* control. */
+    function renderNarratorConfigPanel() {
+        return `<!-- Narrator Configuration (Salad Bar) -->
                 <div style="margin-top: 12px; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; padding: 10px; background: rgba(255,255,255,0.03); width: 100%; box-sizing: border-box;">
                     <b style="color: var(--rt-accent); font-size: 14px; display: block; margin-bottom: 6px;">Narrator Configuration</b>
                     <small style="display: block; margin-bottom: 8px; opacity: 0.65; font-style: italic; line-height: 1.3;">Select your preferred modes and components. Changes apply to your system prompt automatically (unless Custom Sysprompt Mode is on).</small>
@@ -813,15 +837,140 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
                     <button id="rt_onboarding_btn_update_sysprompt" style="width: 100%; margin-top: 10px; padding: 7px 12px; background: rgba(0, 200, 140, 0.18); border: 1px solid #00c88c; border-radius: 4px; color: var(--rt-text, #eee); font-size: 0.88em; cursor: pointer;" title="Writes the system prompt to your Quick Prompt Main box based on the options selected above.">
                         ↑ Apply System Prompt
                     </button>
-                </div>
+                </div>`;
+    }
 
-                <div style="font-size: 13px; opacity: 0.9; margin-top: 12px; flex-shrink: 0; line-height: 1.4; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px;">
+    /** Shared "create a narrator card / options auto-apply" footer. */
+    function renderInitialSetupText(firstStep) {
+        return `<div style="font-size: 13px; opacity: 0.9; margin-top: 12px; flex-shrink: 0; line-height: 1.4; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px;">
                     <b style="color: var(--rt-accent); font-size: 14px;">Initial Setup:</b><br><br>
-                    1. Use the archetype buttons above to roll a new character, or <b>manually describe a character</b> by clicking 💬.<br><br>
+                    1. ${firstStep}<br><br>
                     2. Create a character card for your "narrator" (e.g. Game Master). <b>Leave the card fields empty</b>, as the framework handles all logic via the system prompt.<br><br>
                     3. Toggle the options above — the system prompt is <b>applied automatically</b> whenever you change a setting.
+                </div>`;
+    }
+
+    /** Step 1 — pick the ruleset: classic D&D or Modern (custom RPG contract). */
+    function renderModeSelectStep() {
+        return `${renderOnboardingHeader('Step 1 of 2 — Choose your ruleset', false)}
+                <div style="display: flex; flex-direction: column; gap: 10px; width: 100%; margin: 8px 0; flex-shrink: 0;">
+                    <button class="rt-mode-btn" data-mode="dnd">
+                        <span class="rt-mode-btn-icon">🐉</span>
+                        <span class="rt-mode-btn-text"><b>D&D</b><br><small>Classic 5e ruleset — spell slots, archetypes, and quick character generation.</small></span>
+                    </button>
+                    <button class="rt-mode-btn" data-mode="modern">
+                        <span class="rt-mode-btn-icon">🛠️</span>
+                        <span class="rt-mode-btn-text"><b>Modern</b><br><small>Custom RPG contract — your own world, power system, classes, and an AI-forged skill tree.</small></span>
+                    </button>
                 </div>
-            </div>`;
+                ${renderTrackerExplainer()}`;
+    }
+
+    /** Step 2a — the classic D&D archetype window (+ persona class selector). */
+    function renderDndStep() {
+        return `${renderOnboardingHeader('D&D — roll your character', true)}
+                <div style="display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 8px 0 4px 0; flex-shrink: 0;">
+                    <span style="font-size: 12px; opacity: 0.8; font-weight: bold; font-style: italic;">Starting Level:</span>
+                    <select id="rt-starting-level" class="text_pole" style="width: auto; min-width: 60px; padding: 2px 4px; font-size: 12px; height: 24px; border-radius: 4px; background: var(--black70a);">
+                        ${[...Array(20).keys()].map(i => `<option value="${i + 1}">Level ${i + 1}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="rt-onboarding-buttons" style="width: 100%; justify-content: center; margin: 4px 0; flex-shrink: 0;">
+                    <button class="rt-random-char-btn" data-archetype="magic">✨ Magic</button>
+                    <button class="rt-random-char-btn" data-archetype="melee">⚔️ Melee</button>
+                    <button class="rt-random-char-btn" data-archetype="rogue">🗡️ Rogue</button>
+                    <button class="rt-random-char-btn" data-archetype="persona">🎭 Persona</button>
+                </div>
+                <div style="display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 0 0 4px 0; flex-shrink: 0;">
+                    <span style="font-size: 12px; opacity: 0.8; font-style: italic;">🎭 Persona class:</span>
+                    <select id="rt-dnd-persona-class" class="text_pole" style="width: auto; min-width: 60px; padding: 2px 4px; font-size: 12px; height: 24px; border-radius: 4px; background: var(--black70a);" title="Class used when generating a character from your persona.">
+                        <option value="">🤖 Let AI decide</option>
+                        ${DND_PERSONA_CLASSES.map(c => `<option value="${c}">${c}</option>`).join('')}
+                    </select>
+                </div>
+                ${renderNarratorConfigPanel()}
+                ${renderInitialSetupText('Use the archetype buttons above to roll a new character, or <b>manually describe a character</b> by clicking 💬.')}`;
+    }
+
+    /** Step 2b — Modern: built-in default foundation or the custom wizard. */
+    function renderModernPathStep() {
+        return `${renderOnboardingHeader('Modern — choose your foundation', true)}
+                <div style="font-size: 13px; opacity: 0.85; line-height: 1.4; flex-shrink: 0;">Modern mode builds a campaign on a <b>foundation</b>: setting, power system, classes, and a skill tree forged by AI as you level.</div>
+                <div style="display: flex; flex-direction: column; gap: 10px; width: 100%; margin: 8px 0; flex-shrink: 0;">
+                    <button id="rt-modern-default" class="rt-mode-btn">
+                        <span class="rt-mode-btn-icon">⚡</span>
+                        <span class="rt-mode-btn-text"><b>Default</b><br><small>"The Awakened World" — six classic classes, layers onto any card. Start immediately.</small></span>
+                    </button>
+                    <button id="rt-modern-custom" class="rt-mode-btn">
+                        <span class="rt-mode-btn-icon">🏗️</span>
+                        <span class="rt-mode-btn-text"><b>Custom</b><br><small>Foundation Builder — an AI architect interviews you and generates a bespoke world and class roster.</small></span>
+                    </button>
+                </div>
+                ${renderNarratorConfigPanel()}
+                ${renderInitialSetupText('Pick <b>Default</b> or <b>Custom</b> above, then choose your starting class.')}`;
+    }
+
+    /** Forge/generation status line; populated live by startModernClassFlow. */
+    function renderOnboardingStatus(forgeBusy) {
+        return `<div id="rt-ob-status" style="width: 100%; text-align: center; font-size: 12px; font-style: italic; color: var(--rt-accent); min-height: 16px; flex-shrink: 0;">${forgeBusy ? escapeHtml(RT.onboardingForge?.label || 'Working…') : ''}</div>`;
+    }
+
+    /** Step 3 — Modern class selection (foundation committed, class unlocked). */
+    function renderModernClassStep(st, forgeBusy) {
+        const roster = st?.foundation?.CLASS_ROSTER || [];
+        const dis = forgeBusy ? ' disabled' : '';
+        return `${renderOnboardingHeader('Modern — choose your starting class', false)}
+                <div style="font-size: 12px; opacity: 0.75; text-align: center; width: 100%; flex-shrink: 0;">Your class is locked in for the campaign — choose carefully.</div>
+                <div style="display: flex; flex-direction: column; gap: 8px; width: 100%; margin: 6px 0; flex-shrink: 0;">
+                    ${roster.map(cls => `
+                    <button class="rt-class-pick-btn" data-class-id="${escapeHtml(cls.id)}"${dis}>
+                        <span class="rt-mode-btn-icon">${classEmoji(cls)}</span>
+                        <span class="rt-mode-btn-text"><b>${escapeHtml(cls.name)}</b> <span style="opacity:0.7;">(${escapeHtml(cls.role || '')})</span><br><small>${escapeHtml(cls.fantasy || '')}</small></span>
+                    </button>`).join('')}
+                </div>
+                <div style="display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 0 0 4px 0; flex-shrink: 0;">
+                    <span style="font-size: 12px; opacity: 0.8; font-style: italic;">…or build from your persona as:</span>
+                    <select id="rt-modern-persona-class" class="text_pole" style="width: auto; min-width: 60px; padding: 2px 4px; font-size: 12px; height: 24px; border-radius: 4px; background: var(--black70a);"${dis} title="Class your persona character will be built as.">
+                        ${roster.map(cls => `<option value="${escapeHtml(cls.id)}">${classEmoji(cls)} ${escapeHtml(cls.name)}</option>`).join('')}
+                    </select>
+                    <button id="rt-modern-persona-btn" class="rt-random-char-btn"${dis}>🎭 Persona</button>
+                </div>
+                ${renderOnboardingStatus(forgeBusy)}
+                ${renderNarratorConfigPanel()}`;
+    }
+
+    /** Step 4 — class locked but no character yet (resume/retry surface). */
+    function renderModernCharacterStep(st, forgeBusy) {
+        const roster = st?.foundation?.CLASS_ROSTER || [];
+        const cls = roster.find(c => c.id === st?.progression?.classId) || null;
+        const clsName = cls ? cls.name : (st?.progression?.classId || 'class');
+        const dis = forgeBusy ? ' disabled' : '';
+        return `${renderOnboardingHeader('Modern — create your character', false)}
+                <div style="width: 100%; text-align: center; font-size: 14px; flex-shrink: 0;">Your class: <b>${classEmoji(cls)} ${escapeHtml(clsName)}</b> <span style="opacity:0.6;">(locked)</span></div>
+                <div class="rt-onboarding-buttons" style="width: 100%; justify-content: center; margin: 6px 0; flex-shrink: 0;">
+                    <button id="rt-modern-random-btn" class="rt-random-char-btn"${dis}>🎲 Generate Random ${escapeHtml(clsName)}</button>
+                    <button id="rt-modern-persona-btn" class="rt-random-char-btn"${dis}>🎭 From Persona</button>
+                </div>
+                ${renderOnboardingStatus(forgeBusy)}
+                ${renderNarratorConfigPanel()}`;
+    }
+
+    export function renderMemoAsCards(memo, filterTag, sectionPages) {
+        if (!memo || !memo.trim()) {
+            const ctx = (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) ? SillyTavern.getContext() : null;
+            const chatId = ctx?.chatId || RT.currentChatId || null;
+            const st = getSettings().chatStates?.[chatId] || null;
+            const step = deriveOnboardingStep(st);
+            const forgeBusy = !!(RT.onboardingForge && (!chatId || RT.onboardingForge.chatId === chatId));
+            let body;
+            switch (step) {
+                case 'dnd':              body = renderDndStep(); break;
+                case 'modern-path':      body = renderModernPathStep(); break;
+                case 'modern-class':     body = renderModernClassStep(st, forgeBusy); break;
+                case 'modern-character': body = renderModernCharacterStep(st, forgeBusy); break;
+                default:                 body = renderModeSelectStep();
+            }
+            return `<div class="rt-empty" style="text-align: left; align-items: flex-start; padding: 12px; gap: 10px; overflow-y: auto;">${body}</div>`;
         }
 
         const blocks = parseMemoBlocks(memo);

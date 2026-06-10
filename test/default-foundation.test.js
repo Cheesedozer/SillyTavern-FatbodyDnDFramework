@@ -1,5 +1,5 @@
 /**
- * Tests for default-foundation.js — the built-in Quick Start foundation must
+ * Tests for default-foundation.js — the built-in Default foundation must
  * always pass schema validation and ship the six canonical starter classes.
  */
 import './_bootstrap.js';
@@ -7,7 +7,7 @@ import { setSettings } from './_bootstrap.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validateFoundation } from '../foundation.js';
-import { defaultFoundation, DEFAULT_CLASS_IDS, CLASS_CRESTS } from '../default-foundation.js';
+import { defaultFoundation, DEFAULT_CLASS_IDS, CLASS_EMOJIS, classEmoji } from '../default-foundation.js';
 
 test('default foundation passes schema validation with zero errors', () => {
     setSettings({});
@@ -38,8 +38,16 @@ test('defaultFoundation is a factory — fresh object per call, mutation-safe', 
     assert.equal(b.SETTING.name, 'The Awakened World');
 });
 
-test('every starter class has an SVG crest', () => {
+test('every starter class has an emoji crest', () => {
     for (const id of DEFAULT_CLASS_IDS) {
-        assert.ok(typeof CLASS_CRESTS[id] === 'string' && CLASS_CRESTS[id].includes('<svg'), `${id} crest present`);
+        assert.ok(typeof CLASS_EMOJIS[id] === 'string' && CLASS_EMOJIS[id].length > 0, `${id} emoji present`);
     }
+});
+
+test('classEmoji resolves id, falls back to role, then generic', () => {
+    assert.equal(classEmoji({ id: 'fighter' }), '⚔️');
+    assert.equal(classEmoji({ id: 'voidwalker', role: 'tank' }), '🛡️');
+    assert.equal(classEmoji({ id: 'voidwalker', role: 'damage' }), '💥');
+    assert.equal(classEmoji({}), '✨');
+    assert.equal(classEmoji(null), '✨');
 });
