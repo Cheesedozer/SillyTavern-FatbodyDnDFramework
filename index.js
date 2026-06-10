@@ -16,6 +16,7 @@ import { buildRowTypeSelect, openCustomFieldEditor, openPromptEditor, exportModu
 import { FOLDER_NAME } from './env.js';
 import { autoApplySysprompt, applyAdditiveSysprompt, applySysprompt, scheduleAutoApply, buildSysprompt } from './sysprompt.js';
 import { openFoundationWizard } from './foundation-wizard.js';
+import { initSettingsOverlay, openSettingsOverlay } from './settings-overlay.js';
 import { openSkillTreeTab, onSkillTreeChatChanged } from './skilltree-bridge.js';
 import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight, makeDraggable, makeResizableTR, setupResizeObserver, setupDeltaResize } from './panel-geometry.js';
 
@@ -4148,6 +4149,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         // Guard against double-init (e.g. browser serving a cached copy of this script
         // while the fresh copy also loads). Remove any stale panel/settings first.
         document.getElementById('rpg-tracker-panel')?.remove();
+        document.getElementById('rt-settings-overlay')?.remove();
         document.querySelectorAll('.rpg-tracker-settings').forEach(el => el.remove());
 
         const ctx = SillyTavern.getContext();
@@ -4169,14 +4171,19 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
 
         try {
             // Load Settings UI using the dynamic folder name
-            // Use a cache-busting parameter to ensure we get the fresh file from the server
+            // Use a cache-busting parameter to ensure we get the fresh file from the server.
+            // The dropdown gets the slim stub; the full settings markup lives in the
+            // overlay, which MUST be in the DOM before the ID-based bindings below run.
+            const stubHtml = await renderExtensionTemplateAsync(`third-party/${FOLDER_NAME}`, 'settings-stub', { v: Date.now() });
             const html = await renderExtensionTemplateAsync(`third-party/${FOLDER_NAME}`, 'settings', { v: Date.now() });
             // Third-party plugins should go to extensions_settings2 (right column) if available
             if ($('#extensions_settings2').length) {
-                $('#extensions_settings2').append(html);
+                $('#extensions_settings2').append(stubHtml);
             } else {
-                $('#extensions_settings').append(html);
+                $('#extensions_settings').append(stubHtml);
             }
+            initSettingsOverlay(html);
+            $('#rpg_tracker_btn_open_settings').on('click', openSettingsOverlay);
 
             // Bind drawer toggles ONLY for our own content to avoid global conflicts
             $('.rpg-tracker-settings').on('click', '.inline-drawer-toggle', function(e) {

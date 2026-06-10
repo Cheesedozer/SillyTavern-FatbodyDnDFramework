@@ -2,6 +2,19 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.1.0] - 2026-06-10
+
+**Settings window & Modern Quick Start.** Settings move out of the cramped extensions dropdown into a full-screen window, and Modern mode gets a one-click default foundation so any character can start playing immediately.
+
+### Added
+- **Settings overlay (⚙️)**: a full-screen, Path-of-Exile-style settings window with a tabbed layout — General, Narrator & Quests, Visuals, State Model, Lorebook Agent, and Advanced — that uses horizontal screen space instead of stacking everything vertically. The extensions dropdown now holds only the master Enable toggle, the **Open Settings** button, and the 🏗️ Foundation Builder / 🌳 Skill Tree quick buttons. The window follows the tracker's visual theme.
+- **Settings background art**: a built-in SVG scene of a modern soldier facing a fire-breathing dragon — D&D mode meets Modern mode. Drop your own image at `assets/settings-bg.png` inside the extension folder and it replaces the built-in art automatically.
+- **Quick Start (⚡)**: a button in the Foundation Builder that commits a built-in, schema-valid default foundation ("The Awakened World") without the AI interview — six classic starting classes (**Fighter, Monk, Bard, Rogue, Ranger, Wizard**), Stamina/Mana/Focus resource pools, a d20 dice profile, Jobs, and Standard lethality. Setting-agnostic by design, so it layers onto any character card. Class selection and per-chat AI skill-tree forging work exactly as with a custom foundation. Shown only when the chat has no foundation yet.
+- **Class crests**: the class-selection screen now shows a crest icon for each of the six Quick Start classes.
+
+### Changed
+- **CLASS_ROSTER** now accepts 3–6 starting classes (was 3–5) to fit the six-class Quick Start roster.
+
 ## [3.0.0] - 2026-06-10
 
 **Custom RPG Progression.** Fatbody is no longer D&D-only: campaigns now choose between **D&D mode** (classic behavior, unchanged) and **Modern mode** — a user-defined RPG system with levels 1–100, AI-generated classes/skills constrained by a campaign "foundation", and a Path-of-Exile-style skill tree in its own browser tab. Existing chats migrate automatically as D&D campaigns; nothing changes for them. Modes are locked at campaign creation.

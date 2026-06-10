@@ -25,6 +25,7 @@ import {
     commitFoundation,
 } from './foundation.js';
 import { selectClassAndForge } from './skill-forge.js';
+import { defaultFoundation, CLASS_CRESTS } from './default-foundation.js';
 
 const MAX_GENERATION_RETRIES = 3;
 
@@ -52,7 +53,7 @@ The foundation JSON object MUST have exactly this shape:
     "skillPointsPerLevel": 2, "milestoneEvery": 10, "milestoneBonus": 4,
     "respec": { "freeUntilLevel": 10, "currencyName": "...", "costMultiplier": 1.0 }
   },
-  "CLASS_ROSTER": [ /* exactly 3 to 5 classes */
+  "CLASS_ROSTER": [ /* exactly 3 to 6 classes */
     { "id": "slug", "name": "...", "fantasy": "one-line class fantasy", "role": "damage|control|support|tank|hybrid", "primaryResource": "<a resources id>", "treeThemes": ["...","..."] }
   ],
   "JOB_RULES": { "enabled": true, "maxJobs": 2, "unlockNarrative": "how jobs unlock in-fiction", "jobSeeds": [ { "id":"slug", "name":"...", "description":"...", "unlockHint":"..." } ] },
@@ -69,12 +70,12 @@ The foundation JSON object MUST have exactly this shape:
   }
 }
 
-Constraints: every CLASS_ROSTER primaryResource must match a POWER_SYSTEM.resources id; 3-5 classes; resources must not be empty; respec.currencyName is the campaign currency.`;
+Constraints: every CLASS_ROSTER primaryResource must match a POWER_SYSTEM.resources id; 3-6 classes; resources must not be empty; respec.currencyName is the campaign currency.`;
 
 function buildWizardSystemPrompt(context) {
     return `You are the Foundation Architect for a custom RPG campaign engine. Your job is to interview the user about the world and progression system they want, refine their ideas into something mechanically coherent, and finally produce a single foundation JSON document.
 
-PHASE 1 — INTERVIEW (now): Ask focused questions, 2-4 at a time, about whatever is still undefined: the setting's tone, how powers work, what resource fuels active skills, what the currency is, what the 3-5 starting classes should feel like, whether professions ("Jobs") exist, and how deadly the world is. Build on the user's answers; propose concrete options when they are unsure. Keep replies under 200 words.
+PHASE 1 — INTERVIEW (now): Ask focused questions, 2-4 at a time, about whatever is still undefined: the setting's tone, how powers work, what resource fuels active skills, what the currency is, what the 3-6 starting classes should feel like, whether professions ("Jobs") exist, and how deadly the world is. Build on the user's answers; propose concrete options when they are unsure. Keep replies under 200 words.
 
 PHASE 2 — GENERATION (only when the user clicks "Generate Foundation"): output the complete foundation as ONE fenced \`\`\`json block matching the schema below, with no commentary after it. Fill any gaps the interview left with choices consistent with everything discussed.
 
@@ -141,6 +142,7 @@ export function openFoundationWizard() {
                     <div style="display:flex;flex-direction:column;gap:6px;">
                         <button id="rt-fw-send" class="menu_button interactable" style="white-space:nowrap;">Send 💬</button>
                         <button id="rt-fw-generate" class="menu_button interactable" style="white-space:nowrap;background:rgba(0,200,140,0.18);border-color:#00c88c;">Generate Foundation ⚒️</button>
+                        ${existing ? '' : '<button id="rt-fw-quickstart" class="menu_button interactable" style="white-space:nowrap;background:rgba(255,180,0,0.15);border-color:#e0a800;" title="Skip the interview — commit the built-in foundation (six classic classes) and pick your class.">Quick Start ⚡</button>'}
                     </div>
                 </div>
                 <div id="rt-fw-commit-row" style="display:none;gap:8px;margin-top:8px;">
@@ -159,6 +161,7 @@ export function openFoundationWizard() {
     const commitRow = overlay.querySelector('#rt-fw-commit-row');
     const sendBtn = /** @type {HTMLButtonElement} */ (overlay.querySelector('#rt-fw-send'));
     const genBtn = /** @type {HTMLButtonElement} */ (overlay.querySelector('#rt-fw-generate'));
+    const quickBtn = /** @type {HTMLButtonElement|null} */ (overlay.querySelector('#rt-fw-quickstart'));
 
     /** @type {Array<{role:string, content:string}>} */
     const messages = [];
@@ -182,6 +185,7 @@ export function openFoundationWizard() {
         busy = b;
         sendBtn.disabled = b;
         genBtn.disabled = b;
+        if (quickBtn) quickBtn.disabled = b;
         statusEl.textContent = b ? label : 'Ready.';
     };
 
@@ -273,49 +277,70 @@ export function openFoundationWizard() {
         statusEl.textContent = 'Keep refining, then generate again.';
     });
 
+    /** Shared commit path: stamps + persists the foundation, initializes
+     *  progression on first commit, then hands off to class selection. Used by
+     *  both the normal Commit button and Quick Start. */
+    const commitAndInitialize = async (foundationDoc) => {
+        const prefix = getEffectiveRouterCampaignPrefix(chatId);
+        const stamped = await commitFoundation(chatId, foundationDoc, prefix || 'Campaign');
+
+        // Initialize progression state on first commit only — never reset a live campaign.
+        const st = getSettings().chatStates[chatId];
+        if (!st.progression) {
+            st.progression = {
+                mode: 'modern',
+                foundationVersion: stamped.foundationVersion,
+                level: 1,
+                xp: 0,
+                skillPoints: { earned: stamped.PROGRESSION_RULES?.skillPointsPerLevel ?? 2, spent: 0 },
+                respecSpentTotal: 0,
+                classId: null,
+                jobIds: [],
+                tree: { nodes: {}, layout: {}, tiersGenerated: {} },
+                acquired: {},
+                pendingLevelUp: null,
+            };
+        } else {
+            st.progression.foundationVersion = stamped.foundationVersion;
+        }
+        // Enable the [SKILLS] memo module for this campaign (chat-linked saves
+        // snapshot `modules` per chat, so D&D chats keep it off).
+        const live = getSettings();
+        if (!live.modules) live.modules = {};
+        live.modules.skills = true;
+        SillyTavern.getContext().saveSettingsDebounced();
+
+        toastr['success'](`Foundation v${stamped.foundationVersion} committed — campaign locked to Modern mode.`, 'Foundation Builder');
+
+        // Class selection (first commit only — class is locked afterwards).
+        if (!st.progression.classId && (stamped.CLASS_ROSTER || []).length) {
+            showClassSelection(stamped);
+        } else {
+            close();
+        }
+    };
+
     overlay.querySelector('#rt-fw-commit').addEventListener('click', async () => {
         if (!candidate || busy) return;
         setBusy(true, 'Committing foundation…');
         try {
-            const prefix = getEffectiveRouterCampaignPrefix(chatId);
-            const stamped = await commitFoundation(chatId, candidate, prefix || 'Campaign');
-
-            // Initialize progression state on first commit only — never reset a live campaign.
-            const st = getSettings().chatStates[chatId];
-            if (!st.progression) {
-                st.progression = {
-                    mode: 'modern',
-                    foundationVersion: stamped.foundationVersion,
-                    level: 1,
-                    xp: 0,
-                    skillPoints: { earned: stamped.PROGRESSION_RULES?.skillPointsPerLevel ?? 2, spent: 0 },
-                    respecSpentTotal: 0,
-                    classId: null,
-                    jobIds: [],
-                    tree: { nodes: {}, layout: {}, tiersGenerated: {} },
-                    acquired: {},
-                    pendingLevelUp: null,
-                };
-            } else {
-                st.progression.foundationVersion = stamped.foundationVersion;
-            }
-            // Enable the [SKILLS] memo module for this campaign (chat-linked saves
-            // snapshot `modules` per chat, so D&D chats keep it off).
-            const live = getSettings();
-            if (!live.modules) live.modules = {};
-            live.modules.skills = true;
-            SillyTavern.getContext().saveSettingsDebounced();
-
-            toastr['success'](`Foundation v${stamped.foundationVersion} committed — campaign locked to Modern mode.`, 'Foundation Builder');
-
-            // Class selection (first commit only — class is locked afterwards).
-            if (!st.progression.classId && (stamped.CLASS_ROSTER || []).length) {
-                showClassSelection(stamped);
-            } else {
-                close();
-            }
+            await commitAndInitialize(candidate);
         } catch (e) {
             statusEl.textContent = `Commit failed: ${e.message || e}`;
+            setBusy(false);
+        }
+    });
+
+    // Quick Start: commit the built-in default foundation (six classic classes)
+    // without the interview. Fresh campaigns only — the button isn't rendered
+    // once a foundation exists.
+    quickBtn?.addEventListener('click', async () => {
+        if (busy) return;
+        setBusy(true, 'Committing default foundation…');
+        try {
+            await commitAndInitialize(defaultFoundation());
+        } catch (e) {
+            statusEl.textContent = `Quick Start failed: ${e.message || e}`;
             setBusy(false);
         }
     });
@@ -332,8 +357,9 @@ export function openFoundationWizard() {
         for (const cls of foundation.CLASS_ROSTER) {
             const btn = document.createElement('button');
             btn.className = 'menu_button interactable';
-            btn.style.cssText = 'text-align:left;padding:10px 14px;white-space:normal;';
-            btn.innerHTML = `<b>${cls.name}</b> <span style="opacity:0.7;">(${cls.role})</span><br><span style="font-size:0.85em;opacity:0.85;">${cls.fantasy}</span>`;
+            btn.style.cssText = 'text-align:left;padding:10px 14px;white-space:normal;display:flex;align-items:center;gap:12px;';
+            const crest = CLASS_CRESTS[cls.id] || '';
+            btn.innerHTML = `${crest ? `<span style="flex:0 0 auto;display:flex;color:var(--rt-accent,#3498db);">${crest}</span>` : ''}<span style="flex:1;"><b>${cls.name}</b> <span style="opacity:0.7;">(${cls.role})</span><br><span style="font-size:0.85em;opacity:0.85;">${cls.fantasy}</span></span>`;
             btn.addEventListener('click', async () => {
                 if (busy) return;
                 setBusy(true, `Forging ${cls.name}'s starting skill tiers… (this takes a minute)`);

@@ -3,7 +3,7 @@
  *
  * The Foundation is the machine-readable contract a Modern campaign is built
  * on: setting, power system (resources + dice profile), progression rules,
- * the 3–5 starting classes, job rules, skill taxonomy, and lethality. The
+ * the 3–6 starting classes, job rules, skill taxonomy, and lethality. The
  * Foundation Builder wizard produces it; the modern sysprompt, Skill Forge,
  * and skill tree all consume it.
  *
@@ -119,8 +119,8 @@ export function validateFoundation(f) {
 
     // CLASS_ROSTER
     const cr = f.CLASS_ROSTER;
-    if (!isArr(cr) || cr.length < 3 || cr.length > 5) {
-        err('CLASS_ROSTER must contain 3 to 5 classes');
+    if (!isArr(cr) || cr.length < 3 || cr.length > 6) {
+        err('CLASS_ROSTER must contain 3 to 6 classes');
     } else {
         const ids = new Set();
         const resourceIds = new Set((f.POWER_SYSTEM?.resources || []).map(r => r?.id).filter(Boolean));
