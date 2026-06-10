@@ -42,6 +42,20 @@
                             </button>
                         </div>
 
+                        <div style="margin-top: 10px;">
+                            <small style="display: block; margin-bottom: 4px; font-weight: bold; opacity: 0.9;">Sysprompt Delivery
+                                <i class="fa-solid fa-circle-question interactable" title="Standalone: Fatbody writes the full D&amp;D system prompt (role + rules) into the Main prompt box. Additive: Fatbody never touches the Main prompt box — a rules-only prompt (no persona) is injected alongside whatever system prompt you or another extension (e.g. Megumin Suite engines) provide."></i>
+                            </small>
+                            <label class="checkbox_label">
+                                <input type="radio" name="rpg_tracker_sysprompt_delivery" value="standalone" />
+                                <span>Standalone (owns Main prompt)</span>
+                            </label>
+                            <label class="checkbox_label">
+                                <input type="radio" name="rpg_tracker_sysprompt_delivery" value="additive" />
+                                <span>Additive (rules only, injected)</span>
+                            </label>
+                        </div>
+
                         <label class="checkbox_label" style="margin-top: 10px;">
                             <input id="rpg_tracker_custom_sysprompt" type="checkbox" />
                             <span>Custom Sysprompt Mode</span>

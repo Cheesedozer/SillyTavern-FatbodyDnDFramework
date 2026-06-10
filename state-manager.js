@@ -82,6 +82,10 @@ function buildDefaultsTemplate() {
         agentFontSize: 13,
         customSysprompt: false,
         suiteMode: false,
+        // 'standalone' = Fatbody owns the Main prompt box (current behavior).
+        // 'additive'   = rules-only variant delivered via setExtensionPrompt;
+        //                the Main prompt box is never touched (Megumin/etc owns the role).
+        syspromptDelivery: "standalone",
         rngEnabled: true,
         diceFunctionTool: true,
         barColors: {},
