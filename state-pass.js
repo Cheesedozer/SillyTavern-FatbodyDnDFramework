@@ -13,6 +13,7 @@ import { getSettings, getEffectiveRouterCampaignPrefix, getCampaignMode } from '
 import { sendStateRequest } from './llm-client.js';
 import { buildLorebookContext, buildModulesInstructionText, cleanToolCallMessage, computeDelta, mergeMemo, parseQuestsFromMemo, parseXpFromMemo, syncQuestsFromMemo, writeQuestsToMemo, writeXpLineToMemo } from './memo-processor.js';
 import { detectLevelUp, formatXpLine, levelForXp } from './progression-engine.js';
+import { ensureTierPregenerated } from './skill-forge.js';
 import { stripMemoHtml } from './renderer.js';
 import { checkQuestDeadlines } from './quests.js';
 import { RT } from './shared-state.js';
@@ -251,6 +252,9 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                             'RPG Tracker',
                         );
                     }
+                    // Fire-and-forget: pre-forge the next skill tier in the background
+                    // while the player keeps playing (never blocks a turn).
+                    void ensureTierPregenerated(chatId);
                 } else {
                     prog.level = levelForXp(prog.xp || 0);
                 }
