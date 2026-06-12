@@ -2,6 +2,14 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.3.0] - 2026-06-12
+
+### Removed
+- **Semantic (VectFox) entry-activation mode**: Fatbody is now the only extension that handles its campaign books — VectFox 3.5.0 dropped the cross-extension surfacing handshake on its side. Chats with `Entry Activation → Semantic (VectFox)` are migrated back to **Managed** automatically (one-time, on settings load). The Lorebook Agent's semantic-mode writer-only behavior (no activate/deactivate tooling, no budget) is gone with it.
+
+### Changed
+- **Entry Activation** is now a two-way choice: **Managed (Fatbody)** or **Native (ST keywords)**. The `_rpgGetActivationMode` global is still published for older VectFox versions, but only ever reports those two values.
+
 ## [3.2.4] - 2026-06-10
 
 ### Fixed

@@ -120,10 +120,24 @@ test('routerActivationMode defaults to managed; helper normalizes junk values', 
     const { getActivationMode } = await import('../state-manager.js');
     setSettings({});
     assert.equal(getActivationMode(getSettings()), 'managed');
-    setSettings({ routerActivationMode: 'semantic' });
-    assert.equal(getActivationMode(getSettings()), 'semantic');
+    setSettings({ routerActivationMode: 'native' });
+    assert.equal(getActivationMode(getSettings()), 'native');
     setSettings({ routerActivationMode: 'bogus' });
     assert.equal(getActivationMode(getSettings()), 'managed', 'unknown values fall back to managed');
+    setSettings({ routerActivationMode: 'turbo' });
+    assert.equal(getActivationMode(getSettings()), 'managed');
+});
+
+test('migration: removed semantic mode folds back to managed in stored settings', async () => {
+    const { getActivationMode } = await import('../state-manager.js');
+    setSettings({ routerActivationMode: 'semantic' });
+    const s = getSettings();
+    assert.equal(s.routerActivationMode, 'managed', 'stored value rewritten, not just normalized on read');
+    assert.equal(getActivationMode(s), 'managed');
+
+    // 'native' is untouched by the migration.
+    setSettings({ routerActivationMode: 'native' });
+    assert.equal(getSettings().routerActivationMode, 'native');
 });
 
 test('migration: legacy routerNativeKeywordActivation=true becomes mode native, once', async () => {
