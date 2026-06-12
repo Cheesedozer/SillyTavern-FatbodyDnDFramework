@@ -91,8 +91,7 @@ Also recommended: disable the Suite's **NPC Bank** and **memory archiver** (they
 ### VectFox (RAG)
 
 - **Text cleaning:** enable VectFox's **"Fatbody D&D Framework"** cleaning preset (VectFox 3.4.0+) so dice rolls, RNG queues, state memos, and status footers don't pollute its vector memory — only narrative prose gets vectorized.
-- **Semantic lore activation (v2.5.0 + VectFox 3.4.0):** set the Lorebook Agent's *Entry Activation* to **Semantic (VectFox)**. The agent keeps writing the campaign archive; VectFox's semantic World Info activation surfaces entries by similarity — a town's entry activates because the scene moved there, with no keyword matching and no constant-active entries. Vectorize the campaign books once (or just let Fatbody's write-notifications auto-index them); VectFox re-indexes automatically as the agent writes.
-- In the default *Managed* mode, VectFox automatically leaves Fatbody's campaign books alone — no configuration needed.
+- VectFox automatically leaves Fatbody's campaign books alone — Fatbody is the only extension that handles them, no configuration needed. (The *Semantic (VectFox)* entry-activation mode from 2.5.0–3.2.x was removed in 3.3.0; chats that used it are migrated back to *Managed* automatically.)
 
 ## Don't Care About D&D? Build Your Own RPG (v3.0)
 

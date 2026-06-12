@@ -370,19 +370,12 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
             maxTokens: (settings.routerMaxTokens !== undefined && settings.routerMaxTokens !== null && settings.routerMaxTokens !== '') ? Number(settings.routerMaxTokens) : 1000,
         };
 
-        // Semantic activation mode: the agent is a pure WRITER (create/update/
-        // consolidate). Surfacing is owned by VectFox similarity search, so all
-        // activation tooling, saturation goals, and budget pressure are removed.
-        const semanticMode = getActivationMode(settings) === 'semantic';
-
         // Budget status — computed once and reused in both basic and agent context
         const activeCount = settings.activeRouterKeys?.length || 0;
         const maxActive = settings.routerMaxActivations || 8;
         const overflow = activeCount - maxActive;
-        const budgetLine = semanticMode
-            ? 'Not applicable (semantic activation — VectFox surfaces entries by similarity).'
-            : `Active entries: ${activeCount} / ${maxActive}`;
-        const overflowInstruction = (!semanticMode && overflow > 0)
+        const budgetLine = `Active entries: ${activeCount} / ${maxActive}`;
+        const overflowInstruction = (overflow > 0)
             ? `\nBUDGET VIOLATION: ${activeCount} entr${activeCount !== 1 ? 'ies' : 'y'} active, limit is ${maxActive}. ` +
               `You MUST deactivate at least ${overflow} entr${overflow > 1 ? 'ies' : 'y'} ` +
               `before this pass ends. Eliminate the narratively least relevant entries first. ` +
@@ -392,18 +385,6 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
         let basePrompt = (settings.routerSystemPromptTemplate || 'You are the Lorebook Agent. Maintain narrative consistency and manage lorebooks.')
             .replace(/\{\{campaignRoot\}\}/g, prefix || 'World Chronicle')
             .replace(/\{\{user\}\}/g, ctx.name1 || 'User');
-
-        if (semanticMode) {
-            // Drop the activation/saturation doctrine — it instructs behaviors
-            // (activate aggressively, rotate context) that no longer exist.
-            basePrompt = basePrompt
-                .replace(/<context_maximization>[\s\S]*?<\/context_maximization>\s*/gi, '')
-                .replace(/<bravery>[\s\S]*?<\/bravery>\s*/gi, '')
-                + `\n\n<semantic_mode>
-Entry activation is handled automatically by a semantic retrieval system: when the story involves an entity, its entry surfaces by similarity. You do NOT activate or deactivate anything.
-Your whole job is the ARCHIVE: record new entities promptly, append timestamped deltas when they change, and keep entries clean and self-contained. Write content so it stands alone when retrieved (name things explicitly; avoid "as mentioned above").
-</semantic_mode>`;
-        }
 
         // ── Cleanup Mode ─────────────────────────────────────────────────────
         // Triggered by the UI broom button via runRouterPass(null, '__CLEANUP__', null, true).
@@ -901,7 +882,6 @@ Thought: I see a new NPC named Barnaby in Khelt's Rust-Lantern District. I will 
                                         required: ['id', 'content']
                                     }
                                 },
-                                // activate/deactivate are spliced out below in semantic mode
                                 activate:   { type: 'array', items: { type: 'string' }, description: 'Book::UID IDs to move into active context.' },
                                 deactivate: { type: 'array', items: { type: 'string' }, description: 'Book::UID IDs to remove from active context.' },
                                 delete_ids: { type: 'array', items: { type: 'string' }, description: 'Book::UID IDs to permanently delete.' },
@@ -940,28 +920,13 @@ Thought: I see a new NPC named Barnaby in Khelt's Rust-Lantern District. I will 
                 }
             ];
 
-            // Semantic mode: the agent never activates/deactivates — remove the
-            // tools' surface area so the model can't reach for them.
-            if (semanticMode) {
-                const commitTool = agentTools.find(t => t.function?.name === 'commit');
-                if (commitTool?.function?.parameters?.properties) {
-                    delete commitTool.function.parameters.properties.activate;
-                    delete commitTool.function.parameters.properties.deactivate;
-                }
-            }
-
             // Native tool calling is only reliable for direct openai/ollama connections.
             // For profile/default the ConnectionManagerRequestService may not forward tools
             // correctly, causing MALFORMED_FUNCTION_CALL errors. Those connections get a
             // text-format (Action:/Observation:) system prompt and text-based parsing instead.
             const usesNativeTools = ['openai', 'ollama'].includes(routerSettings.connectionSource);
 
-            const memoryLimitSection = semanticMode
-                ? `
-## ACTIVATION
-Entry surfacing is automatic (semantic retrieval). There are no activate/deactivate operations and no active-entry budget. Focus entirely on recording and updating the archive.
-- Always use exact Book::UID format (e.g. "Eldoria_NPCs::0") for update/delete_ids.`
-                : `
+            const memoryLimitSection = `
 ## MEMORY LIMIT
 Maximum Active Entities: **${settings.routerMaxActivations || 8}**.
 - Entries you record are ACTIVATED AUTOMATICALLY. Do NOT also include them in activate.
@@ -1006,7 +971,7 @@ Available actions:
 - grep_lore({"query": "..."}) ? search lorebooks for entries matching a keyword
 - inspect_book({"book_name": "..."}) ? list UIDs in a lorebook
 - read_entry({"uid": "Book::0"}) ? read full content of an entry
-- commit(${semanticMode ? '{"record": [...], "update": [...], "delete_ids": [...]}' : '{"record": [...], "update": [...], "activate": [...], "deactivate": [...], "delete_ids": [...]}'}) ? write all changes and finish
+- commit({"record": [...], "update": [...], "activate": [...], "deactivate": [...], "delete_ids": [...]}) ? write all changes and finish
 
 commit record items: {"label": "Name only (NO tag prefix)", "keys": ["kw1","kw2"], "content": "...", "category": "NPC|LOC|FAC|QUEST|EVENT"}
 commit update items: {"id": "Book::UID", "content": "new text to append"}
@@ -1172,11 +1137,8 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
     const timePrefix = currentTime ? `[${currentTime}] ` : '';
 
     // 1. Activate/Deactivate
-    // Semantic mode: the agent is a pure writer — VectFox owns surfacing, so
-    // activation state is meaningless and manual injection must stay empty.
-    const semanticMode = getActivationMode(settings) === 'semantic';
-    const activate = semanticMode ? [] : (action.activate || []);
-    const deactivate = semanticMode ? [] : (action.deactivate || []);
+    const activate = action.activate || [];
+    const deactivate = action.deactivate || [];
     let newActive = [...(settings.activeRouterKeys || [])];
     
     // Remove deactivations
@@ -1409,7 +1371,7 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
                 const keys = bookData.entries[existingUid].key || [];
                 (rec.keys || []).forEach(k => { if (!keys.includes(k)) keys.push(k); });
                 bookData.entries[existingUid].key = cleanKeys(keys);
-                if (!semanticMode && !newActive.includes(fullId)) newActive.push(fullId);
+                if (!newActive.includes(fullId)) newActive.push(fullId);
                 recordedIds.push(`${fullId} (updated)`);
             } else {
                 // Append new entry with the next sequential UID
@@ -1424,13 +1386,12 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
                     content: rec.content || '',
                     constant: false, selective: false, selectiveLogic: 0, addMemo: true,
                     // 'native' = enabled so ST's WI keyword scanner can activate it.
-                    // 'managed'/'semantic' = dormant: managed injects manually,
-                    // semantic is surfaced by VectFox similarity search.
+                    // 'managed' = dormant: Fatbody injects manually.
                     order: 100, position: 0, disable: getActivationMode(settings) !== 'native',
                     probability: 100, useProbability: false,
                     depth: 4, group: '', groupOverride: false, groupWeight: 100,
                 };
-                if (!semanticMode && !newActive.includes(fullId)) newActive.push(fullId);
+                if (!newActive.includes(fullId)) newActive.push(fullId);
                 recordedIds.push(fullId);
             }
             changed = true;
@@ -1831,9 +1792,7 @@ async function addLorebookEntry(lorebookName, entryData, allNames) {
         addMemo: true,
         order: 100,
         position: 0,
-        // Semantic mode: keep direct-command entries dormant too — VectFox
-        // similarity search surfaces them; keywords/constant-on play no role.
-        disable: getActivationMode(getSettings()) === 'semantic',
+        disable: false,
         probability: 100,
         useProbability: false,
         depth: 4,
@@ -2207,9 +2166,8 @@ export async function scanAssistantOutputForKeywords(narrativeText, opts = {}) {
 export async function disableManagedEntries() {
     const settings = getSettings();
     if (!settings.routerEnabled) return;
-    // In native keyword mode, entries are left enabled for ST's keyword scanner to manage.
-    // ('managed' and 'semantic' both keep entries dormant — semantic surfacing happens
-    // through VectFox's vector search, which ignores the disable flag for Fatbody books.)
+    // In native keyword mode, entries are left enabled for ST's keyword scanner to
+    // manage. In managed mode entries stay dormant — manual injection owns surfacing.
     if (getActivationMode(settings) === 'native') return;
     const ctx = SillyTavern.getContext();
     const prefix = getLivePrefix();

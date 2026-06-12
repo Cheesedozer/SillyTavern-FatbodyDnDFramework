@@ -213,8 +213,6 @@ You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These
         // How agent-managed lorebook entries get activated/injected:
         //  'managed'  - Fatbody's keyword scanner + manual injection (default, classic behavior)
         //  'native'   - entries left enabled; ST's native World Info keyword scanner activates them
-        //  'semantic' - entries stay dormant; VectFox semantic World Info activation surfaces them
-        //               by similarity (no keywords, no constant entries). Agent is a pure writer.
         routerActivationMode: "managed",
         routerPaused: false,
         routerRunEvery: 1,
@@ -342,6 +340,12 @@ export function getSettings() {
         s.routerNativeKeywordActivation = false;
     }
 
+    // 'semantic' activation mode (2.5.0–3.2.x) was removed in 3.3.0 — VectFox no
+    // longer offers cross-extension surfacing. Fold stored values back to 'managed'.
+    if (s.routerActivationMode === 'semantic') {
+        s.routerActivationMode = 'managed';
+    }
+
     if (s.routerModules && typeof s.routerModules.npc === 'boolean') {
         const old = s.routerModules;
         s.routerModules = {
@@ -388,13 +392,12 @@ export function getSettings() {
 // ── Router activation mode ─────────────────────────────────────────────────────
 
 /**
- * Resolves the router's lorebook-activation mode: 'managed' | 'native' | 'semantic'.
+ * Resolves the router's lorebook-activation mode: 'managed' | 'native'.
  * @param {Record<string, any>} [s] - settings object (defaults to getSettings())
- * @returns {'managed'|'native'|'semantic'}
+ * @returns {'managed'|'native'}
  */
 export function getActivationMode(s = getSettings()) {
-    const mode = s.routerActivationMode;
-    return (mode === 'native' || mode === 'semantic') ? mode : 'managed';
+    return s.routerActivationMode === 'native' ? 'native' : 'managed';
 }
 
 // ── Bar color resolver ─────────────────────────────────────────────────────────
