@@ -7,11 +7,12 @@ import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, high
 import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderLorebookTerminal } from './renderer.js';
 import { registerLogQuestTool, checkQuestDeadlines } from './quests.js';
 import { initializeDebugViewer, toggleDebugViewer } from './debug-viewer.js';
-import { runRouterPass, rollbackRouterPass, reapplyRouterPass, getLorebookManifest, deleteLorebookEntry, updateLorebookEntry, disableManagedEntries, isRouterRunning } from './router.js';
+import { runRouterPass, runRouterHistoryAudit, rollbackRouterPass, reapplyRouterPass, getLorebookManifest, deleteLorebookEntry, updateLorebookEntry, disableManagedEntries, isRouterRunning, isRouterAuditRunning, cancelRouterAudit } from './router.js';
 import { getRequestHeaders } from '../../../../script.js';
 import { RT } from './shared-state.js';
 import { openThemeWizard, refreshSavedThemesList, handleRecolor, handleCategorySettings, applyCustomTheme } from './theme.js';
-import { runStateModelPass, handleLevelUp, sendDirectPrompt } from './state-pass.js';
+import { runStateModelPass, runChunkedStateAudit, handleLevelUp, sendDirectPrompt } from './state-pass.js';
+import { buildAuditChunks } from './audit-chunker.js';
 import { buildRowTypeSelect, openCustomFieldEditor, openPromptEditor, exportModules, openShareModal, importModulesFromJson, refreshOrderList } from './custom-fields-ui.js';
 import { FOLDER_NAME } from './env.js';
 import { autoApplySysprompt, applyAdditiveSysprompt, applySysprompt, scheduleAutoApply, buildSysprompt } from './sysprompt.js';
@@ -1952,6 +1953,7 @@ ${resourceList}
                     <div class="rpg-tracker-header-center" id="rt-agent-pause-banner" style="color:#ffa500; font-size:0.7em; font-weight:bold; letter-spacing:0.04em;">${settings.routerPaused ? 'AGENT PAUSED' : ''}</div>
                     <div class="rpg-tracker-header-right">
                         <button class="rpg-tracker-icon-btn" id="rt-agent-router-manual-run" title="Run Research Now" style="color: var(--rt-accent);"><i class="fa-solid fa-play"></i></button>
+                        <button class="rpg-tracker-icon-btn" id="rt-agent-router-audit" title="Audit History (chunked backfill of the whole chat)" style="color: #9b59b6;"><i class="fa-solid fa-clock-rotate-left"></i></button>
                          <div id="rt-cleanup-menu-wrap" style="position:relative; display:inline-flex;">
                              <button class="rpg-tracker-icon-btn" id="rt-agent-router-cleanup" title="Cleanup Menu" style="color: #e67e22;"><i class="fa-solid fa-broom"></i></button>
                              <div id="rt-cleanup-dropdown" style="display:none; position:absolute; top:100%; right:0; z-index:9999; background:#131320; border:1px solid rgba(230,126,34,0.35); border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.5); min-width:200px; padding:4px 0; margin-top:2px;">
@@ -1968,7 +1970,11 @@ ${resourceList}
                                          <input id="rt-cleanup-threshold-inp" type="text" inputmode="numeric" pattern="[0-9]*" min="50" max="5000" step="50" value="${settings.routerCleanupTokenThreshold || 300}" style="width:100%; background:rgba(0,0,0,0.35); color:var(--rt-text,#e0e0e0); border:1px solid rgba(255,255,255,0.15); border-radius:4px; padding:3px 6px; font-size:11px; box-sizing:border-box; margin-bottom:8px;">
                                      </div>
                                      <label style="font-size:10px; opacity:0.6; display:block; margin-bottom:2px;">Auto-Cleanup Every N Turns <span style="opacity:0.45;">(0 = off)</span></label>
-                                     <input id="rt-cleanup-every-inp" type="text" inputmode="numeric" pattern="[0-9]*" min="0" max="100" step="1" value="${settings.routerCleanupEvery || 0}" style="width:100%; background:rgba(0,0,0,0.35); color:var(--rt-text,#e0e0e0); border:1px solid rgba(255,255,255,0.15); border-radius:4px; padding:3px 6px; font-size:11px; box-sizing:border-box;">
+                                     <input id="rt-cleanup-every-inp" type="text" inputmode="numeric" pattern="[0-9]*" min="0" max="100" step="1" value="${settings.routerCleanupEvery || 0}" style="width:100%; background:rgba(0,0,0,0.35); color:var(--rt-text,#e0e0e0); border:1px solid rgba(255,255,255,0.15); border-radius:4px; padding:3px 6px; font-size:11px; box-sizing:border-box; margin-bottom:8px;">
+                                     <label style="font-size:10px; opacity:0.6; display:block; margin-bottom:2px;">Audit Chunk Size (tokens)</label>
+                                     <input id="rt-audit-chunk-inp" type="text" inputmode="numeric" pattern="[0-9]*" min="1000" max="32000" step="500" value="${settings.auditChunkTokens || 6000}" style="width:100%; background:rgba(0,0,0,0.35); color:var(--rt-text,#e0e0e0); border:1px solid rgba(255,255,255,0.15); border-radius:4px; padding:3px 6px; font-size:11px; box-sizing:border-box; margin-bottom:8px;">
+                                     <label style="font-size:10px; opacity:0.6; display:block; margin-bottom:2px;">Audit Max Turns/Chunk</label>
+                                     <input id="rt-audit-turns-inp" type="text" inputmode="numeric" pattern="[0-9]*" min="1" max="10" step="1" value="${settings.routerAuditMaxTurns || 3}" style="width:100%; background:rgba(0,0,0,0.35); color:var(--rt-text,#e0e0e0); border:1px solid rgba(255,255,255,0.15); border-radius:4px; padding:3px 6px; font-size:11px; box-sizing:border-box;">
                                  </div>
                              </div>
                          </div>
@@ -3396,6 +3402,57 @@ ${resourceList}
                 });
             }
 
+            // ── History audit button (chunked backfill of the whole chat) ──────────
+            const auditBtn = agentPanel.querySelector('#rt-agent-router-audit');
+            if (auditBtn) {
+                const auditIcon = auditBtn.querySelector('i');
+                auditBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+
+                    // While an audit runs, the button becomes a stop control.
+                    if (isRouterAuditRunning()) {
+                        cancelRouterAudit();
+                        toastr['info']('Cancelling after the current chunk...', 'Lorebook Agent');
+                        return;
+                    }
+                    if (isRouterRunning()) {
+                        toastr['warning']('Agent is already running.', 'Lorebook Agent');
+                        return;
+                    }
+
+                    const s = getSettings();
+                    const { chat, Popup } = SillyTavern.getContext();
+                    const chunks = buildAuditChunks(chat, s.auditChunkTokens || 6000, { includeHidden: !!s.routerIncludeHidden });
+                    if (chunks.length === 0) {
+                        toastr['info']('Nothing to audit: the chat has no usable narrative messages.', 'Lorebook Agent');
+                        return;
+                    }
+
+                    const maxTurns = s.routerAuditMaxTurns || 3;
+                    const promptHtml = `
+                        <div style="text-align: left; font-size: 0.9em; line-height: 1.4;">
+                            <p>The agent will walk the <b>entire chat history</b> in <b>${chunks.length} chunk${chunks.length > 1 ? 's' : ''}</b>, recording persistent lore (NPCs, locations, factions, quests, events) chunk by chunk.</p>
+                            <p style="margin-top: 8px;">Up to <b>${chunks.length * (maxTurns + 1)} LLM calls</b> (${maxTurns + 1} max per chunk). Entries appear in the lorebooks as each chunk completes.</p>
+                            <p style="margin-top: 8px; opacity: 0.8;">A single rollback snapshot is taken first — one ← click in the agent log restores the full pre-audit state.</p>
+                        </div>
+                    `;
+                    const choice = await Popup.show.confirm('Lorebook History Audit', promptHtml, {
+                        okButton: 'Start Audit',
+                        cancelButton: 'Cancel'
+                    });
+                    if (!choice) return;
+
+                    if (auditIcon) auditIcon.className = 'fa-solid fa-stop';
+                    auditBtn.setAttribute('title', 'Stop History Audit (after current chunk)');
+                    try {
+                        await runRouterHistoryAudit(chunks);
+                    } finally {
+                        if (auditIcon) auditIcon.className = 'fa-solid fa-clock-rotate-left';
+                        auditBtn.setAttribute('title', 'Audit History (chunked backfill of the whole chat)');
+                    }
+                });
+            }
+
             // ── Cleanup dropdown submenu ─────────────────────────────────────────────
             const cleanupBroomBtn   = agentPanel.querySelector('#rt-agent-router-cleanup');
             const cleanupDropdown   = agentPanel.querySelector('#rt-cleanup-dropdown');
@@ -3496,6 +3553,30 @@ ${resourceList}
                         const v = parseInt(/** @type {HTMLInputElement} */ (e.target).value);
                         s.routerCleanupEvery = isNaN(v) ? 0 : Math.max(0, Math.min(100, v));
                         /** @type {HTMLInputElement} */ (e.target).value = String(s.routerCleanupEvery);
+                        SillyTavern.getContext().saveSettingsDebounced();
+                    });
+                }
+
+                // Audit chunk size input → persists immediately (shared with the state audit)
+                const auditChunkInp = /** @type {HTMLInputElement|null} */ (agentPanel.querySelector('#rt-audit-chunk-inp'));
+                if (auditChunkInp) {
+                    auditChunkInp.addEventListener('change', (e) => {
+                        const s = getSettings();
+                        const v = parseInt(/** @type {HTMLInputElement} */ (e.target).value) || 6000;
+                        s.auditChunkTokens = Math.max(1000, Math.min(32000, v));
+                        /** @type {HTMLInputElement} */ (e.target).value = String(s.auditChunkTokens);
+                        SillyTavern.getContext().saveSettingsDebounced();
+                    });
+                }
+
+                // Audit max turns input → persists immediately
+                const auditTurnsInp = /** @type {HTMLInputElement|null} */ (agentPanel.querySelector('#rt-audit-turns-inp'));
+                if (auditTurnsInp) {
+                    auditTurnsInp.addEventListener('change', (e) => {
+                        const s = getSettings();
+                        const v = parseInt(/** @type {HTMLInputElement} */ (e.target).value) || 3;
+                        s.routerAuditMaxTurns = Math.max(1, Math.min(10, v));
+                        /** @type {HTMLInputElement} */ (e.target).value = String(s.routerAuditMaxTurns);
                         SillyTavern.getContext().saveSettingsDebounced();
                     });
                 }
@@ -4056,6 +4137,48 @@ ${resourceList}
                 narrative = getNarrativeBlocks(chat, -1);
             } else if (type === 'full') {
                 isFullAudit = true;
+
+                // Auto-chunk when the history exceeds the per-chunk token budget;
+                // small chats keep the classic single-call audit (no popup).
+                const s = getSettings();
+                const budget = s.auditChunkTokens || 6000;
+                let chunks = buildAuditChunks(chat, budget);
+                if (chunks.length > 1) {
+                    const totalTokens = chunks.reduce((sum, c) => sum + c.tokens, 0);
+                    const msgCount = chunks.reduce((sum, c) => sum + c.messageCount, 0);
+                    const promptHtml = `
+                        <div style="text-align: left; font-size: 0.9em; line-height: 1.4;">
+                            <p>The chat history is too large for a single audit pass, so it will be processed <b>sequentially in chunks</b>, carrying the state forward and updating the memo live after each chunk.</p>
+                            <p style="margin-top: 8px;">
+                                Messages: <b>${msgCount}</b> &nbsp;•&nbsp; Estimated tokens: <b>~${totalTokens}</b><br>
+                                Chunks: <b>${chunks.length}</b> = <b>${chunks.length} LLM calls</b>
+                            </p>
+                            <p style="margin-top: 8px;">Chunk size (tokens):
+                                <input type="number" id="rt-audit-chunk-tokens" min="1000" max="32000" step="500" value="${budget}" style="width: 80px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2); color: white; border-radius: 4px; padding: 3px 5px;">
+                            </p>
+                        </div>
+                    `;
+                    const choice = await Popup.show.confirm('Full Context Audit (Chunked)', promptHtml, {
+                        okButton: 'Start Audit',
+                        cancelButton: 'Cancel'
+                    });
+                    if (!choice) return;
+
+                    const input = /** @type {HTMLInputElement} */ (document.getElementById('rt-audit-chunk-tokens'));
+                    const edited = input ? parseInt(input.value) : NaN;
+                    if (!isNaN(edited)) {
+                        const clamped = Math.min(32000, Math.max(1000, edited));
+                        if (clamped !== budget) {
+                            s.auditChunkTokens = clamped;
+                            saveSettings();
+                            chunks = buildAuditChunks(chat, clamped);
+                        }
+                    }
+
+                    toastr['info'](`Starting chunked Full Context Audit (${chunks.length} chunks)...`, "RPG Tracker");
+                    await runChunkedStateAudit(chunks);
+                    return;
+                }
             } else if (type === 'custom') {
                 const count = await Popup.show.input("RPG Tracker", "How many messages back should I parse?", "5");
                 if (!count || isNaN(parseInt(count))) return;
