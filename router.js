@@ -1,12 +1,72 @@
 import { getSettings, getEffectiveRouterCampaignPrefix, getActivationMode } from './state-manager.js';
 import { sendStateRequest, sendAgentTurn } from './llm-client.js';
+import { buildAuditChunks } from './audit-chunker.js';
 import { getRequestHeaders } from '../../../../script.js';
 
 let _routerRunning = false;
 let _routerNormalRunCount = 0; // tracks completed normal (non-cleanup) passes for auto-cleanup interval
+let _auditRunning = false;          // a chunked history audit is in progress (spans many runRouterPass calls)
+let _auditCancelRequested = false;  // user asked to stop the audit after the current chunk
 
 /** Returns true while a router pass is actively running. */
 export function isRouterRunning() { return _routerRunning; }
+
+/** Returns true while a chunked history audit is in progress. */
+export function isRouterAuditRunning() { return _auditRunning; }
+
+/** Asks a running history audit to stop after the current chunk completes. */
+export function cancelRouterAudit() { _auditCancelRequested = true; }
+
+/**
+ * Loads every campaign-scoped lorebook (registry-flushed so books written via
+ * the HTTP API in prior passes are visible), plus books referenced in routerLog.
+ * Module-scope so both runRouterPass and the history audit can use it.
+ * @returns {Promise<Record<string, object>>}
+ */
+async function fetchArchiveBooksFor(ctx, prefix, settings) {
+    // Flush ST's in-memory registry so books written via HTTP API in prior passes are visible
+    if (typeof ctx.updateWorldInfoList === 'function') {
+        try { await ctx.updateWorldInfoList(); } catch (_) {}
+    }
+    const allBookNames = await getWorldInfoNamesSafe();
+    const inScope = (n) => !prefix || bookBelongsToPrefix(n, prefix);
+    const scoped = new Set(prefix ? allBookNames.filter(inScope) : allBookNames);
+
+    // Also sweep books referenced in routerLog (catches books not yet formally indexed)
+    const logBookNames = (settings.routerLog || [])
+        .flatMap(e => [...(e.record || []), ...(e.activate || [])].map(id => id.split('::')[0]))
+        .filter(Boolean);
+    for (const n of logBookNames) {
+        if (inScope(n)) scoped.add(n);
+    }
+
+    const books = {};
+    for (const n of scoped) {
+        const b = await ctx.loadWorldInfo(n);
+        if (b?.entries) books[n] = b;
+    }
+    return books;
+}
+
+/**
+ * Pushes a rollback snapshot of the given books + activeRouterKeys onto
+ * settings.routerHistory (capped at 5). Extracted from runRouterPass so the
+ * history audit can snapshot ONCE before its first chunk.
+ */
+function captureRouterSnapshot(archiveBooks, settings, ctx) {
+    const snapshot = {
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        activeRouterKeys: JSON.parse(JSON.stringify(settings.activeRouterKeys || [])),
+        bookSnapshots: {}
+    };
+    for (const [name, book] of Object.entries(archiveBooks)) {
+        snapshot.bookSnapshots[name] = JSON.parse(JSON.stringify(book));
+    }
+    if (!settings.routerHistory) settings.routerHistory = [];
+    settings.routerHistory.unshift(snapshot);
+    if (settings.routerHistory.length > 5) settings.routerHistory.length = 5;
+    ctx.saveSettingsDebounced();
+}
 
 /**
  * Returns the current campaign prefix (user override in settings, else chat id).
@@ -240,9 +300,12 @@ export function grepLore(loreIndex, rawQuery) {
 /**
  * The core Researcher Agent loop.
  */
-export async function runRouterPass(narrativeOutput, manualPrompt = null, customLookback = null, isManual = false, newlyTriggeredIds = []) {
+export async function runRouterPass(narrativeOutput, manualPrompt = null, customLookback = null, isManual = false, newlyTriggeredIds = [], options = {}) {
     const settings = getSettings();
     if (!settings.routerEnabled || _routerRunning) return;
+    // While a chunked history audit is in progress, only its own per-chunk
+    // passes may run — auto/manual passes would interleave with chunk writes.
+    if (_auditRunning && !options.fromAudit) return;
     // routerPaused blocks auto-runs only; manual UI runs always go through
     if (settings.routerPaused && !isManual) return;
 
@@ -261,49 +324,16 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
             return;
         }
         let basicSummary = '';
-        
-        async function fetchArchiveBooks() {
-            // Flush ST's in-memory registry so books written via HTTP API in prior passes are visible
-            if (typeof ctx.updateWorldInfoList === 'function') {
-                try { await ctx.updateWorldInfoList(); } catch (_) {}
-            }
-            const allBookNames = await getWorldInfoNamesSafe();
-            const inScope = (n) => !prefix || bookBelongsToPrefix(n, prefix);
-            const scoped = new Set(prefix ? allBookNames.filter(inScope) : allBookNames);
 
-            // Also sweep books referenced in routerLog (catches books not yet formally indexed)
-            const logBookNames = (settings.routerLog || [])
-                .flatMap(e => [...(e.record || []), ...(e.activate || [])].map(id => id.split('::')[0]))
-                .filter(Boolean);
-            for (const n of logBookNames) {
-                if (inScope(n)) scoped.add(n);
-            }
-
-            const books = {};
-            for (const n of scoped) {
-                const b = await ctx.loadWorldInfo(n);
-                if (b?.entries) books[n] = b;
-            }
-            return books;
-        }
+        const fetchArchiveBooks = () => fetchArchiveBooksFor(ctx, prefix, settings);
 
         let archiveBooks = await fetchArchiveBooks();
         let loreIndex = buildLoreIndex(archiveBooks);
 
         // ?? Snapshot state BEFORE this pass (for rollback) ??????????????????
-        {
-            const snapshot = {
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                activeRouterKeys: JSON.parse(JSON.stringify(settings.activeRouterKeys || [])),
-                bookSnapshots: {}
-            };
-            for (const [name, book] of Object.entries(archiveBooks)) {
-                snapshot.bookSnapshots[name] = JSON.parse(JSON.stringify(book));
-            }
-            if (!settings.routerHistory) settings.routerHistory = [];
-            settings.routerHistory.unshift(snapshot);
-            if (settings.routerHistory.length > 5) settings.routerHistory.length = 5;
-            ctx.saveSettingsDebounced();
+        // The history audit snapshots ONCE for the whole audit instead.
+        if (!options.skipSnapshot) {
+            captureRouterSnapshot(archiveBooks, settings, ctx);
         }
         let activeEntriesFull = [];
         let newlyTriggeredFull = [];
@@ -334,7 +364,9 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
         const { chat } = ctx;
         
         const N = customLookback !== null ? customLookback : (settings.routerLookback || 4);
-        const recentChat = chat.slice(-N).map(m => {
+        // The history audit supplies a pre-chunked narrative segment instead of
+        // the recent-chat window.
+        const recentChat = options.narrativeText ?? chat.slice(-N).map(m => {
             const name = (/** @type {any} */ (m)).is_user ? 'Player' : ((/** @type {any} */ (m)).name || 'Narrator');
             const content = (/** @type {any} */ (m)).mes || (/** @type {any} */ (m)).content || '';
             return `${name}: ${content.replace(/<[^>]+>/g, '')}`;
@@ -354,7 +386,7 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
 
         // 2. The Loop
         let turns = 0;
-        const maxTurns = settings.routerMaxTurns || 5;
+        const maxTurns = options.maxTurnsOverride ?? (settings.routerMaxTurns || 5);
         let basicSummaryText = '';
 
         const routerSettings = {
@@ -1087,8 +1119,11 @@ ${sharedContext}`;
         const finishMsg = basicSummaryText ? `Finished in ${totalTime}s -- ${basicSummaryText}` : `Finished in ${totalTime}s`;
         broadcastStep('finish', finishMsg, { time: totalTime, turns });
 
-        // Non-blocking bloat hint and auto-cleanup check
-        {
+        // Non-blocking bloat hint and auto-cleanup check.
+        // Skipped for audit chunks: scheduling a cleanup mid-audit would
+        // interleave with chunk writes, and N chunks must not advance the
+        // auto-cleanup interval N times.
+        if (!options.fromAudit) {
             const CLEANUP_TOKEN_THRESHOLD = settings.routerCleanupTokenThreshold || 300;
             const bloatedCount = Object.values(archiveBooks)
                 .flatMap(b => Object.values(b.entries || {}))
@@ -1114,6 +1149,109 @@ ${sharedContext}`;
         return false;
     } finally {
         _routerRunning = false;
+    }
+}
+
+/**
+ * Chunked history audit: walks the ENTIRE chat log in token-budgeted chunks and
+ * runs a bounded agent pass per chunk so the lorebook can be backfilled from a
+ * long pre-existing campaign. Sequential, never parallel — parallel passes
+ * would race on book writes and defeat per-chunk dedup (each chunk's agent can
+ * grep_lore/read_entry against entries created by earlier chunks).
+ *
+ * ONE rollback snapshot is taken before the first chunk (per-chunk snapshots
+ * are skipped), so a single ← rollback restores the full pre-audit state.
+ * Entries written by completed chunks persist if the audit stops early.
+ * @param {Array<{text:string,startIndex:number,endIndex:number,messageCount:number,tokens:number}>|null} [prebuiltChunks]
+ *        chunks already built by the pre-flight dialog; rebuilt here when null
+ * @returns {Promise<boolean>} true if every chunk completed
+ */
+export async function runRouterHistoryAudit(prebuiltChunks = null) {
+    const settings = getSettings();
+    if (!settings.routerEnabled) return false;
+    if (_routerRunning || _auditRunning) {
+        toastr['warning']('Lorebook Agent is already running. Please wait.', 'Lorebook Agent');
+        return false;
+    }
+
+    const ctx = SillyTavern.getContext();
+    const auditChatId = ctx.chatId || '';
+    const prefix = getLivePrefix();
+    if (!prefix) {
+        broadcastStep('error', 'Cannot run history audit: no campaign prefix available.');
+        return false;
+    }
+
+    const chunks = prebuiltChunks || buildAuditChunks(ctx.chat, settings.auditChunkTokens || 6000, { includeHidden: !!settings.routerIncludeHidden });
+    if (chunks.length === 0) {
+        toastr['info']('Nothing to audit: the chat has no usable narrative messages.', 'Lorebook Agent');
+        return false;
+    }
+
+    _auditRunning = true;
+    _auditCancelRequested = false;
+    let completed = 0;
+    try {
+        broadcastStep('start', `History audit: ${chunks.length} chunk${chunks.length > 1 ? 's' : ''} queued...`);
+
+        // ONE snapshot for the whole audit — a single rollback restores everything.
+        const preAuditBooks = await fetchArchiveBooksFor(ctx, prefix, settings);
+        captureRouterSnapshot(preAuditBooks, settings, ctx);
+
+        const maxTurns = settings.routerAuditMaxTurns || 3;
+        for (let i = 0; i < chunks.length; i++) {
+            if (_auditCancelRequested) {
+                broadcastStep('finish', `History audit cancelled after ${completed}/${chunks.length} chunks. Completed chunks are saved; one ← rollback restores the pre-audit state.`);
+                toastr['warning'](`History audit cancelled (${completed}/${chunks.length} chunks done).`, 'Lorebook Agent');
+                return false;
+            }
+            // Chat switch retargets the campaign prefix — stop with partial progress.
+            if ((SillyTavern.getContext().chatId || '') !== auditChatId) {
+                broadcastStep('error', `History audit stopped: the chat changed mid-audit (${completed}/${chunks.length} chunks done).`);
+                toastr['warning'](`History audit stopped — chat changed (${completed}/${chunks.length} chunks done).`, 'Lorebook Agent');
+                return false;
+            }
+
+            const chunk = chunks[i];
+            broadcastStep('thought', `Audit chunk ${i + 1}/${chunks.length} (messages ${chunk.startIndex + 1}–${chunk.endIndex + 1})...`);
+
+            const instruction =
+                `HISTORY AUDIT chunk ${i + 1}/${chunks.length}. The ## NARRATIVE section is a segment of the campaign's past history, not the live scene. ` +
+                `Record persistent entities and events (NPCs, locations, factions, quests, major events) from this segment. ` +
+                `ALWAYS grep_lore/read_entry before recording to avoid duplicating entries created by earlier chunks; prefer update/consolidate over record. ` +
+                `Do not activate or deactivate entries.`;
+
+            // Retry a failed chunk once, then stop with partial progress.
+            let ok = false;
+            for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+                ok = await runRouterPass(null, instruction, null, true, [], {
+                    fromAudit: true,
+                    skipSnapshot: true,
+                    narrativeText: chunk.text,
+                    maxTurnsOverride: maxTurns,
+                }) === true;
+                if (!ok && attempt === 0 && !_auditCancelRequested) {
+                    broadcastStep('thought', `Chunk ${i + 1}/${chunks.length} failed — retrying once...`);
+                }
+            }
+            if (!ok) {
+                broadcastStep('error', `History audit stopped: chunk ${i + 1}/${chunks.length} failed twice. Completed chunks are saved; one ← rollback restores the pre-audit state.`);
+                toastr['error'](`History audit stopped at chunk ${i + 1}/${chunks.length}.`, 'Lorebook Agent');
+                return false;
+            }
+            completed++;
+        }
+
+        broadcastStep('finish', `History audit complete: ${chunks.length}/${chunks.length} chunks processed.`);
+        toastr['success'](`History audit complete (${chunks.length} chunks).`, 'Lorebook Agent');
+        return true;
+    } catch (e) {
+        console.error('[Lorebook Agent] History audit failed:', e);
+        broadcastStep('error', `History audit failed: ${e.message} (${completed}/${chunks.length} chunks done).`);
+        return false;
+    } finally {
+        _auditRunning = false;
+        _auditCancelRequested = false;
     }
 }
 

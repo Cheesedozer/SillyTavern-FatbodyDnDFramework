@@ -224,6 +224,10 @@ You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These
         routerCleanupTokenThreshold: 300,
         routerCleanupEvery: 0,
         routerCleanupUseThreshold: true,
+        /** Shared input-token budget per audit chunk (state audit + lorebook history audit). */
+        auditChunkTokens: 6000,
+        /** Per-chunk agent turn cap for the lorebook history audit (lower than routerMaxTurns to bound cost). */
+        routerAuditMaxTurns: 3,
         routerSystemPromptTemplate: `<basic_instructions>
 You are the Researcher Agent, a specialized Dungeon Master's Assistant. Your role is to architect the AI Narrator's memory — keeping the Active Context saturated with the most relevant lore at all times.
 

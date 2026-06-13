@@ -16,6 +16,7 @@ import { detectLevelUp, formatXpLine, levelForXp } from './progression-engine.js
 import { ensureTierPregenerated } from './skill-forge.js';
 import { stripMemoHtml } from './renderer.js';
 import { checkQuestDeadlines } from './quests.js';
+import { buildAuditChunks } from './audit-chunker.js';
 import { RT } from './shared-state.js';
 import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refreshRenderedView } from './index.js';
 
@@ -109,7 +110,7 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                     `## OUTPUT ONLY CHANGED SECTIONS:`;
             }
 
-            const result = await sendStateRequest(settings, systemPrompt, userPrompt);
+            const result = await sendStateRequest(settings, systemPrompt, userPrompt, signal);
             if (result && typeof result === 'string') {
                 if (settings.debugMode) console.log("[RPG Tracker] Raw Result:", result);
 
@@ -139,84 +140,7 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                     console.log(`[RPG Tracker] Memo ${merged !== sanitizedCurrent ? 'updated (partial merge)' : 'unchanged'}.`);
                 }
 
-                // Push snapshot to rolling history
-                const delta = computeDelta(sanitizedCurrent, merged);
-
-                // Flush any quests staged by LogQuest during this generation.
-                // We do this BEFORE pushing to history so the NEW state in history includes the quest.
-                if (globalThis._rpgPendingQuests && globalThis._rpgPendingQuests.length) {
-                    const existingQuests = parseQuestsFromMemo(merged);
-                    existingQuests.push(...globalThis._rpgPendingQuests);
-                    merged = writeQuestsToMemo(existingQuests, merged);
-                    const count = globalThis._rpgPendingQuests.length;
-                    globalThis._rpgPendingQuests = [];
-                    if (settings.debugMode) console.log(`[RPG Tracker] Flushed ${count} pending quest(s) into merged memo.`);
-                }
-
-                // Modern mode: threshold detection + XP-line normalization (engine truth).
-                // Must run before history archival so snapshots carry the corrected line.
-                merged = applyModernProgression(settings, merged, passChatId);
-
-                // Late completion after a chat switch: the live globals now
-                // belong to ANOTHER chat. Commit the result into the pass
-                // chat's saved state instead of corrupting the active chat's.
-                if (settings.chatLinkEnabled && passChatId && passChatId !== activeChatIdNow()) {
-                    const passState = settings.chatStates?.[passChatId];
-                    if (passState) {
-                        commitMemoToChatState(passState, sanitizedCurrent, merged, delta);
-                        SillyTavern.getContext().saveSettingsDebounced();
-                        toastr['info']('Tracker pass finished after you switched chats — the result was saved to its own chat.', 'RPG Tracker');
-                    } else {
-                        console.warn(`[RPG Tracker] Late state pass for unsaved chat "${passChatId}" — result dropped.`);
-                    }
-                    return delta;
-                }
-
-                // Linear Stone History Logic:
-                // 1. If we were viewing/committed to a past state, delete the "abandoned" future.
-                if (settings.historyIndex !== undefined && settings.historyIndex !== -1) {
-                    if (settings.debugMode) console.log(`[RPG Tracker] Splicing history at index ${settings.historyIndex} due to new update.`);
-                    settings.memoHistory = settings.memoHistory.slice(settings.historyIndex);
-                }
-
-                // 2. Archive the state BEFORE this generation to history
-                if (settings.memoHistory[0] !== sanitizedCurrent) {
-                    settings.memoHistory.unshift(sanitizedCurrent);
-                }
-
-                // 3. Archive the NEW state so it's always recoverable via navigation
-                settings.memoHistory.unshift(merged);
-                if (settings.memoHistory.length > 1000) settings.memoHistory.length = 1000;
-
-                // 4. Set pointer to the NEW state (the live stone)
-                settings.historyIndex = 0;
-                RT.historyViewIndex = -1;
-
-                // Persist delta and update panel
-                settings.lastDelta = delta;
-                const deltaPanel = document.getElementById('rpg-tracker-delta-content');
-                if (deltaPanel) deltaPanel.innerHTML = delta;
-
-                // Rotation logic (legacy compat)
-                settings.prevMemo2 = settings.prevMemo1;
-                settings.prevMemo1 = sanitizedCurrent;
-                settings.currentMemo = merged;
-
-                // Sync internal quest cache from the merged memo (legacy compat)
-                syncQuestsFromMemo(merged);
-
-                updateUIMemo(merged);
-                syncMemoView(); // syncMemoView() already calls refreshRenderedView() at its end
-                saveSettings();
-
-                if (settings.debugMode) console.log("[RPG Tracker] State Model pass complete.");
-
-                // Check for Level Up
-                if (/LEVEL_UP=true/i.test(merged)) {
-                    handleLevelUp();
-                }
-
-                return delta;
+                return commitStatePassResult({ settings, passChatId, sanitizedBase: sanitizedCurrent, merged });
             }
         } catch (error) {
             if (error.name === 'AbortError') {
@@ -224,6 +148,224 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                 return;
             }
             console.error("[RPG Tracker] State Model pass failed:", error);
+        } finally {
+            RT.stateModelRunning = false;
+            RT.stateController = null;
+            updateStatusIndicator('active');
+        }
+    }
+
+    /**
+     * Commits a completed state-pass result: quest flush, modern progression,
+     * Linear Stone history archival, delta panel, quest cache, UI refresh, and
+     * the cross-chat late-commit guard. Extracted from runStateModelPass so the
+     * chunked audit can merge per chunk but commit exactly once at the end.
+     * @param {object} args
+     * @param {ReturnType<typeof getSettings>} args.settings
+     * @param {string|null} args.passChatId - chat the pass STARTED on
+     * @param {string} args.sanitizedBase - memo snapshot from pass start (pre-state archived to history)
+     * @param {string} args.merged - merged result memo
+     * @returns {string} the computed delta HTML
+     */
+    function commitStatePassResult({ settings, passChatId, sanitizedBase, merged }) {
+        // Push snapshot to rolling history
+        const delta = computeDelta(sanitizedBase, merged);
+
+        // Flush any quests staged by LogQuest during this generation.
+        // We do this BEFORE pushing to history so the NEW state in history includes the quest.
+        if (globalThis._rpgPendingQuests && globalThis._rpgPendingQuests.length) {
+            const existingQuests = parseQuestsFromMemo(merged);
+            existingQuests.push(...globalThis._rpgPendingQuests);
+            merged = writeQuestsToMemo(existingQuests, merged);
+            const count = globalThis._rpgPendingQuests.length;
+            globalThis._rpgPendingQuests = [];
+            if (settings.debugMode) console.log(`[RPG Tracker] Flushed ${count} pending quest(s) into merged memo.`);
+        }
+
+        // Modern mode: threshold detection + XP-line normalization (engine truth).
+        // Must run before history archival so snapshots carry the corrected line.
+        merged = applyModernProgression(settings, merged, passChatId);
+
+        // Late completion after a chat switch: the live globals now
+        // belong to ANOTHER chat. Commit the result into the pass
+        // chat's saved state instead of corrupting the active chat's.
+        if (settings.chatLinkEnabled && passChatId && passChatId !== activeChatIdNow()) {
+            const passState = settings.chatStates?.[passChatId];
+            if (passState) {
+                commitMemoToChatState(passState, sanitizedBase, merged, delta);
+                SillyTavern.getContext().saveSettingsDebounced();
+                toastr['info']('Tracker pass finished after you switched chats — the result was saved to its own chat.', 'RPG Tracker');
+            } else {
+                console.warn(`[RPG Tracker] Late state pass for unsaved chat "${passChatId}" — result dropped.`);
+            }
+            return delta;
+        }
+
+        // Linear Stone History Logic:
+        // 1. If we were viewing/committed to a past state, delete the "abandoned" future.
+        if (settings.historyIndex !== undefined && settings.historyIndex !== -1) {
+            if (settings.debugMode) console.log(`[RPG Tracker] Splicing history at index ${settings.historyIndex} due to new update.`);
+            settings.memoHistory = settings.memoHistory.slice(settings.historyIndex);
+        }
+
+        // 2. Archive the state BEFORE this generation to history
+        if (settings.memoHistory[0] !== sanitizedBase) {
+            settings.memoHistory.unshift(sanitizedBase);
+        }
+
+        // 3. Archive the NEW state so it's always recoverable via navigation
+        settings.memoHistory.unshift(merged);
+        if (settings.memoHistory.length > 1000) settings.memoHistory.length = 1000;
+
+        // 4. Set pointer to the NEW state (the live stone)
+        settings.historyIndex = 0;
+        RT.historyViewIndex = -1;
+
+        // Persist delta and update panel
+        settings.lastDelta = delta;
+        const deltaPanel = document.getElementById('rpg-tracker-delta-content');
+        if (deltaPanel) deltaPanel.innerHTML = delta;
+
+        // Rotation logic (legacy compat)
+        settings.prevMemo2 = settings.prevMemo1;
+        settings.prevMemo1 = sanitizedBase;
+        settings.currentMemo = merged;
+
+        // Sync internal quest cache from the merged memo (legacy compat)
+        syncQuestsFromMemo(merged);
+
+        updateUIMemo(merged);
+        syncMemoView(); // syncMemoView() already calls refreshRenderedView() at its end
+        saveSettings();
+
+        if (settings.debugMode) console.log("[RPG Tracker] State Model pass complete.");
+
+        // Check for Level Up
+        if (/LEVEL_UP=true/i.test(merged)) {
+            handleLevelUp();
+        }
+
+        return delta;
+    }
+
+    /**
+     * Sequential chunked Full Context Audit. Used when the chat history exceeds
+     * the per-chunk token budget: each chunk gets a full-output state pass and
+     * the merged memo is carried forward as the input state for the next chunk
+     * ("the memo IS the rolling summary"), with the UI memo repainted live per
+     * chunk. Exactly ONE pre-state + ONE final snapshot enter memoHistory, via
+     * commitStatePassResult at the end — partial progress is committed the same
+     * way on abort or repeated chunk failure.
+     * @param {Array<{text:string,startIndex:number,endIndex:number,messageCount:number,tokens:number}>|null} [prebuiltChunks]
+     *        chunks already built by the pre-flight dialog; rebuilt here when null
+     */
+    export async function runChunkedStateAudit(prebuiltChunks = null) {
+        const settings = getSettings();
+        if (RT.stateModelRunning) {
+            toastr['info']('State Model is already running. Please wait.', 'RPG Tracker');
+            return;
+        }
+        const passChatId = activeChatIdNow();
+        const passMemo = settings.currentMemo;
+
+        // Deterministic logic: Auto-fail quests past deadline (if not using frustration)
+        checkQuestDeadlines();
+
+        const { chat } = SillyTavern.getContext();
+        const chunks = prebuiltChunks || buildAuditChunks(chat, settings.auditChunkTokens || 6000);
+        if (chunks.length === 0) {
+            toastr['info']('Nothing to audit: the chat has no usable narrative messages.', 'RPG Tracker');
+            return;
+        }
+
+        try {
+            RT.stateModelRunning = true;
+            updateStatusIndicator('running');
+
+            // Abort previous if any
+            if (RT.stateController) RT.stateController.abort();
+            RT.stateController = new AbortController();
+            const signal = RT.stateController.signal;
+
+            const modulesText = buildModulesInstructionText(settings);
+            const systemPrompt = settings.systemPromptTemplate.replace("{{modulesText}}", modulesText)
+                .replace(/Only output sections that actually changed/gi, "Perform a full audit of the narrative history and output the COMPLETE state for all enabled modules")
+                .replace(/Omit unchanged sections entirely/gi, "Do NOT omit any section; output a complete, verified state memo");
+
+            const worldLore = await buildLorebookContext();
+            const worldLoreSection = worldLore ? worldLore + '\n\n' : '';
+
+            const sanitizedStart = (passMemo || '').replace(/<\/?memo>/gi, '').trim();
+            let runningMemo = sanitizedStart;
+            let completed = 0;
+            let aborted = false;
+
+            for (let i = 0; i < chunks.length; i++) {
+                const chunk = chunks[i];
+                const userPrompt =
+                    worldLoreSection +
+                    `## TRACKER STATE 0 (Current)\n${stripMemoHtml(runningMemo)}\n\n` +
+                    `## NARRATIVE HISTORY (PART ${i + 1} of ${chunks.length}, messages ${chunk.startIndex + 1}–${chunk.endIndex + 1})\n${chunk.text}\n\n` +
+                    `## TASK\nAnalyze the narrative history provided above. Rebuild the State Memo to ensure every detail (HP, AC, Inventory, Abilities, XP, Party members) is perfectly accurate to the current moment in the story. Correct any errors or omissions found in the Prior Memo. This is part ${i + 1} of ${chunks.length} of a longer history; output the COMPLETE state as of the END of this part.\n\n` +
+                    `## OUTPUT THE COMPLETE VERIFIED STATE MEMO:`;
+
+                // One retry per chunk; abort or a second failure stops the audit
+                // with partial progress (everything merged so far still commits).
+                let result = null;
+                for (let attempt = 0; attempt < 2 && !result && !aborted; attempt++) {
+                    try {
+                        const r = await sendStateRequest(settings, systemPrompt, userPrompt, signal);
+                        if (r && typeof r === 'string') result = r;
+                        else if (attempt === 0) console.warn(`[RPG Tracker] Audit chunk ${i + 1}/${chunks.length} returned no text; retrying once.`);
+                    } catch (err) {
+                        if (err?.name === 'AbortError' || signal.aborted) { aborted = true; break; }
+                        if (attempt === 0) console.warn(`[RPG Tracker] Audit chunk ${i + 1}/${chunks.length} failed; retrying once.`, err);
+                        else console.error(`[RPG Tracker] Audit chunk ${i + 1}/${chunks.length} failed twice; stopping with partial progress.`, err);
+                    }
+                }
+                if (!result) break;
+
+                // ── Pre-clean: strip <memo> wrapper tags before any merge logic ──
+                let cleanedOutput = result;
+                const memoBlocks = [...result.matchAll(/<memo>([\s\S]*?)<\/memo>/gi)];
+                if (memoBlocks.length > 0) {
+                    cleanedOutput = memoBlocks[memoBlocks.length - 1][1].trim();
+                } else {
+                    cleanedOutput = result.replace(/<\/?memo>/gi, '').trim();
+                }
+
+                runningMemo = mergeMemo(runningMemo, cleanedOutput);
+                completed++;
+
+                // Live repaint only — settings.currentMemo/memoHistory are not
+                // touched until the single final commit. Skip the paint if the
+                // user switched chats (the live UI belongs to another chat now).
+                if (passChatId === activeChatIdNow()) {
+                    updateUIMemo(runningMemo);
+                }
+                toastr['info'](`Audit chunk ${i + 1}/${chunks.length} merged.`, 'RPG Tracker');
+            }
+
+            if (completed > 0) {
+                const delta = commitStatePassResult({ settings, passChatId, sanitizedBase: sanitizedStart, merged: runningMemo });
+                if (completed === chunks.length) {
+                    toastr['success'](`Full Context Audit complete (${chunks.length} chunks).`, 'RPG Tracker');
+                } else {
+                    toastr['warning'](`Audit ${aborted ? 'cancelled' : 'stopped'} early — partial result committed (${completed}/${chunks.length} chunks).`, 'RPG Tracker');
+                }
+                return delta;
+            }
+            if (aborted) {
+                toastr['info']('Audit cancelled before any chunk completed.', 'RPG Tracker');
+            } else {
+                toastr['error']('Audit failed before any chunk completed. See console for details.', 'RPG Tracker');
+            }
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                if (settings.debugMode) console.log("[RPG Tracker] Chunked audit aborted by user.");
+                return;
+            }
+            console.error("[RPG Tracker] Chunked audit failed:", error);
         } finally {
             RT.stateModelRunning = false;
             RT.stateController = null;
@@ -369,7 +511,7 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                 `## USER INSTRUCTION\n${message}\n\n` +
                 `## OUTPUT ONLY CHANGED OR NEW SECTIONS:`;
 
-            const result = await sendStateRequest(settings, systemPrompt, userPrompt);
+            const result = await sendStateRequest(settings, systemPrompt, userPrompt, signal);
 
             if (result && typeof result === 'string') {
                 let cleanedOutput = result;
