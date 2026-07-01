@@ -25,6 +25,7 @@ import {
     reconcileWorldProgRollbacks,
     replaceWorldState,
     replaceChatWorldProg,
+    detectMeguminOverlap,
 } from '../world-progression.js';
 
 /**
@@ -217,6 +218,35 @@ test('replaceWorldState / replaceChatWorldProg: HUD hand-edits fully overwrite, 
 
 test('resetWorldProgTick: does not throw and is safe to call with no active chat', () => {
     assert.doesNotThrow(() => resetWorldProgTick());
+});
+
+test('detectMeguminOverlap: not installed when the Megumin-Suite settings key is absent', () => {
+    setSettings({});
+    assert.deepEqual(detectMeguminOverlap(), { installed: false, overlap: false });
+});
+
+test('detectMeguminOverlap: installed but no overlap when neither NPC Bank nor Story Planner is enabled', () => {
+    setSettings({});
+    rawStore()['Megumin-Suite'] = { profiles: { default: { npcBank: { enabled: false }, storyPlan: { enabled: false } } } };
+    const result = detectMeguminOverlap();
+    assert.equal(result.installed, true);
+    assert.equal(result.overlap, false);
+});
+
+test('detectMeguminOverlap: reports overlapping feature names when enabled on the resolved profile', () => {
+    setSettings({});
+    rawStore()['Megumin-Suite'] = { profiles: { default: { npcBank: { enabled: true }, storyPlan: { enabled: true } } } };
+    const result = detectMeguminOverlap();
+    assert.equal(result.overlap, true);
+    assert.deepEqual(result.overlapFeatures.sort(), ['NPC Bank', 'Story Planner / Evolving Arc'].sort());
+});
+
+test('detectMeguminOverlap: never mutates Megumin\'s settings object', () => {
+    setSettings({});
+    const meguminSettings = { profiles: { default: { npcBank: { enabled: true } } } };
+    rawStore()['Megumin-Suite'] = meguminSettings;
+    detectMeguminOverlap();
+    assert.deepEqual(rawStore()['Megumin-Suite'], meguminSettings, 'read-only — must not write into another extension\'s settings object');
 });
 
 test('reconcileWorldProgRollbacks: rolls back a delta whose message was deleted (id no longer referenced anywhere in chat)', () => {
