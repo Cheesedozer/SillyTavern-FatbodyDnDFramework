@@ -257,6 +257,34 @@ export function rollbackDeltasForMessage(chatId, messageExtra) {
 }
 
 /**
+ * Re-checks every pendingDelta against the LIVE chat array and rolls back any
+ * whose anchor id is no longer referenced by any message's `extra.worldProgDeltaIds`
+ * — i.e. the message that triggered it was deleted, or (best-effort) swiped away.
+ * Deliberately payload-agnostic (scans `chat[]` directly rather than trusting the
+ * exact argument MESSAGE_DELETED/MESSAGE_SWIPED pass) since this repo has no prior
+ * code exercising either event to confirm their exact contract against.
+ *
+ * Known limitation, to confirm against a real ST session: this assumes `.extra`
+ * is per-message and changes (or the id list is absent) when a different swipe
+ * becomes active. If a given ST version instead keeps `.extra` constant across
+ * swipes of the same message, a delta anchored to a swiped-away generation could
+ * be missed here — the reconciliation pass (§12) is the backstop for any such drift.
+ * @param {string} chatId
+ */
+export function reconcileWorldProgRollbacks(chatId) {
+    const chatWorldProg = getChatWorldProg(chatId);
+    if (!chatWorldProg?.pendingDeltas?.length) return;
+    const { chat } = SillyTavern.getContext();
+    const stillReferenced = new Set();
+    for (const msg of (chat || [])) {
+        for (const id of (msg?.extra?.worldProgDeltaIds || [])) stillReferenced.add(id);
+    }
+    for (const delta of [...chatWorldProg.pendingDeltas]) {
+        if (!stillReferenced.has(delta.id)) rollbackDelta(chatId, delta.id);
+    }
+}
+
+/**
  * Drops pendingDeltas whose anchor message has scrolled past the rollback
  * horizon (default: more than PENDING_DELTA_COMMIT_HORIZON messages back) —
  * they're permanently committed, no longer swipe/delete-reversible. Bounds

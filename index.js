@@ -3,7 +3,7 @@ import { BLOCK_ORDER } from './module-registry.js';
 import { MODULE_NAME, DEFAULT_MODULES, getSettings, getActivationMode, getBarBackground, getCampaignMode, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
 import { sendStateRequest, fetchOllamaModels, fetchOpenAIModels, testOpenAIConnection, getConnectionProfiles, getCurrentCompletionPreset, setCompletionPreset } from './llm-client.js';
 import { getDiceToolName, getDiceCommandName, getDiceCommandAliases, doDiceRoll, registerDiceFunctionTool, registerDiceSlashCommand, installInterceptor, getNarrativeBlocks, onGenerationEnded, resetRouterTick } from './narrative-hooks.js';
-import { resetWorldProgTick, refreshWorldProgPacingPrompt } from './world-progression.js';
+import { resetWorldProgTick, refreshWorldProgPacingPrompt, reconcileWorldProgRollbacks, forkWorldState } from './world-progression.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
 import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderLorebookTerminal } from './renderer.js';
 import { registerLogQuestTool, checkQuestDeadlines } from './quests.js';
@@ -285,6 +285,21 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         if (!s2.chatStates) s2.chatStates = {};
         if (!s2.chatStates[newChatId]) s2.chatStates[newChatId] = {};
         s2.chatStates[newChatId].campaignBooks = matchingBooks;
+
+        // World Progression: best-effort branch/checkpoint fork detection. A
+        // checkpoint/branch is a NEW chat id sharing this prefix that already has
+        // narrative content — the live world state must not silently become shared
+        // with a diverging branch. SillyTavern fires no dedicated event on
+        // checkpoint/branch creation (checkpoints are linked to their source only
+        // by chat filename), so this heuristic — new chat id, no worldProg yet,
+        // a live world already exists for this prefix, and the chat isn't empty —
+        // is the best available signal. The HUD's manual "Fork World State" button
+        // is the deterministic fallback when this heuristic doesn't fire.
+        if (s2.worldProgEnabled && !s2.chatStates[newChatId].worldProg && s2.worldStates?.[prefix]?.milestoneChain?.length) {
+            const liveChatLength = SillyTavern.getContext().chat?.length || 0;
+            if (liveChatLength > 0) forkWorldState(newChatId);
+        }
+
         saveSettings();
         if (s2.chatLinkEnabled && RT.currentChatId) saveChatState(RT.currentChatId);
         try {
@@ -4666,6 +4681,27 @@ ${resourceList}
             // ─── Event Hooks ───
             eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
             eventSource.on(event_types.GENERATION_STOPPED, onGenerationEnded);
+
+            // World Progression rollback: a swiped/deleted message whose narrative
+            // triggered a world-state change should not leave that change standing.
+            // Payload-agnostic by design (see reconcileWorldProgRollbacks) — just a
+            // signal to re-scan, not a trusted index from the event argument.
+            if (event_types.MESSAGE_DELETED) {
+                eventSource.on(event_types.MESSAGE_DELETED, () => {
+                    try {
+                        const chatId = ctx.getCurrentChatId?.() || RT.currentChatId;
+                        if (chatId) reconcileWorldProgRollbacks(chatId);
+                    } catch (e) { console.error('[RPG Tracker] World Progression: rollback on MESSAGE_DELETED failed:', e); }
+                });
+            }
+            if (event_types.MESSAGE_SWIPED) {
+                eventSource.on(event_types.MESSAGE_SWIPED, () => {
+                    try {
+                        const chatId = ctx.getCurrentChatId?.() || RT.currentChatId;
+                        if (chatId) reconcileWorldProgRollbacks(chatId);
+                    } catch (e) { console.error('[RPG Tracker] World Progression: rollback on MESSAGE_SWIPED failed:', e); }
+                });
+            }
 
             // Sysprompt lifecycle: establish delivery at boot and re-dispatch on chat
             // switches — campaign mode is per-chat (D&D vs Modern), so the narrator

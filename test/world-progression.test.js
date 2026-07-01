@@ -22,6 +22,7 @@ import {
     pruneCommittedDeltas,
     rollbackDelta,
     rollbackDeltasForMessage,
+    reconcileWorldProgRollbacks,
 } from '../world-progression.js';
 
 /**
@@ -200,4 +201,43 @@ test('pruneCommittedDeltas: drops deltas past the commit horizon, keeps recent o
 
 test('resetWorldProgTick: does not throw and is safe to call with no active chat', () => {
     assert.doesNotThrow(() => resetWorldProgTick());
+});
+
+test('reconcileWorldProgRollbacks: rolls back a delta whose message was deleted (id no longer referenced anywhere in chat)', () => {
+    seedChat('chat10');
+    const ws = getWorldState('chat10');
+    ws.factions.f1 = { posture: 'defensive' };
+    saveWorldState('chat10');
+    const before = structuredClone(ws.factions.f1);
+    ws.factions.f1.posture = 'scheming';
+
+    const prog = getChatWorldProg('chat10');
+    prog.pendingDeltas.push({ id: 'orphan-1', messageIndex: 4, swipeId: 0, appliedAt: '', crossChat: true, layer: 'worldArc', inversePatch: [{ path: ['factions', 'f1'], existed: true, value: before }], committed: false });
+    saveChatWorldProg('chat10');
+
+    // Simulate the message that carried this delta id no longer existing in chat[].
+    const baseGetContext = SillyTavern.getContext.bind(SillyTavern);
+    SillyTavern.getContext = () => ({ ...baseGetContext(), chat: [] });
+
+    reconcileWorldProgRollbacks('chat10');
+    assert.equal(getWorldState('chat10').factions.f1.posture, 'defensive');
+    assert.equal(getChatWorldProg('chat10').pendingDeltas.length, 0);
+});
+
+test('reconcileWorldProgRollbacks: leaves a delta alone when its message still references the id', () => {
+    seedChat('chat11');
+    const ws = getWorldState('chat11');
+    ws.factions.f1 = { posture: 'aggressive' };
+    saveWorldState('chat11');
+
+    const prog = getChatWorldProg('chat11');
+    prog.pendingDeltas.push({ id: 'kept-1', messageIndex: 2, swipeId: 0, appliedAt: '', crossChat: true, layer: 'worldArc', inversePatch: [{ path: ['factions', 'f1'], existed: true, value: { posture: 'defensive' } }], committed: false });
+    saveChatWorldProg('chat11');
+
+    const baseGetContext = SillyTavern.getContext.bind(SillyTavern);
+    SillyTavern.getContext = () => ({ ...baseGetContext(), chat: [{}, {}, { extra: { worldProgDeltaIds: ['kept-1'] } }] });
+
+    reconcileWorldProgRollbacks('chat11');
+    assert.equal(getWorldState('chat11').factions.f1.posture, 'aggressive', 'still-referenced delta is not rolled back');
+    assert.equal(getChatWorldProg('chat11').pendingDeltas.length, 1);
 });
