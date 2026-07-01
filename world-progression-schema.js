@@ -668,6 +668,227 @@ export function buildCommitToolSchema(activeLayers) {
     }];
 }
 
+// ── Micro-patch primitives (generic apply/invert for rollback) ────────────────
+
+/** @param {object} root @param {string[]} path @returns {{existed: boolean, value: any}} */
+function snapshotAt(root, path) {
+    let cur = root;
+    for (const key of path) {
+        if (cur == null) return { existed: false, value: undefined };
+        cur = cur[key];
+    }
+    return { existed: cur !== undefined, value: cur === undefined ? undefined : structuredClone(cur) };
+}
+
+/** @param {object} root @param {string[]} path @param {any} value */
+function setAt(root, path, value) {
+    let cur = root;
+    for (let i = 0; i < path.length - 1; i++) {
+        const key = path[i];
+        if (cur[key] === undefined || cur[key] === null) cur[key] = {};
+        cur = cur[key];
+    }
+    cur[path[path.length - 1]] = value;
+}
+
+/** @param {object} root @param {string[]} path */
+function deleteAt(root, path) {
+    let cur = root;
+    for (let i = 0; i < path.length - 1; i++) {
+        if (cur == null) return;
+        cur = cur[path[i]];
+    }
+    if (cur != null) delete cur[path[path.length - 1]];
+}
+
+/**
+ * Records a single field change and returns the micro-patch describing how
+ * to undo it (captured BEFORE the write). Push the return value onto a
+ * running `microPatches` array; replay with `invertMicroPatches` to roll
+ * an entire cycle's changes back (rollback for swipe/delete, §9).
+ * @param {object} root
+ * @param {string[]} path
+ * @param {any} value
+ * @returns {{path: string[], existed: boolean, value: any}}
+ */
+export function recordAndSet(root, path, value) {
+    const before = snapshotAt(root, path);
+    setAt(root, path, value);
+    return { path, existed: before.existed, value: before.value };
+}
+
+/**
+ * Undoes a sequence of micro-patches against `root`, in reverse order (so
+ * sequential mutations to the same path unwind correctly). Missing-before
+ * fields are deleted rather than set to undefined, so a newly-created entity
+ * disappears entirely on rollback rather than leaving an `undefined` husk.
+ * @param {object} root
+ * @param {Array<{path: string[], existed: boolean, value: any}>} microPatches
+ */
+export function invertMicroPatches(root, microPatches) {
+    for (let i = microPatches.length - 1; i >= 0; i--) {
+        const { path, existed, value } = microPatches[i];
+        if (existed) setAt(root, path, value);
+        else deleteAt(root, path);
+    }
+}
+
+// ── Layer update appliers (pure — mutate the passed state, return the micro-patch log) ──
+
+/**
+ * Applies a validated `worldArc` commit payload to `worldState` (mutates in
+ * place) and returns the micro-patch log for rollback. Caller must run
+ * `validateWorldProgressionCommit` first — this performs no validation.
+ * @param {object} worldState - settings.worldStates[campaignPrefix]
+ * @param {{factionUpdates?: object[], milestoneUpdates?: object[], worldClockNote?: string, tectonicShift?: object|null}} payload
+ * @returns {Array<{path: string[], existed: boolean, value: any}>}
+ */
+export function applyWorldArcUpdate(worldState, payload) {
+    const microPatches = [];
+    const now = new Date().toISOString();
+
+    for (const fu of (payload.factionUpdates || [])) {
+        const existing = worldState.factions[fu.factionId] || { lorebookEntryId: '', posture: 'defensive', goal: '', lastActionAt: null, lastActionSummary: '' };
+        microPatches.push(recordAndSet(worldState, ['factions', fu.factionId], {
+            ...existing,
+            posture: fu.posture || existing.posture,
+            goal: fu.goal !== undefined ? fu.goal : existing.goal,
+            lastActionAt: now,
+            lastActionSummary: fu.actionSummary !== undefined ? fu.actionSummary : existing.lastActionSummary,
+        }));
+    }
+
+    for (const mu of (payload.milestoneUpdates || [])) {
+        const idx = worldState.milestoneChain.findIndex(m => m.id === mu.milestoneId);
+        if (idx === -1) continue;
+        const existing = worldState.milestoneChain[idx];
+        microPatches.push(recordAndSet(worldState, ['milestoneChain', idx], {
+            ...existing,
+            status: mu.status,
+            triggeredAt: mu.status === 'triggered' && !existing.triggeredAt ? now : existing.triggeredAt,
+            howItPlayedOut: mu.howItPlayedOut !== undefined ? mu.howItPlayedOut : existing.howItPlayedOut,
+        }));
+    }
+
+    if (payload.worldClockNote !== undefined) {
+        microPatches.push(recordAndSet(worldState, ['worldClock', 'proximityNote'], payload.worldClockNote));
+        microPatches.push(recordAndSet(worldState, ['worldClock', 'lastEvaluatedAt'], now));
+    }
+
+    if (payload.tectonicShift) {
+        microPatches.push(recordAndSet(worldState, ['tectonicShiftsUsed'], (worldState.tectonicShiftsUsed || 0) + 1));
+    }
+
+    microPatches.push(recordAndSet(worldState, ['updatedAt'], now));
+    return microPatches;
+}
+
+/**
+ * Applies a validated `characterArc` commit payload's beats to
+ * `worldState.characterArcs` (mutates in place). Sets `pendingBeat` rather
+ * than clearing it immediately — the caller marks it processed once the beat
+ * has actually been surfaced in the narrative (phase-gate criterion).
+ * @param {object} worldState
+ * @param {{beats?: object[]}} payload
+ * @returns {Array<{path: string[], existed: boolean, value: any}>}
+ */
+export function applyCharacterArcUpdate(worldState, payload) {
+    const microPatches = [];
+    const now = new Date().toISOString();
+
+    for (const b of (payload.beats || [])) {
+        const existing = worldState.characterArcs[b.npcId] || makeDefaultCharacterArc();
+        microPatches.push(recordAndSet(worldState, ['characterArcs', b.npcId], {
+            ...existing,
+            phase: b.phase || existing.phase,
+            relationshipDepth: b.relationshipDepth || existing.relationshipDepth,
+            pendingBeat: { type: b.phase, note: b.beatNote, stagedAt: now },
+            lastBeatFiredAt: now,
+        }));
+    }
+    return microPatches;
+}
+
+/**
+ * Applies a validated `regionalState` commit payload to `chatWorldProg.regions`
+ * (mutates in place) — appends stackable condition modifiers, hooks, and
+ * consequence residue.
+ * @param {object} chatWorldProg - chatStates[chatId].worldProg
+ * @param {{regionUpdates?: object[]}} payload
+ * @param {number} atMessageIndex
+ * @returns {Array<{path: string[], existed: boolean, value: any}>}
+ */
+export function applyRegionalStateUpdate(chatWorldProg, payload, atMessageIndex = -1) {
+    const microPatches = [];
+    const now = new Date().toISOString();
+
+    for (const ru of (payload.regionUpdates || [])) {
+        const existing = chatWorldProg.regions[ru.regionId] || makeDefaultRegion();
+        let modifiers = existing.conditionModifiers || [];
+        if (ru.removeModifierIds?.length) {
+            modifiers = modifiers.filter(m => !ru.removeModifierIds.includes(m.id));
+        }
+        if (ru.addModifiers?.length) {
+            modifiers = [...modifiers, ...ru.addModifiers.map((m, i) => ({ id: `mod_${Date.now()}_${i}`, label: m.label, note: m.note || '', appliedAt: now }))];
+        }
+        const hooks = ru.addHooks?.length
+            ? [...(existing.hooks || []), ...ru.addHooks.map((h, i) => ({ id: `hook_${Date.now()}_${i}`, text: h.text, discovered: false, bloomed: false }))]
+            : (existing.hooks || []);
+        const residue = ru.addResidue?.length
+            ? [...(existing.residue || []), ...ru.addResidue.map((r, i) => ({ id: `res_${Date.now()}_${i}`, text: r.text, fromMessageIndex: atMessageIndex, createdAt: now }))]
+            : (existing.residue || []);
+
+        microPatches.push(recordAndSet(chatWorldProg, ['regions', ru.regionId], {
+            ...existing,
+            conditionModifiers: modifiers,
+            hooks,
+            residue,
+        }));
+    }
+    return microPatches;
+}
+
+// ── Narrative scanning helpers (cheap, no LLM) ─────────────────────────────────
+
+/**
+ * Naive engagement signal: +1 for any tracked NPC whose name appears
+ * (case-insensitive substring) in this cycle's narrative. Cheap and coarse
+ * by design — feeds candidateCharacterArcBeats' threshold check, not a
+ * precision metric.
+ * @param {string} combinedNarrative
+ * @param {Record<string, {name?: string}>} characterArcs
+ * @returns {Record<string, number>} npcId -> engagement delta this cycle
+ */
+export function computeEngagementDeltas(combinedNarrative, characterArcs) {
+    const deltas = {};
+    if (!combinedNarrative) return deltas;
+    const lower = combinedNarrative.toLowerCase();
+    for (const [npcId, arc] of Object.entries(characterArcs || {})) {
+        const name = (arc?.name || '').trim();
+        if (!name) continue;
+        if (lower.includes(name.toLowerCase())) deltas[npcId] = 1;
+    }
+    return deltas;
+}
+
+/**
+ * Resolves the region the narrative is currently set in by reusing the same
+ * "(Location: X, Y, Z)" status-footer convention router.js already parses
+ * (see router.js's `locationRegex`), matched against known region names.
+ * @param {Record<string, {name?: string}>} regions
+ * @param {string} combinedNarrative
+ * @returns {string|null} regionId, or null if no known region matches
+ */
+export function resolveCurrentRegionId(regions, combinedNarrative) {
+    const locMatch = combinedNarrative?.match(/\(Location:\s*([^)]+)\)/i);
+    const hierarchy = locMatch ? locMatch[1].trim().toLowerCase() : '';
+    if (!hierarchy) return null;
+    for (const [regionId, region] of Object.entries(regions || {})) {
+        if (region?.name && hierarchy.includes(region.name.toLowerCase())) return regionId;
+    }
+    return null;
+}
+
 // ── Tempo directive prose (Layer 4 narrator-facing output, no LLM) ────────────
 
 const TEMPO_DIRECTIVES = {

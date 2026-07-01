@@ -26,6 +26,13 @@ import {
     evaluatePhaseGate,
     buildCommitToolSchema,
     renderTempoDirective,
+    recordAndSet,
+    invertMicroPatches,
+    applyWorldArcUpdate,
+    applyCharacterArcUpdate,
+    applyRegionalStateUpdate,
+    computeEngagementDeltas,
+    resolveCurrentRegionId,
 } from '../world-progression-schema.js';
 
 // ── Category catalog ────────────────────────────────────────────────────────────
@@ -296,4 +303,116 @@ test('renderTempoDirective: returns distinct, non-empty prose for each mode and 
     for (const t of texts) assert.ok(t && t.length > 20);
     assert.equal(new Set(texts).size, modes.length, 'each mode has distinct directive text');
     assert.equal(renderTempoDirective('bogus'), renderTempoDirective('exploration'));
+});
+
+// ── Micro-patch apply/invert (rollback correctness) ────────────────────────────
+
+test('recordAndSet + invertMicroPatches: roundtrips a simple field change', () => {
+    const state = { a: { b: 1 } };
+    const patches = [recordAndSet(state, ['a', 'b'], 2)];
+    assert.equal(state.a.b, 2);
+    invertMicroPatches(state, patches);
+    assert.equal(state.a.b, 1);
+});
+
+test('recordAndSet + invertMicroPatches: a newly-created key is deleted entirely on rollback, not left as undefined', () => {
+    const state = { factions: {} };
+    const patches = [recordAndSet(state, ['factions', 'f1'], { posture: 'scheming' })];
+    assert.ok('f1' in state.factions);
+    invertMicroPatches(state, patches);
+    assert.ok(!('f1' in state.factions), 'key must be removed, not set to undefined');
+});
+
+test('recordAndSet + invertMicroPatches: sequential writes to the same path unwind in reverse order', () => {
+    const state = { x: 0 };
+    const patches = [
+        recordAndSet(state, ['x'], 1),
+        recordAndSet(state, ['x'], 2),
+        recordAndSet(state, ['x'], 3),
+    ];
+    assert.equal(state.x, 3);
+    invertMicroPatches(state, patches);
+    assert.equal(state.x, 0, 'unwinding in reverse restores the original, not an intermediate value');
+});
+
+test('applyWorldArcUpdate: apply then invert restores the original worldState exactly', () => {
+    const worldState = makeDefaultWorldState();
+    worldState.milestoneChain = [{ id: 'ms_1', title: 'The border falls', description: 'd', order: 1, status: 'pending', triggeredAt: null, howItPlayedOut: null }];
+    worldState.factions = { f1: { lorebookEntryId: 'Book::0', posture: 'defensive', goal: 'Hold the line', lastActionAt: null, lastActionSummary: '' } };
+    const before = JSON.parse(JSON.stringify(worldState));
+
+    const patches = applyWorldArcUpdate(worldState, {
+        factionUpdates: [{ factionId: 'f1', posture: 'aggressive', goal: 'Retake the pass', actionSummary: 'Mustered troops.' }],
+        milestoneUpdates: [{ milestoneId: 'ms_1', status: 'approaching', howItPlayedOut: null }],
+        worldClockNote: 'Two seeds from the tipping point.',
+        tectonicShift: { gained: 'a', lost: 'b', nowPossible: 'c', nowImpossible: 'd' },
+    });
+
+    assert.equal(worldState.factions.f1.posture, 'aggressive');
+    assert.equal(worldState.milestoneChain[0].status, 'approaching');
+    assert.equal(worldState.tectonicShiftsUsed, 1);
+
+    invertMicroPatches(worldState, patches);
+    // updatedAt/createdAt intentionally excluded from the equality check (invert restores
+    // them too, but JSON round-tripping `before` is enough to prove no residual drift).
+    assert.deepEqual(worldState, before);
+});
+
+test('applyCharacterArcUpdate: apply then invert restores the original characterArcs exactly', () => {
+    const worldState = makeDefaultWorldState();
+    worldState.characterArcs = { npc1: makeDefaultCharacterArc('Thalric') };
+    const before = JSON.parse(JSON.stringify(worldState));
+
+    const patches = applyCharacterArcUpdate(worldState, {
+        beats: [{ npcId: 'npc1', phase: 'fracture', relationshipDepth: 'acquaintance', beatNote: 'He flinches at the mention of the old mine.' }],
+    });
+    assert.equal(worldState.characterArcs.npc1.phase, 'fracture');
+    assert.ok(worldState.characterArcs.npc1.pendingBeat);
+
+    invertMicroPatches(worldState, patches);
+    assert.deepEqual(worldState, before);
+});
+
+test('applyCharacterArcUpdate: a brand-new NPC id is fully removed on rollback', () => {
+    const worldState = makeDefaultWorldState();
+    const patches = applyCharacterArcUpdate(worldState, {
+        beats: [{ npcId: 'npc_new', phase: 'facade', beatNote: 'First real conversation.' }],
+    });
+    assert.ok(worldState.characterArcs.npc_new);
+    invertMicroPatches(worldState, patches);
+    assert.ok(!('npc_new' in worldState.characterArcs));
+});
+
+test('applyRegionalStateUpdate: apply then invert restores the original regions exactly', () => {
+    const chatWorldProg = makeDefaultChatWorldProg();
+    chatWorldProg.regions = { r1: makeDefaultRegion('Khelt', 'Book::0') };
+    const before = JSON.parse(JSON.stringify(chatWorldProg));
+
+    const patches = applyRegionalStateUpdate(chatWorldProg, {
+        regionUpdates: [{ regionId: 'r1', addModifiers: [{ label: 'Under occupation', note: 'Soldiers in the streets.' }], addHooks: [{ text: 'A sealed letter under a loose floorboard.' }], addResidue: [{ text: 'The forge the party burned is still ash.' }] }],
+    }, 12);
+
+    assert.equal(chatWorldProg.regions.r1.conditionModifiers.length, 1);
+    assert.equal(chatWorldProg.regions.r1.hooks.length, 1);
+    assert.equal(chatWorldProg.regions.r1.residue[0].fromMessageIndex, 12);
+
+    invertMicroPatches(chatWorldProg, patches);
+    assert.deepEqual(chatWorldProg, before);
+});
+
+// ── Narrative scanning helpers ──────────────────────────────────────────────────
+
+test('computeEngagementDeltas: +1 for a tracked NPC whose name appears (case-insensitive), 0 otherwise', () => {
+    const arcs = { npc1: { name: 'Thalric Thorne' }, npc2: { name: 'Mira' } };
+    const deltas = computeEngagementDeltas('Thalric Thorne leans against the doorframe, arms crossed.', arcs);
+    assert.deepEqual(deltas, { npc1: 1 });
+    assert.deepEqual(computeEngagementDeltas('', arcs), {});
+    assert.deepEqual(computeEngagementDeltas('Nobody relevant is here.', arcs), {});
+});
+
+test('resolveCurrentRegionId: matches the (Location: ...) footer convention against known region names', () => {
+    const regions = { r1: { name: 'Khelt' }, r2: { name: 'Rust-Lantern District' } };
+    assert.equal(resolveCurrentRegionId(regions, 'The street is quiet. (Location: Khelt, Rust-Lantern District)'), 'r1');
+    assert.equal(resolveCurrentRegionId(regions, 'No footer here at all.'), null);
+    assert.equal(resolveCurrentRegionId({}, '(Location: Khelt)'), null);
 });

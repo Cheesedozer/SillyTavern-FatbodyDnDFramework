@@ -15,6 +15,7 @@
 import { getSettings, getActivationMode, getCampaignMode } from './state-manager.js';
 import { parseQuestsFromMemo, buildActiveLorebookContext, estimateTokens, estimateExternalPromptTokens, budgetInjections, OUTPUT_HEADROOM_FRAC } from './memo-processor.js';
 import { runRouterPass, saveSceneToLorebook, scanAssistantOutputForKeywords } from './router.js';
+import { maybeRunWorldProgressionPass } from './world-progression.js';
 import { logTransaction } from './debug-viewer.js';
 
 // ── Dice naming helpers ────────────────────────────────────────────────────────
@@ -579,6 +580,19 @@ export async function onGenerationEnded() {
     // Step 2: State Tracker pass.
     if (typeof globalThis._rpgRunStateModelPass === 'function') {
         await globalThis._rpgRunStateModelPass(combinedNarrative);
+    }
+
+    // Step 2b: World Progression pass. MUST run here, before Step 3's early return —
+    // that throttle only guards the Lorebook Agent, but this feature has its own
+    // independent throttle (and Pacing must evaluate every cycle regardless of the
+    // Lorebook Agent's cadence). Inserting this after Step 4 would make it inherit
+    // the router's throttle and silently skip cycles it should have run.
+    if (settings.worldProgEnabled) {
+        try {
+            await maybeRunWorldProgressionPass(combinedNarrative, chat);
+        } catch (e) {
+            console.error('[RPG Tracker] World Progression pass failed:', e);
+        }
     }
 
     // Step 3: Run-every throttle — only fire the Lorebook Agent every N auto-generations.

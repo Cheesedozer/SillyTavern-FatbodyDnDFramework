@@ -3,6 +3,7 @@ import { BLOCK_ORDER } from './module-registry.js';
 import { MODULE_NAME, DEFAULT_MODULES, getSettings, getActivationMode, getBarBackground, getCampaignMode, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
 import { sendStateRequest, fetchOllamaModels, fetchOpenAIModels, testOpenAIConnection, getConnectionProfiles, getCurrentCompletionPreset, setCompletionPreset } from './llm-client.js';
 import { getDiceToolName, getDiceCommandName, getDiceCommandAliases, doDiceRoll, registerDiceFunctionTool, registerDiceSlashCommand, installInterceptor, getNarrativeBlocks, onGenerationEnded, resetRouterTick } from './narrative-hooks.js';
+import { resetWorldProgTick, refreshWorldProgPacingPrompt } from './world-progression.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
 import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderLorebookTerminal } from './renderer.js';
 import { registerLogQuestTool, checkQuestDeadlines } from './quests.js';
@@ -892,6 +893,8 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         // Same-chat reloads (swipe, regenerate) must preserve the keyword pool.
         const isActualChange = oldChatId !== newChatId;
         resetRouterTick(isActualChange);
+        if (isActualChange) resetWorldProgTick();
+        refreshWorldProgPacingPrompt(newChatId);
 
         // Auto-activate and prefix logic run regardless of chatLinkEnabled.
         // Always re-derive the prefix from the chat ID so stale saved data never
