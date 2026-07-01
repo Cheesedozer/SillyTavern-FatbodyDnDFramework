@@ -3,7 +3,12 @@ import { BLOCK_ORDER } from './module-registry.js';
 import { MODULE_NAME, DEFAULT_MODULES, getSettings, getActivationMode, getBarBackground, getCampaignMode, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
 import { sendStateRequest, fetchOllamaModels, fetchOpenAIModels, testOpenAIConnection, getConnectionProfiles, getCurrentCompletionPreset, setCompletionPreset } from './llm-client.js';
 import { getDiceToolName, getDiceCommandName, getDiceCommandAliases, doDiceRoll, registerDiceFunctionTool, registerDiceSlashCommand, installInterceptor, getNarrativeBlocks, onGenerationEnded, resetRouterTick } from './narrative-hooks.js';
-import { resetWorldProgTick, refreshWorldProgPacingPrompt, reconcileWorldProgRollbacks, forkWorldState } from './world-progression.js';
+import {
+    resetWorldProgTick, refreshWorldProgPacingPrompt, reconcileWorldProgRollbacks, forkWorldState,
+    getWorldState, getChatWorldProg, forceAdvanceTempo, forcePhaseGate, runWorldProgReconciliation,
+    detectMeguminOverlap, replaceWorldState, replaceChatWorldProg,
+} from './world-progression.js';
+import { openCentralTensionWizard } from './central-tension-compiler.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
 import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderLorebookTerminal } from './renderer.js';
 import { registerLogQuestTool, checkQuestDeadlines } from './quests.js';
@@ -1948,6 +1953,7 @@ ${resourceList}
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-view-btn" title="Toggle rendered view">⊞</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-delta-btn" title="Toggle change log">δ</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-agent-btn" title="Lorebook Agent">🤖</button>
+                    <button class="rpg-tracker-icon-btn" id="rpg-tracker-worldprog-btn" title="World Progression" style="${settings.worldProgHudVisible ? '' : 'display:none;'}">🌍</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-debug-btn" title="Context Debugger" style="display:none;">🛠️</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-collapse-btn" title="Collapse Panel"><i class="fa-solid ${settings.trackerCollapsed ? 'fa-chevron-down' : 'fa-chevron-up'}"></i></button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-close-btn" title="Hide panel">✕</button>
@@ -2174,6 +2180,26 @@ ${resourceList}
                         <span class="rpg-tracker-nav-label" id="rt-agent-nav-label">[ LIVE ]</span>
                         <button class="rpg-tracker-nav-btn" id="rt-agent-nav-fwd" title="Redo lorebook pass">→</button>
                     </div>
+                </div>
+            </div>
+            <div class="rpg-tracker-panel rpg-tracker-agent-panel ${settings.worldProgHudCollapsed ? 'rt-panel-collapsed ' : ''}${settings.trackerTheme || 'rt-theme-native'}${settings.worldProgEnabled ? '' : ' is-agent-disabled'}" id="rpg-tracker-worldprog" style="display:none; position: absolute; right: 0; top: 30px; width: 320px; max-height: calc(100% - 30px); z-index: 1000; flex-direction: column;">
+                <div class="rpg-tracker-header" style="cursor: default;">
+                    <span class="rpg-tracker-header-left"><i class="fa-solid fa-earth-americas"></i> <span>World Progression</span></span>
+                    <div class="rpg-tracker-header-right">
+                        <button class="rpg-tracker-icon-btn" id="rt-worldprog-edit-btn" title="Edit snapshot as JSON (bypasses validation — a manual override, not a model output)">✎</button>
+                        <button class="rpg-tracker-icon-btn" id="rt-worldprog-refresh-btn" title="Refresh">🔄</button>
+                        <button class="rpg-tracker-icon-btn" id="rt-worldprog-collapse-btn" title="Collapse Panel"><i class="fa-solid ${settings.worldProgHudCollapsed ? 'fa-chevron-down' : 'fa-chevron-up'}"></i></button>
+                        <button class="rpg-tracker-icon-btn" id="rpg-tracker-worldprog-close" title="Close">✕</button>
+                    </div>
+                </div>
+                <div class="rpg-tracker-content" style="flex: 1; overflow-y: auto; padding: 10px; color: var(--rt-text); font-size: 0.85em;">
+                    <div id="rt-worldprog-readout" style="line-height: 1.55; white-space: pre-wrap;"></div>
+                    <textarea id="rt-worldprog-json-editor" class="text_pole" style="display:none; width: 100%; min-height: 260px; font-family: monospace; font-size: 0.82em; box-sizing: border-box;"></textarea>
+                    <div id="rt-worldprog-json-actions" style="display:none; gap: 6px; margin-top: 6px;">
+                        <button id="rt-worldprog-json-save" class="menu_button interactable" style="flex:1;">Save</button>
+                        <button id="rt-worldprog-json-cancel" class="menu_button interactable" style="flex:1;">Cancel</button>
+                    </div>
+                    <button id="rt-worldprog-btn-start-arc" class="menu_button interactable" style="width:100%; margin-top: 8px; display: none;">🌍 Start World Arc…</button>
                 </div>
             </div>
             <div class="rpg-tracker-prompt-bar" id="rpg-tracker-prompt-bar" style="display:none;">
@@ -2457,6 +2483,121 @@ ${resourceList}
             });
         }
         
+        // ─── World Progression HUD panel ───
+        // Positioned via CSS like the agent panel's default (non-detached) state —
+        // no drag/detach wiring for v1, matching that panel's own undetached behavior.
+        const worldProgBtn = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-worldprog-btn'));
+        const worldProgPanel = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-worldprog'));
+        const worldProgCloseBtn = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-worldprog-close'));
+
+        if (worldProgPanel) {
+            const readoutEl = worldProgPanel.querySelector('#rt-worldprog-readout');
+            const jsonEditor = /** @type {HTMLTextAreaElement|null} */ (worldProgPanel.querySelector('#rt-worldprog-json-editor'));
+            const jsonActions = /** @type {HTMLElement|null} */ (worldProgPanel.querySelector('#rt-worldprog-json-actions'));
+            const editBtn = worldProgPanel.querySelector('#rt-worldprog-edit-btn');
+            const refreshBtn = worldProgPanel.querySelector('#rt-worldprog-refresh-btn');
+            const collapseBtn = worldProgPanel.querySelector('#rt-worldprog-collapse-btn');
+            const saveBtn = worldProgPanel.querySelector('#rt-worldprog-json-save');
+            const cancelBtn = worldProgPanel.querySelector('#rt-worldprog-json-cancel');
+            const startArcBtn = worldProgPanel.querySelector('#rt-worldprog-btn-start-arc');
+
+            const formatSeed = (s) => `    • [${s.tiedTo || 'none'}]${s.engaged ? ' ✓' : ''} ${s.text}`;
+            const formatFaction = ([id, f]) => `  • ${id}: ${f.posture}${f.goal ? ' — ' + f.goal : ''}`;
+            const formatArc = ([id, a]) => `  • ${a.name || id}: ${a.phase} / ${a.relationshipDepth}${a.pendingBeat ? ' (beat pending)' : ''}`;
+            const formatRegion = ([id, r]) => `  • ${r.name || id}: ${(r.conditionModifiers || []).map(m => m.label).join(', ') || 'baseline'}`;
+
+            function renderWorldProgHud() {
+                const chatId = ctx.chatId || RT.currentChatId;
+                const ws = chatId ? getWorldState(chatId) : null;
+                const prog = chatId ? getChatWorldProg(chatId) : null;
+                if (startArcBtn) (/** @type {HTMLElement} */ (startArcBtn)).style.display = (!ws?.milestoneChain?.length) ? 'block' : 'none';
+                if (!chatId) { if (readoutEl) readoutEl.textContent = 'No active chat.'; return; }
+                if (!ws?.milestoneChain?.length) { if (readoutEl) readoutEl.textContent = 'No World Arc compiled for this campaign yet — click "Start World Arc" below.'; return; }
+
+                const lines = [];
+                lines.push(`TEMPO: ${prog?.pacing?.mode || 'unknown'} (${prog?.pacing?.lastTransitionReason || ''})`);
+                lines.push(`PRESSURE: ${ws.worldClock?.pressureGauge || 'unknown'}`);
+                lines.push('');
+                lines.push(`CHAPTER ${prog?.chapter?.index ?? '?'} — ${prog?.chapter?.convergencesResolved || 0} convergence(s) resolved`);
+                lines.push(...(prog?.chapter?.seeds || []).map(formatSeed));
+                lines.push('');
+                lines.push(`MILESTONES (${ws.milestoneChain.length}):`);
+                ws.milestoneChain.forEach((m, i) => lines.push(`  ${i + 1}. [${m.status}] ${m.title}`));
+                const factions = Object.entries(ws.factions || {});
+                if (factions.length) { lines.push('', 'FACTIONS:'); lines.push(...factions.map(formatFaction)); }
+                const arcs = Object.entries(ws.characterArcs || {});
+                if (arcs.length) { lines.push('', 'CHARACTER ARCS:'); lines.push(...arcs.map(formatArc)); }
+                const regions = Object.entries(prog?.regions || {});
+                if (regions.length) { lines.push('', 'REGIONS:'); lines.push(...regions.map(formatRegion)); }
+                if (readoutEl) readoutEl.textContent = lines.join('\n');
+            }
+            globalThis._rpgRenderWorldProgHud = renderWorldProgHud;
+            renderWorldProgHud();
+
+            globalThis._rpgSetWorldProgHudVisible = (visible) => {
+                if (worldProgBtn) worldProgBtn.style.display = visible ? '' : 'none';
+                if (!visible && worldProgPanel) worldProgPanel.style.display = 'none';
+            };
+
+            if (worldProgBtn && worldProgCloseBtn) {
+                worldProgBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const isHidden = worldProgPanel.style.display === 'none';
+                    worldProgPanel.style.display = isHidden ? 'flex' : 'none';
+                    if (isHidden) renderWorldProgHud();
+                });
+                worldProgCloseBtn.addEventListener('click', () => { worldProgPanel.style.display = 'none'; });
+            }
+            if (refreshBtn) refreshBtn.addEventListener('click', () => renderWorldProgHud());
+            if (startArcBtn) startArcBtn.addEventListener('click', () => openCentralTensionWizard());
+            if (collapseBtn) {
+                collapseBtn.addEventListener('click', () => {
+                    const s = getSettings();
+                    s.worldProgHudCollapsed = !s.worldProgHudCollapsed;
+                    saveSettings();
+                    worldProgPanel.classList.toggle('rt-panel-collapsed', s.worldProgHudCollapsed);
+                    const icon = collapseBtn.querySelector('i');
+                    if (icon) icon.className = `fa-solid ${s.worldProgHudCollapsed ? 'fa-chevron-down' : 'fa-chevron-up'}`;
+                });
+            }
+
+            if (editBtn && jsonEditor && jsonActions && saveBtn && cancelBtn) {
+                editBtn.addEventListener('click', () => {
+                    const chatId = ctx.chatId || RT.currentChatId;
+                    if (!chatId) return;
+                    const ws = getWorldState(chatId);
+                    const prog = getChatWorldProg(chatId);
+                    jsonEditor.value = JSON.stringify({ worldState: ws, chatWorldProg: prog }, null, 2);
+                    readoutEl.style.display = 'none';
+                    jsonEditor.style.display = 'block';
+                    jsonActions.style.display = 'flex';
+                });
+                cancelBtn.addEventListener('click', () => {
+                    readoutEl.style.display = 'block';
+                    jsonEditor.style.display = 'none';
+                    jsonActions.style.display = 'none';
+                });
+                saveBtn.addEventListener('click', () => {
+                    const chatId = ctx.chatId || RT.currentChatId;
+                    if (!chatId) return;
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(jsonEditor.value);
+                    } catch (e) {
+                        toastr['error']('Invalid JSON — not saved.', 'World Progression');
+                        return;
+                    }
+                    if (parsed.worldState) replaceWorldState(chatId, parsed.worldState);
+                    if (parsed.chatWorldProg) replaceChatWorldProg(chatId, parsed.chatWorldProg);
+                    readoutEl.style.display = 'block';
+                    jsonEditor.style.display = 'none';
+                    jsonActions.style.display = 'none';
+                    renderWorldProgHud();
+                    toastr['success']('World Progression state updated.', 'World Progression');
+                });
+            }
+        }
+
         // Assigned below when the agent panel is wired. Declared here so
         // nav handlers outside the wiring block can always call it safely.
         let refreshManifest = async (_source = 'uninitialized') => {};
@@ -5324,6 +5465,7 @@ ${resourceList}
 
             $('#rpg_tracker_btn_foundation_wizard').on('click', () => openFoundationWizard());
             $('#rpg_tracker_btn_skill_tree').on('click', () => openSkillTreeTab());
+            $('#rpg_tracker_btn_start_world_arc').on('click', () => openCentralTensionWizard());
 
             $('#rpg_tracker_btn_update_sysprompt').on('click', async function () {
                 // Additive delivery: the Main prompt box is off-limits — refresh the
@@ -5846,6 +5988,226 @@ ${resourceList}
 
                 saveSettings();
                 toastr['success']('Router prompt reset to default.', 'RPG Tracker');
+            });
+
+            // ─── World Progression Settings ───
+            $('#rpg_tracker_worldprog_enabled').prop('checked', settings.worldProgEnabled).on('change', function () {
+                settings.worldProgEnabled = !!$(this).prop('checked');
+                saveSettings();
+                refreshWorldProgPacingPrompt(ctx.chatId || RT.currentChatId);
+                const panel = document.getElementById('rpg-tracker-worldprog');
+                if (panel) panel.classList.toggle('is-agent-disabled', !settings.worldProgEnabled);
+            });
+
+            function renderWorldProgTensionSummary() {
+                const el = document.getElementById('rpg_tracker_worldprog_tension_summary');
+                if (!el) return;
+                const chatId = ctx.chatId || RT.currentChatId;
+                const ws = chatId ? getWorldState(chatId) : null;
+                if (!ws?.milestoneChain?.length) {
+                    el.textContent = 'No central tension compiled for this campaign yet.';
+                    return;
+                }
+                el.textContent = `Intimate: ${ws.centralTension.intimateConflict}\nEpic: ${ws.centralTension.epicConflict}\nMilestones: ${ws.milestoneChain.length} (${ws.milestoneChain.filter(m => m.status === 'resolved').length} resolved)`;
+            }
+            renderWorldProgTensionSummary();
+            $('#rpg_tracker_worldprog_btn_start_arc').on('click', () => openCentralTensionWizard());
+
+            function renderMeguminOverlapWarning() {
+                const wrap = document.getElementById('rpg_tracker_worldprog_megumin_warning');
+                const textEl = document.getElementById('rpg_tracker_worldprog_megumin_warning_text');
+                if (!wrap || !textEl) return;
+                if (settings.worldProgMeguminWarningDismissed) { wrap.style.display = 'none'; return; }
+                const { installed, overlap, overlapFeatures } = detectMeguminOverlap();
+                if (!installed || !overlap) { wrap.style.display = 'none'; return; }
+                textEl.textContent = `Megumin Suite's ${overlapFeatures.join(' and ')} track similar things to World Progression — running both may produce conflicting NPC/arc state. Consider disabling the overlapping Megumin feature(s).`;
+                wrap.style.display = 'block';
+            }
+            renderMeguminOverlapWarning();
+            $('#rpg_tracker_worldprog_megumin_warning_dismiss').on('click', function () {
+                settings.worldProgMeguminWarningDismissed = true;
+                saveSettings();
+                document.getElementById('rpg_tracker_worldprog_megumin_warning').style.display = 'none';
+            });
+
+            const wpSourceSelect = $('#rpg_tracker_worldprog_source');
+            const wpProfileGroup = $('#rpg_tracker_worldprog_profile_group');
+            const wpProfileSelect = $('#rpg_tracker_worldprog_connection_profile');
+            const wpOllamaGroup = $('#rpg_tracker_worldprog_ollama_group');
+            const wpOpenaiGroup = $('#rpg_tracker_worldprog_openai_group');
+
+            function updateWorldProgConnectionPanels() {
+                const source = wpSourceSelect.val();
+                wpProfileGroup.toggle(source === 'profile');
+                wpOllamaGroup.toggle(source === 'ollama');
+                wpOpenaiGroup.toggle(source === 'openai');
+            }
+            wpSourceSelect.val(settings.worldProgConnectionSource || 'default').on('change', function () {
+                settings.worldProgConnectionSource = $(this).val();
+                updateWorldProgConnectionPanels();
+                saveSettings();
+            });
+            setTimeout(updateWorldProgConnectionPanels, 100);
+
+            $('#rpg_tracker_worldprog_ollama_url').val(settings.worldProgOllamaUrl).on('input', function () {
+                settings.worldProgOllamaUrl = $(this).val();
+                saveSettings();
+            });
+            const wpOllamaModelSelect = $('#rpg_tracker_worldprog_ollama_model');
+            wpOllamaModelSelect.val(settings.worldProgOllamaModel).on('change', function () {
+                settings.worldProgOllamaModel = $(this).val();
+                saveSettings();
+            });
+            $('#rpg_tracker_worldprog_ollama_refresh').on('click', async function () {
+                const url = $('#rpg_tracker_worldprog_ollama_url').val();
+                if (!url) return toastr['info']("Please enter an Ollama URL first.");
+                try {
+                    const models = await fetchOllamaModels(url);
+                    wpOllamaModelSelect.empty().append('<option value="">-- Select Model --</option>');
+                    models.forEach(m => wpOllamaModelSelect.append($('<option></option>').val(m.name).text(m.name)));
+                    wpOllamaModelSelect.val(settings.worldProgOllamaModel);
+                    toastr['success']("Ollama models updated.");
+                } catch (e) {
+                    toastr['error']("Failed to fetch Ollama models.");
+                }
+            });
+
+            $('#rpg_tracker_worldprog_openai_url').val(settings.worldProgOpenaiUrl).on('input', function () {
+                settings.worldProgOpenaiUrl = $(this).val();
+                saveSettings();
+            });
+            $('#rpg_tracker_worldprog_openai_key').val(settings.worldProgOpenaiKey).on('input', function () {
+                settings.worldProgOpenaiKey = $(this).val();
+                saveSettings();
+            });
+            const wpOpenaiModelSelect = $('#rpg_tracker_worldprog_openai_model');
+            const wpOpenaiModelManual = $('#rpg_tracker_worldprog_openai_model_manual');
+            wpOpenaiModelManual.val(settings.worldProgOpenaiModel || '');
+            wpOpenaiModelSelect.on('change', function () {
+                const val = $(this).val();
+                if (val) { wpOpenaiModelManual.val(''); settings.worldProgOpenaiModel = String(val); }
+                else settings.worldProgOpenaiModel = String(wpOpenaiModelManual.val() || '').trim() || '';
+                saveSettings();
+            });
+            wpOpenaiModelManual.on('input', function () {
+                const manual = String($(this).val() || '').trim();
+                if (manual) wpOpenaiModelSelect.val('');
+                settings.worldProgOpenaiModel = manual || String(wpOpenaiModelSelect.val() || '') || '';
+                saveSettings();
+            });
+            $('#rpg_tracker_worldprog_openai_refresh').on('click', async function () {
+                const url = $('#rpg_tracker_worldprog_openai_url').val();
+                const key = $('#rpg_tracker_worldprog_openai_key').val();
+                if (!url) return toastr['info']("Please enter an Endpoint URL first.");
+                try {
+                    const models = await fetchOpenAIModels(url, key);
+                    wpOpenaiModelSelect.empty().append('<option value="">-- Select Model --</option>');
+                    models.forEach(m => {
+                        const id = typeof m === 'string' ? m : (m.id || m.name);
+                        if (id) wpOpenaiModelSelect.append($('<option></option>').val(id).text(id));
+                    });
+                    wpOpenaiModelSelect.val(settings.worldProgOpenaiModel);
+                    toastr['success']("Models updated.");
+                } catch (e) {
+                    toastr['warning']("Cannot auto-detect models. Type manually.");
+                }
+            });
+
+            const wpPresetSelect = $('#rpg_tracker_worldprog_completion_preset');
+            if (ctx.ConnectionManagerRequestService?.handleDropdown) {
+                /** @type {any} */ (ctx.ConnectionManagerRequestService).handleDropdown(wpProfileSelect[0]);
+                wpProfileSelect.val(settings.worldProgConnectionProfileId || "");
+            } else {
+                getConnectionProfiles().then(profiles => {
+                    wpProfileSelect.empty().append('<option value="">-- No Profile Selected --</option>');
+                    profiles.forEach(p => wpProfileSelect.append($('<option></option>').val(p).text(p)));
+                    wpProfileSelect.val(settings.worldProgConnectionProfileId || "");
+                });
+            }
+            wpProfileSelect.on('change', function () {
+                settings.worldProgConnectionProfileId = $(this).val();
+                saveSettings();
+            });
+            if (pm && typeof pm.getAllPresets === 'function') {
+                const presets = pm.getAllPresets();
+                wpPresetSelect.empty().append('<option value="">-- Use Current Settings --</option>');
+                presets.forEach(p => wpPresetSelect.append($('<option></option>').val(p).text(p)));
+                wpPresetSelect.val(settings.worldProgCompletionPresetId || '');
+            }
+            wpPresetSelect.on('change', function () {
+                settings.worldProgCompletionPresetId = String($(this).val() || '');
+                saveSettings();
+            });
+
+            $('#rpg_tracker_worldprog_max_turns').val(settings.worldProgMaxTurns).on('input', function () {
+                settings.worldProgMaxTurns = parseInt(String($(this).val() || '')) || 3;
+                saveSettings();
+            });
+
+            function resetWorldProgPrompt(settingsKey, textareaId) {
+                const { extensionSettings } = SillyTavern.getContext();
+                if (extensionSettings[MODULE_NAME]) delete extensionSettings[MODULE_NAME][settingsKey];
+                const freshDefault = getSettings()[settingsKey];
+                getSettings()[settingsKey] = freshDefault;
+                const $el = $(`#${textareaId}`);
+                $el.val(freshDefault);
+                $el.trigger('input');
+                if (typeof (/** @type {any} */ ($el)).trigger === 'function') (/** @type {any} */ ($el)).trigger('autosize.resize');
+                saveSettings();
+                toastr['success']('Prompt reset to default.', 'RPG Tracker');
+            }
+
+            const WP_PROMPT_FIELDS = [
+                ['worldArcSystemPromptTemplate', 'rpg_tracker_worldprog_prompt_worldarc', 'rpg_tracker_worldprog_btn_reset_worldarc'],
+                ['characterArcSystemPromptTemplate', 'rpg_tracker_worldprog_prompt_characterarc', 'rpg_tracker_worldprog_btn_reset_characterarc'],
+                ['regionalStateSystemPromptTemplate', 'rpg_tracker_worldprog_prompt_regionalstate', 'rpg_tracker_worldprog_btn_reset_regionalstate'],
+                ['pacingSystemPromptTemplate', 'rpg_tracker_worldprog_prompt_pacing', 'rpg_tracker_worldprog_btn_reset_pacing'],
+            ];
+            for (const [settingsKey, textareaId, resetBtnId] of WP_PROMPT_FIELDS) {
+                $(`#${textareaId}`).val(settings[settingsKey]).on('input', function () {
+                    settings[settingsKey] = String($(this).val() || '');
+                    saveSettings();
+                });
+                $(`#${resetBtnId}`).on('click', () => resetWorldProgPrompt(settingsKey, textareaId));
+            }
+
+            $('#rpg_tracker_worldprog_hud_visible').prop('checked', settings.worldProgHudVisible).on('change', function () {
+                settings.worldProgHudVisible = !!$(this).prop('checked');
+                saveSettings();
+                globalThis._rpgSetWorldProgHudVisible?.(settings.worldProgHudVisible);
+            });
+
+            $('#rpg_tracker_worldprog_btn_force_tempo').on('click', function () {
+                const chatId = ctx.chatId || RT.currentChatId;
+                if (!chatId) return toastr['warning']('Open a chat first.');
+                const mode = String($('#rpg_tracker_worldprog_force_tempo_select').val() || 'exploration');
+                if (forceAdvanceTempo(chatId, mode)) toastr['success'](`Tempo forced to ${mode}.`, 'World Progression');
+                else toastr['warning']('No World Progression state for this chat yet.', 'World Progression');
+                globalThis._rpgRenderWorldProgHud?.();
+            });
+            $('#rpg_tracker_worldprog_btn_force_phase_gate').on('click', async function () {
+                const chatId = ctx.chatId || RT.currentChatId;
+                if (!chatId) return toastr['warning']('Open a chat first.');
+                await forcePhaseGate(chatId);
+                toastr['success']('Chapter advanced.', 'World Progression');
+                renderWorldProgTensionSummary();
+                globalThis._rpgRenderWorldProgHud?.();
+            });
+            $('#rpg_tracker_worldprog_btn_reconcile').on('click', async function () {
+                const chatId = ctx.chatId || RT.currentChatId;
+                if (!chatId) return toastr['warning']('Open a chat first.');
+                toastr['info']('Running reconciliation…', 'World Progression');
+                const result = await runWorldProgReconciliation(chatId);
+                if (result.ok) toastr['success']('Reconciliation complete.', 'World Progression');
+                else toastr['warning'](`Reconciliation skipped: ${result.reason}`, 'World Progression');
+                globalThis._rpgRenderWorldProgHud?.();
+            });
+            $('#rpg_tracker_worldprog_btn_fork').on('click', function () {
+                const chatId = ctx.chatId || RT.currentChatId;
+                if (!chatId) return toastr['warning']('Open a chat first.');
+                if (forkWorldState(chatId)) toastr['success']('World state forked for this chat.', 'World Progression');
+                else toastr['warning']('Nothing to fork — no live world state for this campaign yet.', 'World Progression');
+                globalThis._rpgRenderWorldProgHud?.();
             });
 
             // Custom Sysprompt Mode toggle

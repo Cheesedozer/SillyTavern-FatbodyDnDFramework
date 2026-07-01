@@ -331,6 +331,122 @@
         </div>
     </section>
 
+    <!-- TAB: WORLD PROGRESSION -->
+    <section class="rt-settings-tab" data-tab="worldprog">
+        <div class="flex-container flexFlowColumn gap-1">
+            <label class="checkbox_label">
+                <input id="rpg_tracker_worldprog_enabled" type="checkbox" />
+                <span>Enable World Progression</span>
+                <i class="fa-solid fa-circle-question interactable"
+                    title="A four-layer engine (World Arc, Character Arcs, Regional State, Pacing) that tracks faction moves, NPC arcs, and tempo between turns. Shares the Lorebook Agent's campaign prefix; runs on its own throttle in the background after each reply."></i>
+            </label>
+
+            <div style="margin-bottom: 8px; font-size: 10px; opacity: 0.65;">Shares the Lorebook Agent's campaign prefix (see the Lorebook Agent tab) as its World ID.</div>
+
+            <div id="rpg_tracker_worldprog_megumin_warning" style="display: none; margin-bottom: 8px; padding: 6px 8px; font-size: 10px; line-height: 1.4; border-radius: 4px; background: rgba(255, 180, 60, 0.12); border: 1px solid rgba(255, 180, 60, 0.35);">
+                <span id="rpg_tracker_worldprog_megumin_warning_text"></span>
+                <button id="rpg_tracker_worldprog_megumin_warning_dismiss" type="button" style="float: right; background: none; border: none; color: inherit; cursor: pointer; opacity: 0.7;">✕</button>
+            </div>
+
+            <button id="rpg_tracker_worldprog_btn_start_arc" class="menu_button interactable" style="width: 100%; margin-bottom: 8px; background: rgba(80, 180, 255, 0.12); border-color: #50b4ff;">
+                🌍 Start / Recompile World Arc…
+            </button>
+            <div id="rpg_tracker_worldprog_tension_summary" style="font-size: 10px; opacity: 0.7; margin-bottom: 8px; white-space: pre-wrap;"></div>
+
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <b>Connection Settings</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <div class="flex-container flexFlowColumn gap-1">
+                        <label>Connection Source</label>
+                        <select id="rpg_tracker_worldprog_source" class="text_pole">
+                            <option value="default">Main API</option>
+                            <option value="profile">Profile</option>
+                            <option value="ollama">Ollama</option>
+                            <option value="openai">OpenAI</option>
+                        </select>
+                        <div id="rpg_tracker_worldprog_profile_group" style="display: none;">
+                            <select id="rpg_tracker_worldprog_connection_profile" class="text_pole"></select>
+                            <div style="font-size: 9px; opacity: 0.5;">OpenRouter: create a Connection Profile pointed at OpenRouter in SillyTavern's own connection manager, then pick it here.</div>
+                        </div>
+                        <div id="rpg_tracker_worldprog_ollama_group" style="display: none;">
+                            <input id="rpg_tracker_worldprog_ollama_url" type="text" class="text_pole" placeholder="URL" />
+                            <div class="flex-container gap-1">
+                                <select id="rpg_tracker_worldprog_ollama_model" class="text_pole" style="flex: 1;"></select>
+                                <button id="rpg_tracker_worldprog_ollama_refresh" class="menu_button interactable"><i class="fa-solid fa-arrows-rotate"></i></button>
+                            </div>
+                        </div>
+                        <div id="rpg_tracker_worldprog_openai_group" style="display: none;">
+                            <input id="rpg_tracker_worldprog_openai_url" type="text" class="text_pole" placeholder="URL" />
+                            <input id="rpg_tracker_worldprog_openai_key" type="password" class="text_pole" placeholder="Key" />
+                            <div class="flex-container gap-1">
+                                <select id="rpg_tracker_worldprog_openai_model" class="text_pole" style="flex: 1;"></select>
+                                <button id="rpg_tracker_worldprog_openai_refresh" class="menu_button interactable"><i class="fa-solid fa-arrows-rotate"></i></button>
+                            </div>
+                            <input id="rpg_tracker_worldprog_openai_model_manual" type="text" class="text_pole" placeholder="Manual Model Name" />
+                        </div>
+                        <label>Preset</label>
+                        <select id="rpg_tracker_worldprog_completion_preset" class="text_pole"></select>
+                        <label>Max Commit Retries</label>
+                        <input id="rpg_tracker_worldprog_max_turns" type="text" inputmode="numeric" pattern="[0-9]*" class="text_pole" min="1" max="10" />
+                    </div>
+                </div>
+            </div>
+
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <b>Layer Prompts</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <div class="flex-container flexFlowColumn gap-1">
+                        <b style="font-size: 11px;">World Arc</b>
+                        <textarea id="rpg_tracker_worldprog_prompt_worldarc" class="text_pole autoSetHeight" rows="4"></textarea>
+                        <button id="rpg_tracker_worldprog_btn_reset_worldarc" class="menu_button interactable" style="width: 100%; font-size: 11px;"><i class="fa-solid fa-arrow-rotate-left"></i> Reset</button>
+
+                        <b style="font-size: 11px; margin-top: 6px;">Character Arcs</b>
+                        <textarea id="rpg_tracker_worldprog_prompt_characterarc" class="text_pole autoSetHeight" rows="4"></textarea>
+                        <button id="rpg_tracker_worldprog_btn_reset_characterarc" class="menu_button interactable" style="width: 100%; font-size: 11px;"><i class="fa-solid fa-arrow-rotate-left"></i> Reset</button>
+
+                        <b style="font-size: 11px; margin-top: 6px;">Regional State</b>
+                        <textarea id="rpg_tracker_worldprog_prompt_regionalstate" class="text_pole autoSetHeight" rows="4"></textarea>
+                        <button id="rpg_tracker_worldprog_btn_reset_regionalstate" class="menu_button interactable" style="width: 100%; font-size: 11px;"><i class="fa-solid fa-arrow-rotate-left"></i> Reset</button>
+
+                        <b style="font-size: 11px; margin-top: 6px;">Pacing</b>
+                        <textarea id="rpg_tracker_worldprog_prompt_pacing" class="text_pole autoSetHeight" rows="4"></textarea>
+                        <button id="rpg_tracker_worldprog_btn_reset_pacing" class="menu_button interactable" style="width: 100%; font-size: 11px;"><i class="fa-solid fa-arrow-rotate-left"></i> Reset</button>
+                    </div>
+                </div>
+            </div>
+
+            <label class="checkbox_label" style="margin-top: 8px;">
+                <input id="rpg_tracker_worldprog_hud_visible" type="checkbox" />
+                <span>Show World Progression HUD</span>
+                <i class="fa-solid fa-circle-question interactable" title="A draggable, editable panel showing the tracked World State Snapshot — dev/debug tooling, never shown to the narrator."></i>
+            </label>
+
+            <details id="rpg_tracker_worldprog_debug_wrap" style="margin-top: 10px; opacity: 0.7;">
+                <summary style="cursor: pointer; user-select: none; font-size: 10px; color: inherit; list-style: none;">Debug / Manual Controls</summary>
+                <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 6px;">
+                    <div class="flex-container gap-1">
+                        <select id="rpg_tracker_worldprog_force_tempo_select" class="text_pole" style="flex: 1;">
+                            <option value="exploration">Exploration</option>
+                            <option value="escalation">Escalation</option>
+                            <option value="crisis">Crisis</option>
+                            <option value="aftermath">Aftermath</option>
+                        </select>
+                        <button id="rpg_tracker_worldprog_btn_force_tempo" class="menu_button interactable" style="font-size: 10px;">Force Tempo</button>
+                    </div>
+                    <button id="rpg_tracker_worldprog_btn_force_phase_gate" class="menu_button interactable" style="font-size: 10px;">Force Phase Gate (Advance Chapter)</button>
+                    <button id="rpg_tracker_worldprog_btn_reconcile" class="menu_button interactable" style="font-size: 10px;">Run Reconciliation Now</button>
+                    <button id="rpg_tracker_worldprog_btn_fork" class="menu_button interactable" style="font-size: 10px;">Fork World State (this chat)</button>
+                </div>
+            </details>
+        </div>
+    </section>
+
     <!-- TAB: ADVANCED -->
     <section class="rt-settings-tab" data-tab="advanced">
         <div class="flex-container flexFlowColumn gap-1">

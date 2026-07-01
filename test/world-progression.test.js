@@ -23,6 +23,8 @@ import {
     rollbackDelta,
     rollbackDeltasForMessage,
     reconcileWorldProgRollbacks,
+    replaceWorldState,
+    replaceChatWorldProg,
 } from '../world-progression.js';
 
 /**
@@ -197,6 +199,20 @@ test('pruneCommittedDeltas: drops deltas past the commit horizon, keeps recent o
     pruneCommittedDeltas('chat9', 10); // horizon default is 2 messages back
     const remaining = getChatWorldProg('chat9').pendingDeltas.map(d => d.id);
     assert.deepEqual(remaining, ['recent']);
+});
+
+test('replaceWorldState / replaceChatWorldProg: HUD hand-edits fully overwrite, no rollback bookkeeping involved', () => {
+    seedChat('chat12');
+    getWorldState('chat12'); // backfill so the key exists
+    getChatWorldProg('chat12');
+
+    const handEdited = { schemaVersion: 1, milestoneChain: [{ id: 'ms_1', title: 'Hand-edited', status: 'triggered' }], factions: {}, characterArcs: {}, worldClock: { pressureGauge: 'critical' }, centralTension: {}, tectonicShiftsUsed: 0 };
+    replaceWorldState('chat12', handEdited);
+    assert.deepEqual(getWorldState('chat12'), handEdited);
+
+    const handEditedProg = { schemaVersion: 1, worldStateKey: 'chat12', pacing: { mode: 'crisis' }, chapter: { index: 3 }, regions: {}, shiftLog: [], deferredConsequenceQueue: [], pendingDeltas: [] };
+    replaceChatWorldProg('chat12', handEditedProg);
+    assert.deepEqual(getChatWorldProg('chat12'), handEditedProg);
 });
 
 test('resetWorldProgTick: does not throw and is safe to call with no active chat', () => {

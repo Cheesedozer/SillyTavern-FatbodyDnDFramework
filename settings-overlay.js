@@ -31,6 +31,7 @@ const TAB_DEFS = [
     { id: 'visuals', icon: 'fa-palette', label: 'Visuals' },
     { id: 'statemodel', icon: 'fa-brain', label: 'State Model' },
     { id: 'agent', icon: 'fa-route', label: 'Lorebook Agent' },
+    { id: 'worldprog', icon: 'fa-globe', label: 'World Progression' },
     { id: 'advanced', icon: 'fa-screwdriver-wrench', label: 'Advanced' },
 ];
 

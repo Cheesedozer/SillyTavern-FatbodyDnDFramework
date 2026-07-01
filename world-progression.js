@@ -139,6 +139,32 @@ export function saveChatWorldProg(chatId, patch = null) {
     SillyTavern.getContext().saveSettingsDebounced();
 }
 
+/**
+ * Full-replace setters for the HUD's manual JSON editor. Deliberately
+ * bypass the validate/apply pipeline (no schema check, no pendingDeltas
+ * entry) — this is an explicit user override, not a model output, mirroring
+ * how the State Tracker panel lets users hand-edit the raw memo directly.
+ * @param {string} chatId
+ * @param {object} newWorldState
+ */
+export function replaceWorldState(chatId, newWorldState) {
+    const key = getWorldProgKey(chatId);
+    if (!key) return;
+    const s = getSettings();
+    if (!s.worldStates) s.worldStates = {};
+    s.worldStates[key] = newWorldState;
+    SillyTavern.getContext().saveSettingsDebounced();
+}
+
+/** @param {string} chatId @param {object} newChatWorldProg */
+export function replaceChatWorldProg(chatId, newChatWorldProg) {
+    if (!chatId) return;
+    const s = getSettings();
+    if (!s.chatStates?.[chatId]) return;
+    s.chatStates[chatId].worldProg = newChatWorldProg;
+    SillyTavern.getContext().saveSettingsDebounced();
+}
+
 /** Remaps worldProg* settings onto the shape sendStateRequest/sendAgentTurn expect — exact pattern of router.js's routerSettings. */
 export function worldProgSettings(settings) {
     return {
