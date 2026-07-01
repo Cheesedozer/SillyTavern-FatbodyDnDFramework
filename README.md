@@ -17,8 +17,9 @@ I wasn't satisfied with any of the commercial offerings available (AI Realm, AI 
    - **RNG Queue (Combat)**: Pre-seeded deterministic dice injected into every turn for high-speed, zero-latency combat resolution, neatly within a single output. Sidesteps the unreliability and massive input token costs of tool chains.
    - **Tool Call RNG (Narrative)**: A proactive AI-driven rolling system for non-combat skill checks. Features a "Waterproof" commitment logic where the AI must declare a DC before seeing the result, preventing narrative sycophancy and cheating.
 3. 🤖 **The Lorebook Agent** — This is a fully autonomous lorebook manager that creates, updates, activates and deactivates, deactivates lorebooks for you in the background. Handles the macroscopic consistency of your adventure. Also includes cleanup tools (consolidation, rewriting entries) that can be set to automatically run periodically.
+4. 🌍 **World Progression System** (opt-in) — A four-layer engine (World Arc, Character Arcs, Regional State, Pacing) that tracks faction moves, NPC arc beats, regional conditions, and narrative tempo between turns, so the world keeps moving even when the player isn't looking at it. Start a campaign's Central Tension from category presets, your own words, or straight from the character card; a togglable HUD shows the tracked state without ever surfacing it to the narrator.
 
-Together they solve the three core problems of LLM tabletop RP: the AI forgeting your inventory/spells, the AI forgetting long-term context, and you always winning (aka. plot armor).  I have high confidence in the system's reliability—you can just play and not worry about tinkering with much of anything.
+Together they solve the four core problems of LLM tabletop RP: the AI forgeting your inventory/spells, the AI forgetting long-term context, you always winning (aka. plot armor), and a world that only ever reacts instead of living on its own.  I have high confidence in the system's reliability—you can just play and not worry about tinkering with much of anything.
 
 ---
 

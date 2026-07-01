@@ -2,6 +2,21 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.4.0] - 2026-07-01
+
+**World Progression System.** A four-layer engine — World Arc, Character Arcs, Regional State, and Pacing — that gives the narrator pacing awareness and a world that evolves between player turns: faction moves, NPC arc beats, regional condition changes, and tempo (Exploration/Escalation/Crisis/Aftermath) all tracked in the background and reconciled into a single per-cycle commit call. Off by default (`worldProgEnabled`); existing chats/campaigns are unaffected until enabled.
+
+### Added
+- **World Progression settings tab**: master toggle, an independent connection-source dispatcher (Main API / Connection Profile / Ollama / OpenAI — OpenRouter via a Connection Profile pointed at it, same as any other profile), four editable per-layer prompt templates with individual reset buttons, and a Debug/Manual Controls section (force tempo, force phase gate, run reconciliation now, fork world state).
+- **Central Tension compiler**: a "Start World Arc" wizard that seeds a campaign's central conflict from 3-4 picked categories (10 starter categories spanning apocalyptic and lower-stakes tones), free-text, or purely from the active character card. Whichever input is chosen, it's always expanded by the model into a validated 5-8 item milestone chain, 0-4 faction seeds (written as real FAC lorebook entries), and Chapter 1's 3-5 seeds — the raw input is never used as the working tension itself.
+- **Adaptive, throttled cycle**: cheap deterministic checks (no LLM) decide each cycle whether World Arc, Character Arc, or Regional State actually need a commit call; Pacing evaluates every cycle for free via pure pressure-gauge/tempo math and reaches the narrator through `setExtensionPrompt`, with no interceptor changes. The feature has its own throttle, independent of the Lorebook Agent's `routerRunEvery`, with a critical-pressure escape hatch.
+- **Chapter/seed/convergence lifecycle**: seeds, developments, and convergences accumulate per chapter; a six-criterion phase-gate check (primary convergence resolved, plus a majority of five supporting conditions) triggers automatic chapter advancement and a full-context reconciliation pass.
+- **World Progression HUD**: a togglable, editable panel (raw-JSON edit mode) showing the tracked snapshot — tempo, pressure gauge, milestones, factions, character arcs, regions — for player-side debugging. Pure render of already-tracked state; never triggers an LLM call itself.
+- **Swipe/delete rollback**: every applied update is recorded as an invertible micro-patch anchored to the message that triggered it; deleting or swiping that message rolls the change back automatically.
+- **Branch/checkpoint forking**: a chat that turns out to be a checkpoint/branch of an existing campaign gets its own independent copy of the world state rather than silently sharing the live one, via a best-effort heuristic plus a manual "Fork World State" fallback.
+- **Megumin Suite overlap detection**: a read-only, dismissible warning when Megumin's NPC Bank or Story Planner/Evolving Arc are active alongside World Progression, since both track similar things.
+- Cross-chat World Arc/faction/character-arc state is keyed by the same campaign-prefix convention the Lorebook Agent already uses to group lorebooks — no new "World ID" concept to manage.
+
 ## [3.3.0] - 2026-06-12
 
 ### Removed
