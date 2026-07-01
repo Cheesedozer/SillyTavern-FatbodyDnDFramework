@@ -11,6 +11,12 @@
 
 import { DEFAULT_STOCK_PROMPTS } from './constants.js';
 import { BLOCK_ORDER, DEFAULT_BLOCK_ORDER, getDefaultModuleToggles } from './module-registry.js';
+import {
+    WORLD_ARC_DEFAULT_PROMPT,
+    CHARACTER_ARC_DEFAULT_PROMPT,
+    REGIONAL_STATE_DEFAULT_PROMPT,
+    PACING_DEFAULT_PROMPT,
+} from './world-progression-schema.js';
 
 // ── Module name (shared constant, settings key) ────────────────────────────────
 export const MODULE_NAME = 'rpg_tracker';
@@ -38,6 +44,14 @@ function promptFingerprint(str) {
 const LEGACY_STATE_PROMPT_FINGERPRINTS = new Set([
     '3722:7f9db8a7', // pre-v1 default (v2.4.x)
 ]);
+
+// ── World Progression prompt versioning / migration ────────────────────────────
+// Same contract as STATE_PROMPT_VERSION above, but tracks all four per-layer
+// templates independently (a user may have customized only one of them).
+export const WORLDPROG_PROMPT_VERSION = 1;
+const WORLDPROG_PROMPT_KEYS = ['worldArcSystemPromptTemplate', 'characterArcSystemPromptTemplate', 'regionalStateSystemPromptTemplate', 'pacingSystemPromptTemplate'];
+/** No prior defaults exist yet (feature is new) — future bumps add fingerprints here. */
+const LEGACY_WORLDPROG_PROMPT_FINGERPRINTS = new Set();
 
 // ── Default module definitions (single source of truth for reset logic) ─────────
 export const DEFAULT_MODULES = {
@@ -301,6 +315,39 @@ Example: "[Day 1, 11:52] Character signed the contract with Brodrik."
 Don't be afraid to hit the budget exactly. It's better to lean towards activating too much than too little.
 </bravery>`,
         categoryRenderOptions: {},
+
+        // ── World Progression System (four-layer world/character/regional/pacing engine) ──
+        worldProgEnabled: false,
+        worldProgPaused: false,
+        worldProgRunEvery: 3,           // independent of routerRunEvery
+        worldProgMaxTurns: 3,           // validate/retry budget for the commit call
+
+        worldProgConnectionSource: "default",
+        worldProgConnectionProfileId: "",
+        worldProgCompletionPresetId: "",
+        worldProgOllamaUrl: "http://localhost:11434",
+        worldProgOllamaModel: "",
+        worldProgOpenaiUrl: "",
+        worldProgOpenaiKey: "",
+        worldProgOpenaiModel: "",
+        worldProgMaxTokens: 0,
+
+        worldArcSystemPromptTemplate: WORLD_ARC_DEFAULT_PROMPT,
+        characterArcSystemPromptTemplate: CHARACTER_ARC_DEFAULT_PROMPT,
+        regionalStateSystemPromptTemplate: REGIONAL_STATE_DEFAULT_PROMPT,
+        pacingSystemPromptTemplate: PACING_DEFAULT_PROMPT,
+        // 0 so existing installs run migrateWorldProgPrompts() once; fresh installs
+        // are stamped to the current version by that same migration at init.
+        worldProgPromptVersion: 0,
+        worldProgPromptUpdateAvailable: { worldArc: false, characterArc: false, regionalState: false, pacing: false },
+
+        // Cross-chat macro state (Layer 1 World Arc + cross-session Layer 2 Character
+        // Arc data), keyed by campaign prefix — see world-progression.js#getWorldProgKey.
+        worldStates: {},
+
+        worldProgHudVisible: false,
+        worldProgHudCollapsed: false,
+        worldProgMeguminWarningDismissed: false,
     };
 }
 
@@ -495,10 +542,51 @@ export function migrateSystemPrompt(s) {
     s.systemPromptVersion = STATE_PROMPT_VERSION;
 }
 
+/**
+ * One-time, idempotent upgrade of the four World Progression per-layer prompt
+ * templates. Same contract as migrateSystemPrompt, but loops over each
+ * template key independently so a user who customized only one layer's
+ * prompt keeps their edit while the other three still auto-upgrade.
+ * Safe to call repeatedly.
+ * @param {Record<string, any>} s
+ */
+export function migrateWorldProgPrompts(s) {
+    if ((s.worldProgPromptVersion || 0) >= WORLDPROG_PROMPT_VERSION) return;
+    if (!s.worldProgPromptUpdateAvailable || typeof s.worldProgPromptUpdateAvailable !== 'object') {
+        s.worldProgPromptUpdateAvailable = { worldArc: false, characterArc: false, regionalState: false, pacing: false };
+    }
+
+    const LAYER_BY_KEY = {
+        worldArcSystemPromptTemplate: 'worldArc',
+        characterArcSystemPromptTemplate: 'characterArc',
+        regionalStateSystemPromptTemplate: 'regionalState',
+        pacingSystemPromptTemplate: 'pacing',
+    };
+
+    for (const key of WORLDPROG_PROMPT_KEYS) {
+        const cur = s[key];
+        const latest = DEFAULTS_TEMPLATE[key];
+        const layer = LAYER_BY_KEY[key];
+
+        if (cur === latest) {
+            // Fresh install or already migrated — nothing to change.
+        } else if (LEGACY_WORLDPROG_PROMPT_FINGERPRINTS.has(promptFingerprint(cur))) {
+            s[key] = latest; // untouched prior default → auto-upgrade
+            if (s.debugMode) console.log(`[RPG Tracker] World Progression ${layer} prompt auto-upgraded to v${WORLDPROG_PROMPT_VERSION}.`);
+        } else {
+            s.worldProgPromptUpdateAvailable[layer] = true; // customized → preserve, surface notice
+            if (s.debugMode) console.log(`[RPG Tracker] World Progression ${layer} prompt is customized; upgrade available (not applied).`);
+        }
+    }
+
+    s.worldProgPromptVersion = WORLDPROG_PROMPT_VERSION;
+}
+
 export function migrateCustomFields() {
     const s = getSettings();
 
     migrateSystemPrompt(s);
+    migrateWorldProgPrompts(s);
 
     // v2→v3: every pre-existing chat IS a D&D-mode campaign. Stamp the mode so
     // 3.0 code can branch on it without guessing; everything else is untouched.
@@ -575,6 +663,9 @@ export function saveChatState(chatId) {
         // Onboarding flow flag (mode picked on the empty-state HUD) — written by
         // the onboarding UI, must survive the save cycle until a memo exists.
         onboarding: existing.onboarding,
+        // World Progression session-local state — written by world-progression.js
+        // directly, never by the normal save cycle (same class as foundation/progression above).
+        worldProg: existing.worldProg,
     };
     SillyTavern.getContext().saveSettingsDebounced();
 }
