@@ -229,9 +229,13 @@ export function validateCentralTension(candidate) {
 
 /**
  * Validates one cycle's `commit_world_progression` tool-call args before
- * anything is merged into state. Cross-reference integrity is checked against
- * `knownIds` (the caller's live state) so the model can't invent ids for
- * factions/NPCs/regions/seeds that don't exist.
+ * anything is merged into state. Cross-reference integrity against
+ * `knownIds` (the caller's live state) is enforced for factionId/milestoneId/
+ * seedId, which are a closed set fixed at compile time — the model can't
+ * invent ids for those. npcId/regionId are deliberately NOT restricted to
+ * knownIds: NPCs and regions are meant to be discovered organically as the
+ * story introduces them, so a commit is always allowed to introduce a new one
+ * (see the per-block comments below).
  *
  * @param {any} candidate
  * @param {Set<string>|string[]} activeLayers - which top-level layer keys were offered this cycle
@@ -243,8 +247,6 @@ export function validateWorldProgressionCommit(candidate, activeLayers, knownIds
     const err = (msg) => errors.push(msg);
     const layers = activeLayers instanceof Set ? activeLayers : new Set(activeLayers || []);
     const factionIds = new Set(knownIds.factionIds || []);
-    const npcIds = new Set(knownIds.npcIds || []);
-    const regionIds = new Set(knownIds.regionIds || []);
     const seedIds = new Set(knownIds.seedIds || []);
 
     if (!isObj(candidate)) return { ok: false, errors: ['commit payload must be a JSON object'] };
@@ -274,9 +276,13 @@ export function validateWorldProgressionCommit(candidate, activeLayers, knownIds
     if (layers.has('characterArc') && candidate.characterArc !== undefined) {
         const ca = candidate.characterArc;
         if (!isObj(ca)) err('characterArc must be an object');
+        // npcId is intentionally NOT restricted to knownIds here (unlike
+        // factionId/milestoneId, which are a closed set fixed at compile
+        // time): NPCs are meant to be discovered organically as the story
+        // introduces them, so a beat is always allowed to introduce a new one.
         else (ca.beats || []).forEach((b, i) => {
             if (!isStr(b?.npcId)) err(`characterArc.beats[${i}].npcId is required`);
-            else if (npcIds.size && !npcIds.has(b.npcId)) err(`characterArc.beats[${i}].npcId "${b.npcId}" does not match any known NPC`);
+            if (!isStr(b?.name)) err(`characterArc.beats[${i}].name is required (the NPC's display name — needed so engagement/dialogue mentions can be matched back to this arc)`);
             if (!CHARACTER_ARC_PHASES.includes(b?.phase)) err(`characterArc.beats[${i}].phase must be one of: ${CHARACTER_ARC_PHASES.join(', ')}`);
             if (b?.relationshipDepth !== undefined && !RELATIONSHIP_DEPTHS.includes(b.relationshipDepth)) err(`characterArc.beats[${i}].relationshipDepth must be one of: ${RELATIONSHIP_DEPTHS.join(', ')}`);
             if (!isStr(b?.beatNote)) err(`characterArc.beats[${i}].beatNote must be a non-empty string`);
@@ -286,9 +292,12 @@ export function validateWorldProgressionCommit(candidate, activeLayers, knownIds
     if (layers.has('regionalState') && candidate.regionalState !== undefined) {
         const rs = candidate.regionalState;
         if (!isObj(rs)) err('regionalState must be an object');
+        // regionId is intentionally NOT restricted to knownIds here, for the
+        // same reason as characterArc.beats[].npcId above — regions are
+        // discovered as the player travels, not pre-declared.
         else (rs.regionUpdates || []).forEach((r, i) => {
             if (!isStr(r?.regionId)) err(`regionalState.regionUpdates[${i}].regionId is required`);
-            else if (regionIds.size && !regionIds.has(r.regionId)) err(`regionalState.regionUpdates[${i}].regionId "${r.regionId}" does not match any known region`);
+            if (!isStr(r?.name)) err(`regionalState.regionUpdates[${i}].name is required (the region's display name — needed so it can be matched against future "(Location: ...)" mentions)`);
         });
     }
 
@@ -577,12 +586,13 @@ export function buildCommitToolSchema(activeLayers) {
                     items: {
                         type: 'object',
                         properties: {
-                            npcId: { type: 'string' },
+                            npcId: { type: 'string', description: 'A stable id for this NPC. If they have no beat on record yet, invent one now (e.g. a slugified name) — NPCs are tracked as they are introduced, not pre-declared.' },
+                            name: { type: 'string', description: "The NPC's display name, exactly as it appears in the narrative. Always include this, even on repeat beats — it's how future dialogue/mentions get matched back to this arc." },
                             phase: { type: 'string', enum: CHARACTER_ARC_PHASES },
                             relationshipDepth: { type: 'string', enum: RELATIONSHIP_DEPTHS },
                             beatNote: { type: 'string', description: 'What happened — a seed for the player to notice, not a full revelation.' },
                         },
-                        required: ['npcId', 'phase', 'beatNote'],
+                        required: ['npcId', 'name', 'phase', 'beatNote'],
                     },
                 },
             },
@@ -598,7 +608,8 @@ export function buildCommitToolSchema(activeLayers) {
                     items: {
                         type: 'object',
                         properties: {
-                            regionId: { type: 'string' },
+                            regionId: { type: 'string', description: 'A stable id for this region. If it has no entry on record yet, invent one now — regions are tracked as the player travels to them, not pre-declared.' },
+                            name: { type: 'string', description: 'The region\'s display name, exactly as it would appear in a "(Location: ...)" footer. Always include this, even on repeat updates — it\'s how a later visit gets matched back to this region.' },
                             addModifiers: {
                                 type: 'array',
                                 items: { type: 'object', properties: { label: { type: 'string' }, note: { type: 'string' } }, required: ['label'] },
@@ -613,7 +624,7 @@ export function buildCommitToolSchema(activeLayers) {
                                 items: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
                             },
                         },
-                        required: ['regionId'],
+                        required: ['regionId', 'name'],
                     },
                 },
             },
@@ -800,6 +811,7 @@ export function applyCharacterArcUpdate(worldState, payload) {
         const existing = worldState.characterArcs[b.npcId] || makeDefaultCharacterArc();
         microPatches.push(recordAndSet(worldState, ['characterArcs', b.npcId], {
             ...existing,
+            name: b.name || existing.name,
             phase: b.phase || existing.phase,
             relationshipDepth: b.relationshipDepth || existing.relationshipDepth,
             pendingBeat: { type: b.phase, note: b.beatNote, stagedAt: now },
@@ -823,7 +835,7 @@ export function applyRegionalStateUpdate(chatWorldProg, payload, atMessageIndex 
     const now = new Date().toISOString();
 
     for (const ru of (payload.regionUpdates || [])) {
-        const existing = chatWorldProg.regions[ru.regionId] || makeDefaultRegion();
+        const existing = chatWorldProg.regions[ru.regionId] || makeDefaultRegion(ru.name || ru.regionId);
         let modifiers = existing.conditionModifiers || [];
         if (ru.removeModifierIds?.length) {
             modifiers = modifiers.filter(m => !ru.removeModifierIds.includes(m.id));
@@ -840,6 +852,7 @@ export function applyRegionalStateUpdate(chatWorldProg, payload, atMessageIndex 
 
         microPatches.push(recordAndSet(chatWorldProg, ['regions', ru.regionId], {
             ...existing,
+            name: ru.name || existing.name,
             conditionModifiers: modifiers,
             hooks,
             residue,
@@ -869,6 +882,31 @@ export function computeEngagementDeltas(combinedNarrative, characterArcs) {
         if (lower.includes(name.toLowerCase())) deltas[npcId] = 1;
     }
     return deltas;
+}
+
+/**
+ * npcIds whose pendingBeat has been "surfaced" this cycle — the NPC's name
+ * appears in the narrative again after their beat was staged, evidence the
+ * narrator had a chance to weave it in. Nothing else in this feature ever
+ * clears `pendingBeat` (see applyCharacterArcUpdate's doc comment: "the
+ * caller marks it processed once the beat has actually been surfaced in the
+ * narrative") — without this, candidateCharacterArcBeats' no-double-staging
+ * guard (`if (arc.pendingBeat) continue`) permanently excludes the NPC from
+ * every future beat once their first one fires.
+ * @param {string} combinedNarrative
+ * @param {Record<string, {name?: string, pendingBeat?: object|null}>} characterArcs
+ * @returns {string[]}
+ */
+export function resolveSurfacedBeats(combinedNarrative, characterArcs) {
+    const surfaced = [];
+    if (!combinedNarrative) return surfaced;
+    const lower = combinedNarrative.toLowerCase();
+    for (const [npcId, arc] of Object.entries(characterArcs || {})) {
+        if (!arc?.pendingBeat) continue;
+        const name = (arc.name || '').trim();
+        if (name && lower.includes(name.toLowerCase())) surfaced.push(npcId);
+    }
+    return surfaced;
 }
 
 /**

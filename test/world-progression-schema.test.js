@@ -32,6 +32,7 @@ import {
     applyCharacterArcUpdate,
     applyRegionalStateUpdate,
     computeEngagementDeltas,
+    resolveSurfacedBeats,
     resolveCurrentRegionId,
 } from '../world-progression-schema.js';
 
@@ -163,6 +164,32 @@ test('validateWorldProgressionCommit: rejects invalid enum values', () => {
     assert.ok(errors.some(e => e.includes('phase must be one of')));
 });
 
+test('validateWorldProgressionCommit: characterArc.beats requires a name, but npcId is never restricted to knownIds', () => {
+    const missingName = { characterArc: { beats: [{ npcId: 'npc_new', phase: 'facade', beatNote: 'First real conversation.' }] } };
+    const r1 = validateWorldProgressionCommit(missingName, ['characterArc'], { npcIds: ['npc_existing'] });
+    assert.equal(r1.ok, false);
+    assert.ok(r1.errors.some(e => e.includes('name is required')));
+
+    // A brand-new npcId is accepted even when other NPCs are already known —
+    // NPCs are discovered organically, not restricted to a closed set.
+    const newNpc = { characterArc: { beats: [{ npcId: 'npc_new', name: 'Elowen', phase: 'facade', beatNote: 'First real conversation.' }] } };
+    const r2 = validateWorldProgressionCommit(newNpc, ['characterArc'], { npcIds: ['npc_existing'] });
+    assert.deepEqual(r2.errors, []);
+    assert.equal(r2.ok, true);
+});
+
+test('validateWorldProgressionCommit: regionalState.regionUpdates requires a name, but regionId is never restricted to knownIds', () => {
+    const missingName = { regionalState: { regionUpdates: [{ regionId: 'reg_new' }] } };
+    const r1 = validateWorldProgressionCommit(missingName, ['regionalState'], { regionIds: ['reg_existing'] });
+    assert.equal(r1.ok, false);
+    assert.ok(r1.errors.some(e => e.includes('name is required')));
+
+    const newRegion = { regionalState: { regionUpdates: [{ regionId: 'reg_new', name: 'Rustwatch' }] } };
+    const r2 = validateWorldProgressionCommit(newRegion, ['regionalState'], { regionIds: ['reg_existing'] });
+    assert.deepEqual(r2.errors, []);
+    assert.equal(r2.ok, true);
+});
+
 test('validateWorldProgressionCommit: requires full gained/lost/nowPossible/nowImpossible on a tectonic shift', () => {
     const candidate = { worldArc: { tectonicShift: { gained: 'power', lost: 'an ally' } } };
     const { ok, errors } = validateWorldProgressionCommit(candidate, ['worldArc'], {});
@@ -208,6 +235,20 @@ test('candidateCharacterArcBeats: engagementDeltas can push a candidate over thr
     const arcs = { npc1: { phase: 'facade', engagementScore: 2, pendingBeat: null } };
     assert.deepEqual(candidateCharacterArcBeats(arcs, 'exploration', {}), []);
     assert.deepEqual(candidateCharacterArcBeats(arcs, 'exploration', { npc1: 1 }), ['npc1']);
+});
+
+test('candidateCharacterArcBeats + resolveSurfacedBeats: a staged beat blocks re-selection only until it surfaces in the narrative, not forever', () => {
+    const arcs = { npc1: { name: 'Elowen', phase: 'fracture', engagementScore: 10, pendingBeat: { type: 'fracture', note: 'x' } } };
+    // Blocked while pending, no matter how high engagement/tempo affinity are.
+    assert.deepEqual(candidateCharacterArcBeats(arcs, 'exploration', {}), []);
+
+    // Once the NPC's name reappears in the narrative, the orchestration layer
+    // clears pendingBeat (see maybeRunWorldProgressionPass) — after that,
+    // the same NPC is eligible for their next beat again.
+    const surfaced = resolveSurfacedBeats('Elowen says nothing, but her hands are shaking.', arcs);
+    assert.deepEqual(surfaced, ['npc1']);
+    for (const npcId of surfaced) arcs[npcId].pendingBeat = null;
+    assert.deepEqual(candidateCharacterArcBeats(arcs, 'exploration', {}), ['npc1']);
 });
 
 test('shouldCheckRegionalState: true on entry, false with no region, true when stale or hooks pending', () => {
@@ -383,6 +424,14 @@ test('applyCharacterArcUpdate: a brand-new NPC id is fully removed on rollback',
     assert.ok(!('npc_new' in worldState.characterArcs));
 });
 
+test('applyCharacterArcUpdate: persists the display name for a brand-new NPC (needed for engagement scoring and beat surfacing to ever match this NPC)', () => {
+    const worldState = makeDefaultWorldState();
+    applyCharacterArcUpdate(worldState, {
+        beats: [{ npcId: 'npc_new', name: 'Elowen', phase: 'facade', beatNote: 'First real conversation.' }],
+    });
+    assert.equal(worldState.characterArcs.npc_new.name, 'Elowen');
+});
+
 test('applyRegionalStateUpdate: apply then invert restores the original regions exactly', () => {
     const chatWorldProg = makeDefaultChatWorldProg();
     chatWorldProg.regions = { r1: makeDefaultRegion('Khelt', 'Book::0') };
@@ -400,6 +449,18 @@ test('applyRegionalStateUpdate: apply then invert restores the original regions 
     assert.deepEqual(chatWorldProg, before);
 });
 
+test('applyRegionalStateUpdate: a brand-new region gets a real name, not the blank default — otherwise resolveCurrentRegionId can never match it again', () => {
+    const chatWorldProg = makeDefaultChatWorldProg();
+    applyRegionalStateUpdate(chatWorldProg, {
+        regionUpdates: [{ regionId: 'reg_rustwatch', name: 'Rustwatch', addHooks: [{ text: 'A raven circles the tower.' }] }],
+    });
+    assert.equal(chatWorldProg.regions.reg_rustwatch.name, 'Rustwatch');
+    assert.equal(
+        resolveCurrentRegionId(chatWorldProg.regions, 'The gates creak open. (Location: Rustwatch, Border Road)'),
+        'reg_rustwatch',
+    );
+});
+
 // ── Narrative scanning helpers ──────────────────────────────────────────────────
 
 test('computeEngagementDeltas: +1 for a tracked NPC whose name appears (case-insensitive), 0 otherwise', () => {
@@ -415,4 +476,15 @@ test('resolveCurrentRegionId: matches the (Location: ...) footer convention agai
     assert.equal(resolveCurrentRegionId(regions, 'The street is quiet. (Location: Khelt, Rust-Lantern District)'), 'r1');
     assert.equal(resolveCurrentRegionId(regions, 'No footer here at all.'), null);
     assert.equal(resolveCurrentRegionId({}, '(Location: Khelt)'), null);
+});
+
+test('resolveSurfacedBeats: an NPC with a pendingBeat is surfaced once their name reappears in the narrative', () => {
+    const arcs = {
+        npc1: { name: 'Elowen', pendingBeat: { type: 'fracture', note: 'x' } },
+        npc2: { name: 'Mira', pendingBeat: { type: 'facade', note: 'y' } },
+        npc3: { name: 'Thalric', pendingBeat: null },
+    };
+    assert.deepEqual(resolveSurfacedBeats('Elowen glances away, saying nothing.', arcs), ['npc1']);
+    assert.deepEqual(resolveSurfacedBeats('Nobody relevant is mentioned.', arcs), []);
+    assert.deepEqual(resolveSurfacedBeats('', arcs), []);
 });

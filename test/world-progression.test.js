@@ -251,6 +251,7 @@ test('detectMeguminOverlap: never mutates Megumin\'s settings object', () => {
 
 test('reconcileWorldProgRollbacks: rolls back a delta whose message was deleted (id no longer referenced anywhere in chat)', () => {
     seedChat('chat10');
+    rawStore().rpg_tracker.worldProgEnabled = true;
     const ws = getWorldState('chat10');
     ws.factions.f1 = { posture: 'defensive' };
     saveWorldState('chat10');
@@ -272,6 +273,7 @@ test('reconcileWorldProgRollbacks: rolls back a delta whose message was deleted 
 
 test('reconcileWorldProgRollbacks: leaves a delta alone when its message still references the id', () => {
     seedChat('chat11');
+    rawStore().rpg_tracker.worldProgEnabled = true;
     const ws = getWorldState('chat11');
     ws.factions.f1 = { posture: 'aggressive' };
     saveWorldState('chat11');
@@ -286,4 +288,14 @@ test('reconcileWorldProgRollbacks: leaves a delta alone when its message still r
     reconcileWorldProgRollbacks('chat11');
     assert.equal(getWorldState('chat11').factions.f1.posture, 'aggressive', 'still-referenced delta is not rolled back');
     assert.equal(getChatWorldProg('chat11').pendingDeltas.length, 1);
+});
+
+test('reconcileWorldProgRollbacks: no-ops without touching chatStates when World Progression is disabled', () => {
+    // MESSAGE_DELETED/MESSAGE_SWIPED listeners call this unconditionally
+    // (index.js) — it must not stamp a stub worldProg record onto every chat
+    // for users who never turned the feature on.
+    setSettings({ routerCampaignPrefixOverride: '', chatStates: {} });
+    rawStore().rpg_tracker.worldProgEnabled = false;
+    reconcileWorldProgRollbacks('chat12');
+    assert.equal(rawStore().rpg_tracker.chatStates.chat12, undefined);
 });

@@ -2,6 +2,19 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.4.1] - 2026-07-02
+
+**World Progression bug-hunt.** A round of end-to-end testing (real browser, live LLM-round-trip driving) on 3.4.0 turned up several bugs severe enough that the Character Arc and Regional State layers were effectively non-functional in normal play. All fixed; the author's unit suite plus new regression coverage (229 tests) and a live E2E roleplay session both pass.
+
+### Fixed
+- **World Progression HUD crashed the entire settings UI on load**: `renderWorldProgHud()` referenced an undeclared `ctx`, thrown synchronously from `createPanel()` during `init()` — since the World Progression HUD markup is always in the DOM regardless of `worldProgEnabled`, this aborted the rest of extension init (including the settings-tab/wand-button wiring) for every single user on every load, not just World Progression users.
+- **Character Arc beats could only ever fire once per NPC, forever**: nothing cleared `pendingBeat` after it was staged, and `candidateCharacterArcBeats`'s no-double-staging guard permanently excluded any NPC with a pending beat from ever being offered another one. A new deterministic, no-LLM check (`resolveSurfacedBeats`, mirroring the existing engagement-scan convention) clears it once the NPC's name reappears in the narrative.
+- **NPCs and regions had no `name` field at all**: `characterArc.beats[]`/`regionalState.regionUpdates[]` never asked the model for one, so engagement scoring (`computeEngagementDeltas`) and region re-entry (`resolveCurrentRegionId`) — both name-substring matches — silently never worked for anything the model itself introduced. `name` is now a required field in both, threaded through into stored state.
+- **A second NPC or region could never be tracked**: `validateWorldProgressionCommit` rejected any `npcId`/`regionId` that didn't already exist once at least one did. NPCs and regions are meant to be discovered organically (unlike the fixed milestone/faction set from the compiler), so this check is removed for those two ids specifically; faction/milestone ids remain strictly validated.
+- **Regional State could never track a first-ever region in normal play**: `resolveCurrentRegionId` only matches already-known regions, so a brand-new `(Location: ...)` never activated the layer. A location footer that matches no known region now still activates Regional State so the LLM can create one.
+- **World Progression HUD and the Settings tab's campaign summary didn't refresh after compiling a Central Tension**: both stayed on "no campaign yet" until manually refreshed or the settings overlay was reopened, since the wizard's commit handler never called their render functions.
+- **`MESSAGE_DELETED`/`MESSAGE_SWIPED` listeners stamped a stub `worldProg` record onto every chat**, even for users who never enabled World Progression, because `reconcileWorldProgRollbacks` created chat state unconditionally before its own early-return check. Now gated on `worldProgEnabled`.
+
 ## [3.4.0] - 2026-07-01
 
 **World Progression System.** A four-layer engine — World Arc, Character Arcs, Regional State, and Pacing — that gives the narrator pacing awareness and a world that evolves between player turns: faction moves, NPC arc beats, regional condition changes, and tempo (Exploration/Escalation/Crisis/Aftermath) all tracked in the background and reconciled into a single per-cycle commit call. Off by default (`worldProgEnabled`); existing chats/campaigns are unaffected until enabled.

@@ -2491,6 +2491,7 @@ ${resourceList}
         const worldProgCloseBtn = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-worldprog-close'));
 
         if (worldProgPanel) {
+            const ctx = SillyTavern.getContext();
             const readoutEl = worldProgPanel.querySelector('#rt-worldprog-readout');
             const jsonEditor = /** @type {HTMLTextAreaElement|null} */ (worldProgPanel.querySelector('#rt-worldprog-json-editor'));
             const jsonActions = /** @type {HTMLElement|null} */ (worldProgPanel.querySelector('#rt-worldprog-json-actions'));
@@ -6011,6 +6012,7 @@ ${resourceList}
                 el.textContent = `Intimate: ${ws.centralTension.intimateConflict}\nEpic: ${ws.centralTension.epicConflict}\nMilestones: ${ws.milestoneChain.length} (${ws.milestoneChain.filter(m => m.status === 'resolved').length} resolved)`;
             }
             renderWorldProgTensionSummary();
+            globalThis._rpgRenderWorldProgTensionSummary = renderWorldProgTensionSummary;
             $('#rpg_tracker_worldprog_btn_start_arc').on('click', () => openCentralTensionWizard());
 
             function renderMeguminOverlapWarning() {
