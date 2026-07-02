@@ -1,6 +1,6 @@
 import { EXAMPLES, COLOR_EXAMPLES, DEFAULT_STOCK_PROMPTS, RT_PROMPTS, BLOCK_ICONS, PAGE_SIZE, NO_PAGINATE } from './constants.js';
 import { BLOCK_ORDER } from './module-registry.js';
-import { MODULE_NAME, DEFAULT_MODULES, getSettings, getActivationMode, getBarBackground, getCampaignMode, isOnboardingArcReady, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
+import { MODULE_NAME, DEFAULT_MODULES, getSettings, getActivationMode, getBarBackground, getCampaignMode, shouldShowWorldArcGate, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
 import { sendStateRequest, fetchOllamaModels, fetchOpenAIModels, testOpenAIConnection, getConnectionProfiles, getCurrentCompletionPreset, setCompletionPreset } from './llm-client.js';
 import { getDiceToolName, getDiceCommandName, getDiceCommandAliases, doDiceRoll, registerDiceFunctionTool, registerDiceSlashCommand, installInterceptor, getNarrativeBlocks, onGenerationEnded, resetRouterTick } from './narrative-hooks.js';
 import {
@@ -1437,6 +1437,14 @@ ${resourceList}
             startModernClassFlow(chatId, getSettings().chatStates?.[chatId]?.progression?.classId, null);
         });
 
+        // World Arc gate: character exists, no arc yet (see shouldShowWorldArcGate).
+        el.querySelector('#rt-start-world-arc-btn')?.addEventListener('click', () => openCentralTensionWizard());
+        el.querySelector('#rt-skip-world-arc-btn')?.addEventListener('click', () => {
+            const chatId = onboardingChatId();
+            if (chatId) RT.worldArcGateSkippedChats.add(chatId);
+            refresh();
+        });
+
         el.querySelectorAll('.rt-hp-bar-wrap[data-recolor-id], .rt-xp-bar-wrap[data-recolor-id]').forEach(wrap => {
             wrap.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -1781,7 +1789,14 @@ ${resourceList}
 
         const el = document.getElementById('rpg-tracker-render');
         if (el) {
-            let html = renderMemoAsCards(memo, null, RT.sectionPages);
+            // World Arc gate only applies to the live view — not while browsing snapshot history.
+            const gateChatId = SillyTavern.getContext().chatId || RT.currentChatId || null;
+            const gateChatState = gateChatId ? (s.chatStates?.[gateChatId] || null) : null;
+            const gateArcExists = !!(gateChatId && getWorldState(gateChatId)?.milestoneChain?.length);
+            const showWorldArcGate = (gateChatId && RT.historyViewIndex === -1)
+                ? shouldShowWorldArcGate(gateChatState, gateChatId, gateArcExists, RT.worldArcGateSkippedChats.has(gateChatId))
+                : false;
+            let html = renderMemoAsCards(memo, null, RT.sectionPages, showWorldArcGate);
 
             // Append quest log section if module is enabled (always render, even when empty)
             if (s.modules?.quests) {
@@ -2207,7 +2222,6 @@ ${resourceList}
                         <button id="rt-worldprog-json-save" class="menu_button interactable" style="flex:1;">Save</button>
                         <button id="rt-worldprog-json-cancel" class="menu_button interactable" style="flex:1;">Cancel</button>
                     </div>
-                    <button id="rt-worldprog-btn-start-arc" class="menu_button interactable" style="width:100%; margin-top: 8px; display: none;">🌍 Start World Arc…</button>
                 </div>
             </div>
             <div class="rpg-tracker-prompt-bar" id="rpg-tracker-prompt-bar" style="display:none;">
@@ -2517,7 +2531,6 @@ ${resourceList}
             const collapseBtn = worldProgPanel.querySelector('#rt-worldprog-collapse-btn');
             const saveBtn = worldProgPanel.querySelector('#rt-worldprog-json-save');
             const cancelBtn = worldProgPanel.querySelector('#rt-worldprog-json-cancel');
-            const startArcBtn = worldProgPanel.querySelector('#rt-worldprog-btn-start-arc');
 
             const formatSeed = (s) => `    • [${s.tiedTo || 'none'}]${s.engaged ? ' ✓' : ''} ${s.text}`;
             const formatFaction = ([id, f]) => `  • ${id}: ${f.posture}${f.goal ? ' — ' + f.goal : ''}`;
@@ -2528,9 +2541,8 @@ ${resourceList}
                 const chatId = ctx.chatId || RT.currentChatId;
                 const ws = chatId ? getWorldState(chatId) : null;
                 const prog = chatId ? getChatWorldProg(chatId) : null;
-                if (startArcBtn) (/** @type {HTMLElement} */ (startArcBtn)).style.display = (!ws?.milestoneChain?.length) ? 'block' : 'none';
                 if (!chatId) { if (readoutEl) readoutEl.textContent = 'No active chat.'; return; }
-                if (!ws?.milestoneChain?.length) { if (readoutEl) readoutEl.textContent = 'No World Arc compiled for this campaign yet — click "Start World Arc" below.'; return; }
+                if (!ws?.milestoneChain?.length) { if (readoutEl) readoutEl.textContent = 'No World Arc compiled for this campaign yet.'; return; }
 
                 const lines = [];
                 lines.push(`TEMPO: ${prog?.pacing?.mode || 'unknown'} (${prog?.pacing?.lastTransitionReason || ''})`);
@@ -2558,9 +2570,11 @@ ${resourceList}
                 if (skillTreeBtn) skillTreeBtn.style.display = (chatId && getCampaignMode(chatId) === 'modern') ? '' : 'none';
                 if (worldProgBtn) {
                     const s = getSettings();
-                    const st = chatId ? (s.chatStates?.[chatId] || null) : null;
                     const arcExists = !!(chatId && getWorldState(chatId)?.milestoneChain?.length);
-                    worldProgBtn.style.display = (s.worldProgHudVisible || isOnboardingArcReady(st, chatId) || arcExists) ? '' : 'none';
+                    // Starting an arc now happens exclusively through the Main HUD's onboarding
+                    // gate (or the Settings-tab recompile button) — this sub-panel is a pure
+                    // monitoring view, so it only auto-reveals once there's something to monitor.
+                    worldProgBtn.style.display = (s.worldProgHudVisible || arcExists) ? '' : 'none';
                 }
             }
             globalThis._rpgRefreshHudHeaderButtons = refreshHudHeaderButtons;
@@ -2593,7 +2607,6 @@ ${resourceList}
                 worldProgCloseBtn.addEventListener('click', () => { worldProgPanel.style.display = 'none'; });
             }
             if (refreshBtn) refreshBtn.addEventListener('click', () => renderWorldProgHud());
-            if (startArcBtn) startArcBtn.addEventListener('click', () => openCentralTensionWizard());
             if (collapseBtn) {
                 collapseBtn.addEventListener('click', () => {
                     const s = getSettings();

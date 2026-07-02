@@ -225,3 +225,32 @@ test('isOnboardingArcReady: neither ruleset picked (fresh/mode-select) is not re
     const st = getSettings().chatStates.modernPicked;
     assert.equal(isOnboardingArcReady(st, 'modernPicked'), false, 'picking Modern alone (pre-foundation) is not enough');
 });
+
+// ── shouldShowWorldArcGate (Main HUD "start your World Arc" onboarding step) ───
+
+test('shouldShowWorldArcGate: onboarding ready, no arc yet, not skipped → shows the gate', async () => {
+    const { shouldShowWorldArcGate } = await import('../state-manager.js');
+    setSettings({ chatStates: { c1: { campaignMode: 'modern', progression: { classId: 'fighter' } } } });
+    const st = getSettings().chatStates.c1;
+    assert.equal(shouldShowWorldArcGate(st, 'c1', false, false), true);
+});
+
+test('shouldShowWorldArcGate: an arc already exists → gate never shows, regardless of onboarding state', async () => {
+    const { shouldShowWorldArcGate } = await import('../state-manager.js');
+    setSettings({ chatStates: { c1: { campaignMode: 'modern', progression: { classId: 'fighter' } } } });
+    const st = getSettings().chatStates.c1;
+    assert.equal(shouldShowWorldArcGate(st, 'c1', true, false), false);
+});
+
+test('shouldShowWorldArcGate: skipped this session → gate stays hidden even though onboarding is ready', async () => {
+    const { shouldShowWorldArcGate } = await import('../state-manager.js');
+    setSettings({ chatStates: { c1: { onboarding: { mode: 'dnd' } } } });
+    const st = getSettings().chatStates.c1;
+    assert.equal(shouldShowWorldArcGate(st, 'c1', false, true), false);
+});
+
+test('shouldShowWorldArcGate: onboarding not ready → gate stays hidden regardless of skip/arc flags', async () => {
+    const { shouldShowWorldArcGate } = await import('../state-manager.js');
+    assert.equal(shouldShowWorldArcGate({}, 'fresh-chat', false, false), false);
+    assert.equal(shouldShowWorldArcGate(null, 'fresh-chat', false, false), false);
+});

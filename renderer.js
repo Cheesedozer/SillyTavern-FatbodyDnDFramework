@@ -1000,7 +1000,23 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
                 ${renderNarratorConfigPanel()}`;
     }
 
-    export function renderMemoAsCards(memo, filterTag, sectionPages) {
+    /** Step 5 — character exists, no World Arc yet: mandatory-feeling gate
+     *  before the Main HUD hands off to the normal card view. Skippable. */
+    function renderWorldArcGateStep() {
+        return `${renderOnboardingHeader('One last step before you begin', false)}
+                <div style="font-size: 13px; opacity: 0.9; line-height: 1.4; flex-shrink: 0;">Your character is ready. A <b>World Arc</b> sets the campaign's central tension — a conflict that's both personal and world-shaking — plus the milestones and Chapter 1 hooks that grow out of it.</div>
+                <div style="display: flex; flex-direction: column; gap: 10px; width: 100%; margin: 8px 0; flex-shrink: 0;">
+                    <button id="rt-start-world-arc-btn" class="rt-mode-btn">
+                        <span class="rt-mode-btn-icon">🌍</span>
+                        <span class="rt-mode-btn-text"><b>Start World Arc</b><br><small>Pick categories, write your own, or let the AI decide.</small></span>
+                    </button>
+                </div>
+                <div style="width: 100%; text-align: center; flex-shrink: 0;">
+                    <button id="rt-skip-world-arc-btn" style="background: none; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: var(--rt-text-muted); font-size: 0.78em; padding: 2px 10px; cursor: pointer; font-family: var(--rt-font);" title="You can start a World Arc later from the Settings window.">Skip for now — decide later</button>
+                </div>`;
+    }
+
+    export function renderMemoAsCards(memo, filterTag, sectionPages, showWorldArcGate) {
         if (!memo || !memo.trim()) {
             // Detached single-tag panels must NOT render the onboarding flow:
             // it would duplicate the main view's element IDs (rt-ob-status,
@@ -1022,6 +1038,13 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
                 default:                 body = renderModeSelectStep();
             }
             return `<div class="rt-empty" style="text-align: left; align-items: flex-start; padding: 12px; gap: 10px; overflow-y: auto;">${body}</div>`;
+        }
+
+        // Character exists but no World Arc yet — gate the normal card view behind
+        // the same onboarding-flow surface (skipped for detached/preview panels,
+        // which never pass showWorldArcGate — see the filterTag guard above).
+        if (!filterTag && showWorldArcGate) {
+            return `<div class="rt-empty" style="text-align: left; align-items: flex-start; padding: 12px; gap: 10px; overflow-y: auto;">${renderWorldArcGateStep()}</div>`;
         }
 
         const blocks = parseMemoBlocks(memo);
