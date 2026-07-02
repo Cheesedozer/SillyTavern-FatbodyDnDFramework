@@ -38,4 +38,8 @@ export const RT = {
     sectionPages: {},
     /** Modern onboarding class setup in flight: { chatId, label } or null. */
     onboardingForge: null,
+    /** chatIds where the user dismissed the "start your World Arc" gate this
+     *  session ("skip for now") — intentionally in-memory only, not persisted,
+     *  so the gate reappears on the next reload rather than being forgotten. */
+    worldArcGateSkippedChats: new Set(),
 };

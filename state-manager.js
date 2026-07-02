@@ -698,6 +698,23 @@ export function isOnboardingArcReady(chatState, chatId) {
     return modernReady || dndReady;
 }
 
+/**
+ * Whether the Main HUD should show the "start your World Arc" onboarding gate
+ * instead of the normal character-state card view. All inputs are passed in
+ * (no RT/DOM/settings access here) so this stays a pure, unit-testable check —
+ * the caller is responsible for resolving chatState, arcExists, and whether
+ * the gate was skipped this session.
+ * @param {object|null|undefined} chatState - settings.chatStates[chatId]
+ * @param {string} chatId
+ * @param {boolean} arcExists - true once a milestone chain has been compiled
+ * @param {boolean} skippedThisSession - true if the user dismissed the gate this session
+ * @returns {boolean}
+ */
+export function shouldShowWorldArcGate(chatState, chatId, arcExists, skippedThisSession) {
+    if (skippedThisSession || arcExists) return false;
+    return isOnboardingArcReady(chatState, chatId);
+}
+
 // ── Profile I/O ───────────────────────────────────────────────────────────────
 
 /**

@@ -25,6 +25,7 @@ import { extractFoundationJson as extractJsonBlock } from './foundation.js';
 import { writeBookToDisk } from './router.js';
 import { getWorldProgKey, getWorldState, getChatWorldProg, saveWorldState, saveChatWorldProg, worldProgSettings } from './world-progression.js';
 import { CENTRAL_TENSION_CATEGORIES, validateCentralTension } from './world-progression-schema.js';
+import { RT } from './shared-state.js';
 
 const MAX_GENERATION_RETRIES = 3;
 
@@ -363,6 +364,7 @@ export function openCentralTensionWizard() {
                 source: candidate.input.source,
                 rawInput: candidate.input.source === 'preset' ? candidate.input.categoryIds.join(',') : candidate.input.customText,
             });
+            RT.worldArcGateSkippedChats.delete(chatId);
             close();
             globalThis._rpgRefreshRenderedView?.();
             globalThis._rpgRenderWorldProgHud?.();
