@@ -281,6 +281,7 @@ export function openFoundationWizard() {
             await commitFoundationAndInit(chatId, candidate);
             close();
             globalThis._rpgRefreshRenderedView?.();
+            globalThis._rpgRefreshHudHeaderButtons?.(chatId);
         } catch (e) {
             // Surface the failure in the conversation too, so "Keep refining"
             // lands on a log that tells the architect what to change (e.g. the

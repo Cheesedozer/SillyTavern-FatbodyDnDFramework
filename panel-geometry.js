@@ -40,9 +40,10 @@ export function loadPanelGeometry(panel) {
 
         if (left !== undefined) { panel.style.left = left + 'px'; panel.style.right = 'auto'; }
         if (top !== undefined) { panel.style.top = top + 'px'; panel.style.bottom = 'auto'; }
-        if (saved.width) panel.style.width = saved.width + 'px';
-        // Guard: ignore saved heights that are smaller than a reasonable minimum (e.g. a stale
-        // header-only save from before the collapse feature existed). 80px ≈ header + tiny content.
+        // Guard: ignore saved widths/heights smaller than the panel's own minimums (e.g. a
+        // stale save from before this floor existed). 220 matches min-width (style.css) and
+        // the live top-right resize clamp (makeResizableTR below); 80px ≈ header + tiny content.
+        if (saved.width && saved.width > 220) panel.style.width = saved.width + 'px';
         if (saved.height && saved.height > 80) panel.style.height = saved.height + 'px';
     } catch { /* ignore */ }
 }
