@@ -316,12 +316,26 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    min-width: 0;
+}
+
+/* Title must truncate rather than wrap — otherwise at narrow panel widths the
+   fixed-size icon row in .rpg-tracker-header-right overflows the panel and
+   gets clipped by its overflow:hidden, silently hiding the collapse/close
+   buttons (the mobile media query already had this fix; applied unconditionally
+   here since the same overflow can happen on desktop at the panel's width floor). */
+.rpg-tracker-header-left span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
 }
 
 .rpg-tracker-header-right {
     display: flex;
     align-items: center;
     gap: 6px;
+    flex-shrink: 0;
 }
 
 .rpg-tracker-stop-btn {
@@ -2263,6 +2277,13 @@
     max-height: none !important;
     resize: none !important;
     box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+    /* The collapsed bar is ONLY the header — it must always be wide enough to
+       fit every header-right icon (including the collapse/close buttons that
+       are the only way to escape this state), regardless of whatever width
+       the panel happened to be at before collapsing. Does not affect the
+       normal expanded-state min-width (220px) or persisted geometry: see
+       savePanelGeometry()'s collapsed-state handling in panel-geometry.js. */
+    min-width: 340px !important;
 }
 
 .rpg-tracker-panel.rt-panel-collapsed .rpg-tracker-header {
