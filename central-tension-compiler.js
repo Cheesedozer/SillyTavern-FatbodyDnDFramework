@@ -54,7 +54,10 @@ function buildCompilerSystemPrompt(input, cardContext) {
         sourceInstruction = `The player wrote this central tension idea in their own words:\n"${customText}"\n\nExpand and structure it into the schema below. Do not replace their core idea — sharpen it into something that can sustain a 5-8 milestone campaign.`;
     } else if (source === 'preset') {
         const blurb = CENTRAL_TENSION_CATEGORIES.filter(c => categoryIds.includes(c.id)).map(c => `- ${c.label}: ${c.blurb}`).join('\n');
-        sourceInstruction = `The player selected these candidate tension categories as inspiration:\n${blurb}\n\nBlend or choose from these to create ONE coherent central tension — you do not need to use all of them, and you should adapt the flavor to fit the world below.`;
+        const blendClause = categoryIds.length === 1
+            ? `Build the central tension around this candidate category — adapt and expand it to fit the world below; you do not need to follow it literally.`
+            : `Blend or choose from these to create ONE coherent central tension — you do not need to use all of them, and you should adapt the flavor to fit the world below.`;
+        sourceInstruction = `The player selected these candidate tension categories as inspiration:\n${blurb}\n\n${blendClause}`;
     } else {
         sourceInstruction = `The player wants you to invent a central tension entirely from what fits the world below — surprise them with something that suits the setting rather than defaulting to a generic threat.`;
     }
@@ -209,7 +212,7 @@ export function openCentralTensionWizard() {
                     <button class="menu_button interactable rt-ctc-mode-btn" data-mode="ai" style="flex:1;">Let the AI decide</button>
                 </div>
                 <div id="rt-ctc-mode-preset" style="display:none;">
-                    <div style="font-size:0.8em;opacity:0.7;margin-bottom:6px;">Pick 3-4 categories — the architect will blend or choose from them to fit the current character card.</div>
+                    <div style="font-size:0.8em;opacity:0.7;margin-bottom:6px;">Pick 1-4 categories — the architect will blend or choose from them to fit the current character card.</div>
                     <div id="rt-ctc-categories" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;"></div>
                 </div>
                 <div id="rt-ctc-mode-custom" style="display:none;">
@@ -271,7 +274,7 @@ export function openCentralTensionWizard() {
     const selectedCategoryIds = () => [...categoriesEl.querySelectorAll('input[type="checkbox"]:checked')].map(el => el.value);
 
     const refreshGenerateEnabled = () => {
-        if (mode === 'preset') genBtn.disabled = selectedCategoryIds().length < 3 || selectedCategoryIds().length > 4;
+        if (mode === 'preset') genBtn.disabled = selectedCategoryIds().length < 1 || selectedCategoryIds().length > 4;
         else if (mode === 'custom') genBtn.disabled = !customTextEl.value.trim();
         else genBtn.disabled = !mode;
     };
@@ -364,6 +367,7 @@ export function openCentralTensionWizard() {
             globalThis._rpgRefreshRenderedView?.();
             globalThis._rpgRenderWorldProgHud?.();
             globalThis._rpgRenderWorldProgTensionSummary?.();
+            globalThis._rpgRefreshHudHeaderButtons?.(chatId);
         } catch (e) {
             statusEl.textContent = `❌ Commit failed: ${e.message || e}`;
             setBusy(false);

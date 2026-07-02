@@ -1,6 +1,6 @@
 import { EXAMPLES, COLOR_EXAMPLES, DEFAULT_STOCK_PROMPTS, RT_PROMPTS, BLOCK_ICONS, PAGE_SIZE, NO_PAGINATE } from './constants.js';
 import { BLOCK_ORDER } from './module-registry.js';
-import { MODULE_NAME, DEFAULT_MODULES, getSettings, getActivationMode, getBarBackground, getCampaignMode, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
+import { MODULE_NAME, DEFAULT_MODULES, getSettings, getActivationMode, getBarBackground, getCampaignMode, isOnboardingArcReady, migrateCustomFields, saveChatState, saveProfile, deleteProfile, getEffectiveRouterCampaignPrefix, sanitizeCampaignPrefixString } from './state-manager.js';
 import { sendStateRequest, fetchOllamaModels, fetchOpenAIModels, testOpenAIConnection, getConnectionProfiles, getCurrentCompletionPreset, setCompletionPreset } from './llm-client.js';
 import { getDiceToolName, getDiceCommandName, getDiceCommandAliases, doDiceRoll, registerDiceFunctionTool, registerDiceSlashCommand, installInterceptor, getNarrativeBlocks, onGenerationEnded, resetRouterTick } from './narrative-hooks.js';
 import {
@@ -915,6 +915,8 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         resetRouterTick(isActualChange);
         if (isActualChange) resetWorldProgTick();
         refreshWorldProgPacingPrompt(newChatId);
+        globalThis._rpgRefreshHudHeaderButtons?.(newChatId);
+        globalThis._rpgRenderWorldProgHud?.();
 
         // Auto-activate and prefix logic run regardless of chatLinkEnabled.
         // Always re-derive the prefix from the chat ID so stale saved data never
@@ -1326,6 +1328,7 @@ ${resourceList}
             toastr['error'](`${e.message || e}`, 'Class setup failed — click again to resume', { timeOut: 10000 });
         } finally {
             RT.onboardingForge = null;
+            globalThis._rpgRefreshHudHeaderButtons?.(chatId);
             refreshRenderedView();
         }
     }
@@ -1380,15 +1383,18 @@ ${resourceList}
                 if (!s.chatStates[chatId]) s.chatStates[chatId] = {};
                 s.chatStates[chatId].onboarding = { mode: btn.dataset.mode };
                 saveSettings();
+                globalThis._rpgRefreshHudHeaderButtons?.(chatId);
                 refresh();
             });
         });
 
         // Back: returns to the mode picker (pre-commit steps only).
         el.querySelector('.rt-ob-back')?.addEventListener('click', () => {
-            const st = getSettings().chatStates?.[onboardingChatId()];
+            const chatId = onboardingChatId();
+            const st = getSettings().chatStates?.[chatId];
             if (st) delete st.onboarding;
             saveSettings();
+            globalThis._rpgRefreshHudHeaderButtons?.(chatId);
             refresh();
         });
 
@@ -1408,6 +1414,7 @@ ${resourceList}
                 btn.disabled = false;
                 return;
             }
+            globalThis._rpgRefreshHudHeaderButtons?.(chatId);
             refresh();
         });
 
@@ -1953,9 +1960,10 @@ ${resourceList}
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-view-btn" title="Toggle rendered view">⊞</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-delta-btn" title="Toggle change log">δ</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-agent-btn" title="Lorebook Agent">🤖</button>
+                    <button class="rpg-tracker-icon-btn" id="rpg-tracker-skilltree-btn" title="Skill Tree" style="display:none;">🌳</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-worldprog-btn" title="World Progression" style="${settings.worldProgHudVisible ? '' : 'display:none;'}">🌍</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-debug-btn" title="Context Debugger" style="display:none;">🛠️</button>
-                    <button class="rpg-tracker-icon-btn" id="rpg-tracker-collapse-btn" title="Collapse Panel"><i class="fa-solid ${settings.trackerCollapsed ? 'fa-chevron-down' : 'fa-chevron-up'}"></i></button>
+                    <button class="rpg-tracker-icon-btn" id="rpg-tracker-collapse-btn" title="Collapse Panel (still clickable when collapsed — double-click the header to toggle too)"><i class="fa-solid ${settings.trackerCollapsed ? 'fa-chevron-down' : 'fa-chevron-up'}"></i></button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-close-btn" title="Hide panel">✕</button>
                 </div>
             </div>
@@ -2490,6 +2498,15 @@ ${resourceList}
         const worldProgPanel = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-worldprog'));
         const worldProgCloseBtn = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-worldprog-close'));
 
+        // ─── Skill Tree HUD button (Modern-mode only; visibility refreshed per-chat) ───
+        const skillTreeBtn = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-skilltree-btn'));
+        if (skillTreeBtn) {
+            skillTreeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                openSkillTreeTab();
+            });
+        }
+
         if (worldProgPanel) {
             const ctx = SillyTavern.getContext();
             const readoutEl = worldProgPanel.querySelector('#rt-worldprog-readout');
@@ -2535,6 +2552,20 @@ ${resourceList}
             globalThis._rpgRenderWorldProgHud = renderWorldProgHud;
             renderWorldProgHud();
 
+            // ─── HUD header button visibility (Skill Tree + World Progression), refreshed
+            // per active chat since createPanel() only builds the header markup once ───
+            function refreshHudHeaderButtons(chatId) {
+                if (skillTreeBtn) skillTreeBtn.style.display = (chatId && getCampaignMode(chatId) === 'modern') ? '' : 'none';
+                if (worldProgBtn) {
+                    const s = getSettings();
+                    const st = chatId ? (s.chatStates?.[chatId] || null) : null;
+                    const arcExists = !!(chatId && getWorldState(chatId)?.milestoneChain?.length);
+                    worldProgBtn.style.display = (s.worldProgHudVisible || isOnboardingArcReady(st, chatId) || arcExists) ? '' : 'none';
+                }
+            }
+            globalThis._rpgRefreshHudHeaderButtons = refreshHudHeaderButtons;
+            refreshHudHeaderButtons(ctx.chatId || RT.currentChatId);
+
             globalThis._rpgSetWorldProgHudVisible = (visible) => {
                 if (worldProgBtn) worldProgBtn.style.display = visible ? '' : 'none';
                 if (!visible && worldProgPanel) worldProgPanel.style.display = 'none';
@@ -2545,7 +2576,19 @@ ${resourceList}
                     e.stopPropagation();
                     const isHidden = worldProgPanel.style.display === 'none';
                     worldProgPanel.style.display = isHidden ? 'flex' : 'none';
-                    if (isHidden) renderWorldProgHud();
+                    if (isHidden) {
+                        // Auto-expand the main tracker if it's collapsed; this sub-panel is an
+                        // absolute child, so overflow:hidden on the main panel would clip it otherwise.
+                        const s = getSettings();
+                        if (s.trackerCollapsed) {
+                            s.trackerCollapsed = false;
+                            saveSettings();
+                            panel.classList.remove('rt-panel-collapsed');
+                            const colIcon = panel.querySelector('#rpg-tracker-collapse-btn i');
+                            if (colIcon) colIcon.className = 'fa-solid fa-chevron-up';
+                        }
+                        renderWorldProgHud();
+                    }
                 });
                 worldProgCloseBtn.addEventListener('click', () => { worldProgPanel.style.display = 'none'; });
             }
@@ -4221,17 +4264,25 @@ ${resourceList}
         const toggleTrackerCollapse = () => {
             const s = getSettings();
             s.trackerCollapsed = !s.trackerCollapsed;
+            const showCollapseHint = s.trackerCollapsed && !s.trackerCollapseHintShown;
+            if (showCollapseHint) s.trackerCollapseHintShown = true;
             saveSettings();
-            
+
             if (s.trackerCollapsed) {
                 panel.classList.add('rt-panel-collapsed');
             } else {
                 panel.classList.remove('rt-panel-collapsed');
             }
-            
+
             const icon = panel.querySelector('#rpg-tracker-collapse-btn i');
             if (icon) {
                 icon.className = s.trackerCollapsed ? 'fa-solid fa-chevron-down' : 'fa-solid fa-chevron-up';
+            }
+
+            // One-time nudge: collapse ("Immersion Mode") hides the resize handle and
+            // content, which otherwise reads as the panel being broken rather than intentional.
+            if (showCollapseHint) {
+                toastr['info']('Panel collapsed — click the chevron again (or double-click the header) to expand.', 'RPG Tracker', { timeOut: 8000 });
             }
         };
 
@@ -5465,8 +5516,6 @@ ${resourceList}
             });
 
             $('#rpg_tracker_btn_foundation_wizard').on('click', () => openFoundationWizard());
-            $('#rpg_tracker_btn_skill_tree').on('click', () => openSkillTreeTab());
-            $('#rpg_tracker_btn_start_world_arc').on('click', () => openCentralTensionWizard());
 
             $('#rpg_tracker_btn_update_sysprompt').on('click', async function () {
                 // Additive delivery: the Main prompt box is off-limits — refresh the

@@ -175,6 +175,7 @@ You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These
         blockOrder: [...DEFAULT_BLOCK_ORDER],
         legacyDiceNaming: false,
         closeCount: 0,
+        trackerCollapseHintShown: false,
         lookbackMessages: 2,
         directPromptContext: 5,
         historyIndex: -1,
@@ -680,6 +681,21 @@ export function getCampaignMode(chatId) {
     const s = getSettings();
     const mode = s.chatStates?.[chatId]?.campaignMode;
     return mode === 'modern' ? 'modern' : 'dnd';
+}
+
+/**
+ * Whether the active chat is ready to start a World Arc: a Modern campaign
+ * with its class locked, or a D&D campaign (no class-lock concept exists for
+ * D&D in this codebase — classes are fluid/multiclass, so onboarding is
+ * considered complete once the ruleset itself is picked).
+ * @param {object|null|undefined} chatState - settings.chatStates[chatId]
+ * @param {string} chatId
+ * @returns {boolean}
+ */
+export function isOnboardingArcReady(chatState, chatId) {
+    const modernReady = getCampaignMode(chatId) === 'modern' && !!chatState?.progression?.classId;
+    const dndReady = chatState?.onboarding?.mode === 'dnd';
+    return modernReady || dndReady;
 }
 
 // ── Profile I/O ───────────────────────────────────────────────────────────────

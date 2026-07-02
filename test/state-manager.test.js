@@ -189,3 +189,39 @@ test('saveChatState carries campaignMode/foundation/progression/onboarding acros
     assert.deepEqual(st.onboarding, { mode: 'modern' }, 'onboarding flow flag survives');
     assert.equal(st.currentMemo, 'memo-live', 'normal fields still snapshot');
 });
+
+// ── isOnboardingArcReady (HUD "Start World Arc" gate) ──────────────────────────
+
+test('isOnboardingArcReady: Modern campaign with a locked class is ready', async () => {
+    const { isOnboardingArcReady } = await import('../state-manager.js');
+    setSettings({ chatStates: { modernReady: { campaignMode: 'modern', progression: { classId: 'fighter' } } } });
+    const st = getSettings().chatStates.modernReady;
+    assert.equal(isOnboardingArcReady(st, 'modernReady'), true);
+});
+
+test('isOnboardingArcReady: Modern campaign without a locked class is not ready', async () => {
+    const { isOnboardingArcReady } = await import('../state-manager.js');
+    setSettings({ chatStates: { modernNoClass: { campaignMode: 'modern', progression: { classId: null } } } });
+    const st = getSettings().chatStates.modernNoClass;
+    assert.equal(isOnboardingArcReady(st, 'modernNoClass'), false);
+
+    setSettings({ chatStates: { modernNoProgression: { campaignMode: 'modern' } } });
+    const st2 = getSettings().chatStates.modernNoProgression;
+    assert.equal(isOnboardingArcReady(st2, 'modernNoProgression'), false);
+});
+
+test('isOnboardingArcReady: D&D ruleset picked is ready — no class-lock concept exists for D&D', async () => {
+    const { isOnboardingArcReady } = await import('../state-manager.js');
+    setSettings({ chatStates: { dndPicked: { onboarding: { mode: 'dnd' } } } });
+    const st = getSettings().chatStates.dndPicked;
+    assert.equal(isOnboardingArcReady(st, 'dndPicked'), true);
+});
+
+test('isOnboardingArcReady: neither ruleset picked (fresh/mode-select) is not ready', async () => {
+    const { isOnboardingArcReady } = await import('../state-manager.js');
+    assert.equal(isOnboardingArcReady(null, 'unknown-chat'), false);
+    assert.equal(isOnboardingArcReady({}, 'unknown-chat'), false);
+    setSettings({ chatStates: { modernPicked: { onboarding: { mode: 'modern' } } } });
+    const st = getSettings().chatStates.modernPicked;
+    assert.equal(isOnboardingArcReady(st, 'modernPicked'), false, 'picking Modern alone (pre-foundation) is not enough');
+});
