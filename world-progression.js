@@ -35,6 +35,7 @@ import {
     applyRegionalStateUpdate,
     invertMicroPatches,
     computeEngagementDeltas,
+    resolveSurfacedBeats,
     resolveCurrentRegionId,
     TEMPO_MODES,
     CHAPTER_HISTORY_CAP,
@@ -298,6 +299,7 @@ export function rollbackDeltasForMessage(chatId, messageExtra) {
  * @param {string} chatId
  */
 export function reconcileWorldProgRollbacks(chatId) {
+    if (!getSettings().worldProgEnabled) return;
     const chatWorldProg = getChatWorldProg(chatId);
     if (!chatWorldProg?.pendingDeltas?.length) return;
     const { chat } = SillyTavern.getContext();
@@ -727,6 +729,12 @@ export async function maybeRunWorldProgressionPass(combinedNarrative, chat) {
             worldState.characterArcs[npcId].engagementScore = (worldState.characterArcs[npcId].engagementScore || 0) + delta;
         }
     }
+    // A staged beat blocks that NPC from ever being offered another one
+    // (candidateCharacterArcBeats' no-double-staging guard) until it's been
+    // surfaced in the narrative — clear it here once that's happened.
+    for (const npcId of resolveSurfacedBeats(combinedNarrative, worldState.characterArcs)) {
+        worldState.characterArcs[npcId].pendingBeat = null;
+    }
     const { pressureGauge } = updatePacingForCycle(worldState, chatWorldProg);
     refreshWorldProgPacingPrompt(chatId);
     saveWorldState(chatId);
@@ -746,6 +754,12 @@ export async function maybeRunWorldProgressionPass(combinedNarrative, chat) {
         const messagesSince = _regionMessagesSinceCheck[currentRegionId] || 0;
         if (shouldCheckRegionalState(region, messagesSince, justEnteredRegion)) activeLayers.add('regionalState');
         _regionMessagesSinceCheck[currentRegionId] = justEnteredRegion ? 0 : messagesSince + 1;
+    } else if (/\(Location:\s*[^)]+\)/i.test(combinedNarrative || '')) {
+        // A location footer is present but doesn't match any tracked region —
+        // the player has entered somewhere new. Without this branch,
+        // resolveCurrentRegionId can never return a region it doesn't already
+        // know about, so no region would ever get a first entry.
+        activeLayers.add('regionalState');
     }
     if (currentRegionId) _lastRegionId = currentRegionId;
 

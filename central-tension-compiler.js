@@ -362,6 +362,8 @@ export function openCentralTensionWizard() {
             });
             close();
             globalThis._rpgRefreshRenderedView?.();
+            globalThis._rpgRenderWorldProgHud?.();
+            globalThis._rpgRenderWorldProgTensionSummary?.();
         } catch (e) {
             statusEl.textContent = `❌ Commit failed: ${e.message || e}`;
             setBusy(false);
