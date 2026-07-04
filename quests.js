@@ -23,6 +23,16 @@ export function getQuestToolName() {
 // ── State Management ─────────────────────────────────────────────────────────
 
 /**
+ * Clears quests staged via the LogQuest tool but not yet flushed into a chat's
+ * memo by a state-model pass. Call on real chat changes — otherwise a quest
+ * staged in one chat can sit in this bare global and get merged into whatever
+ * chat happens to be active when the next state-model pass runs.
+ */
+export function resetPendingQuests() {
+    globalThis._rpgPendingQuests = [];
+}
+
+/**
  * Iterates active quests, auto-failing any that have passed their deadline.
  * Call this BEFORE the state model runs.
  */
@@ -154,7 +164,7 @@ export function registerLogQuestTool() {
         unregisterFunctionTool('LogQuest');
 
         // In legacy mode or if quests are disabled in Narrator Config, no tool needed
-        if (s.questLegacyMode || s.syspromptModules?.quests === false) return;
+        if (!s.enabled || s.questLegacyMode || s.syspromptModules?.quests === false) return;
 
         const isDeadlines = !!s.syspromptModules?.questsDeadlines;
         const isFrustration = !!s.syspromptModules?.questsFrustration;

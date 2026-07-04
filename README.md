@@ -68,6 +68,7 @@ Together they solve the four core problems of LLM tabletop RP: the AI forgeting 
 2. **Auto-Tracking:** As you roleplay, the extension intelligently parses assistant responses. It detects losses of HP, new loot, or combat triggers, stitching together multi-part tool-call responses and running background passes to update the state.
 3. **Prompt Injection & Execution:** The State Memo and RNG Queue are injected seamlessly into your outgoing prompt to act as the "source of truth." For narrative actions, the framework dynamically catches and resolves the AI's `RollTheDice` tool calls.
 4. **Validation:** Use the Delta Log (δ) to verify changes. If the AI ever makes a mistake, step backwards using the Snapshot Navigation (←/→) to restore a clean state. Not really needed much in my experience, but the option is there.
+5. **Turning Fatbody off:** the enable toggle (Settings checkbox or the panel's ⏻ button) is global, not per-chat — there's no per-campaign opt-in. Leaving it enabled means its system prompt and mechanics apply to *every* chat you open, not just the one running a campaign. If you want to step into an unrelated chat without Fatbody's D&D framing following you there, disable it first; re-enabling restores it.
 
 ## Basic Video Walkthrough of the RNG System
 https://www.youtube.com/watch?v=1n5x7VBJ0IU
@@ -116,6 +117,16 @@ Your primary narrator model must support **Tool Calling** for the Hybrid RNG sys
 I like Deepseek 4 a lot so far, though it's still a new model. Gemini 3 is a good all-rounder; very fast and cheap. Sometimes its pace can be a bit much, though. GLM 5.1 is also a solid choice, but it can tend to reason far too long, bogging things down, especially in combat. Experimentation with different models is recommended.
 
 For the state pass, I use Gemini 3.1 Flash Lite or Flash 3 with low reasoning. Very cheap and very good.
+
+## Context Size & Token Budget
+
+Fatbody's bundled system prompt (RNG system, combat, XP, saving throws, loot, level-up protocol, etc.) is **~4,100–4,500 tokens by itself**, before any chat history, State Memo, RNG queue, or lorebook content is added. SillyTavern's own default **Context Size** (in the API Connection settings) is **4095 tokens** — smaller than the sysprompt alone.
+
+If your Context Size is too small, SillyTavern's own prompt-fitting silently drops content to make room, and it drops chat history first — including the player's most recent message. The narrator still responds, just with no idea what you actually said. This is easy to miss: it can seem to work for the first exchange, then quietly lose the thread from turn 2 onward as history stacks up alongside the sysprompt.
+
+**Fix:** raise **Context Size** in your API Connection settings to comfortably cover the sysprompt plus your expected chat history plus the model's own output — **8192 or higher** is a reasonable floor for Fatbody, more if you're running a verbose narrator or Modern mode.
+
+Once your base Context Size is adequate, Fatbody's own **Message Lookback**, **History Context (States)**, and **External Token Reserve** settings (Advanced Options) manage *its own* injections (State Memo, quests, lore) within whatever budget remains — but none of those help if the base Context Size itself is smaller than the sysprompt.
 
 ---
 
