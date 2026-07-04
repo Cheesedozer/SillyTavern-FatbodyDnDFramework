@@ -11,7 +11,7 @@ import {
 import { openCentralTensionWizard } from './central-tension-compiler.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
 import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderLorebookTerminal } from './renderer.js';
-import { registerLogQuestTool, checkQuestDeadlines } from './quests.js';
+import { registerLogQuestTool, checkQuestDeadlines, resetPendingQuests } from './quests.js';
 import { initializeDebugViewer, toggleDebugViewer } from './debug-viewer.js';
 import { runRouterPass, runRouterHistoryAudit, rollbackRouterPass, reapplyRouterPass, getLorebookManifest, deleteLorebookEntry, updateLorebookEntry, disableManagedEntries, isRouterRunning, isRouterAuditRunning, cancelRouterAudit } from './router.js';
 import { getRequestHeaders } from '../../../../script.js';
@@ -914,6 +914,7 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
         const isActualChange = oldChatId !== newChatId;
         resetRouterTick(isActualChange);
         if (isActualChange) resetWorldProgTick();
+        if (isActualChange) resetPendingQuests();
         refreshWorldProgPacingPrompt(newChatId);
         globalThis._rpgRefreshHudHeaderButtons?.(newChatId);
         globalThis._rpgRenderWorldProgHud?.();
@@ -2287,10 +2288,19 @@ ${resourceList}
         if (enableBtn) {
             enableBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const s = getSettings();
-                s.enabled = !s.enabled;
-                saveSettings();
-                updatePanelStatus();
+                // Route through the Settings checkbox's own 'change' handler so this
+                // button applies/clears the sysprompt, extension prompts, and function
+                // tools identically to that path — flipping s.enabled directly here
+                // used to leave stale D&D framing in the shared Main Prompt box.
+                const checkbox = document.getElementById('rpg_tracker_enabled');
+                if (checkbox instanceof HTMLInputElement) {
+                    $(checkbox).prop('checked', !getSettings().enabled).trigger('change');
+                } else {
+                    const s = getSettings();
+                    s.enabled = !s.enabled;
+                    saveSettings();
+                    updatePanelStatus();
+                }
             });
         }
 
@@ -4821,6 +4831,12 @@ ${resourceList}
                     await applyAdditiveSysprompt();   // clears the additive rules prompt (gated on enabled)
                     toastr['info']('Fatbody disabled — D&D system prompt removed.', 'RPG Tracker');
                 }
+
+                // Both re-evaluate their own sub-toggles internally, but unregister first
+                // regardless — this makes the master toggle actually unregister the
+                // RollTheDice/LogQuest function tools live, not just on next reload.
+                registerDiceFunctionTool();
+                registerLogQuestTool();
             });
 
             $('#rpg_tracker_debug').prop('checked', settings.debugMode).on('change', function () {

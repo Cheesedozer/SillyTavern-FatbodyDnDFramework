@@ -136,7 +136,7 @@ export function registerDiceFunctionTool() {
         unregisterFunctionTool('FatbodyRollTheDice');
 
         const settings = getSettings();
-        if (!settings.diceFunctionTool) return;
+        if (!settings.enabled || !settings.diceFunctionTool) return;
 
         const toolName = getDiceToolName();
         const isLegacy = settings.legacyDiceNaming;

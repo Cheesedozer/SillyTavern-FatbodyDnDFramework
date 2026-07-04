@@ -196,8 +196,15 @@ export function refreshWorldProgPacingPrompt(chatId) {
     const setExtensionPrompt = ctx.setExtensionPrompt;
     if (typeof setExtensionPrompt !== 'function') return;
     const settings = getSettings();
-    const worldState = chatId ? getWorldState(chatId) : null;
-    if (!settings.worldProgEnabled || !chatId || !worldState?.milestoneChain?.length) {
+    // Check the gates before touching getWorldState(): it auto-creates and persists
+    // an empty world-state record on first access, which would otherwise happen for
+    // every chat merely switched into, including ones that never used Fatbody.
+    if (!settings.enabled || !settings.worldProgEnabled || !chatId) {
+        setExtensionPrompt(PACING_PROMPT_KEY, '', 0, 0);
+        return;
+    }
+    const worldState = getWorldState(chatId);
+    if (!worldState?.milestoneChain?.length) {
         setExtensionPrompt(PACING_PROMPT_KEY, '', 0, 0);
         return;
     }
@@ -307,9 +314,11 @@ export function reconcileWorldProgRollbacks(chatId) {
     for (const msg of (chat || [])) {
         for (const id of (msg?.extra?.worldProgDeltaIds || [])) stillReferenced.add(id);
     }
+    let rolledBack = false;
     for (const delta of [...chatWorldProg.pendingDeltas]) {
-        if (!stillReferenced.has(delta.id)) rollbackDelta(chatId, delta.id);
+        if (!stillReferenced.has(delta.id)) { rollbackDelta(chatId, delta.id); rolledBack = true; }
     }
+    if (rolledBack) globalThis._rpgRenderWorldProgHud?.();
 }
 
 /**
@@ -363,6 +372,7 @@ export async function advanceChapter(chatId) {
     if (chatWorldProg.chapterHistory.length > CHAPTER_HISTORY_CAP) chatWorldProg.chapterHistory.length = CHAPTER_HISTORY_CAP;
     chatWorldProg.chapter = makeDefaultChapter((chatWorldProg.chapter.index || 1) + 1);
     saveChatWorldProg(chatId);
+    globalThis._rpgRenderWorldProgHud?.();
     try {
         await runWorldProgReconciliation(chatId);
     } catch (e) {
@@ -551,6 +561,7 @@ function applyWorldProgressionCommit(chatId, worldState, chatWorldProg, activeLa
     enqueueStaleSeedDrift(chatWorldProg);
     saveWorldState(chatId);
     saveChatWorldProg(chatId);
+    globalThis._rpgRenderWorldProgHud?.();
 
     const gateResult = evaluatePhaseGate(chatWorldProg.chapter);
     if (gateResult.readyToAdvance) {
