@@ -44,6 +44,15 @@ Minion—untrained | low HP/Defense, weak attacks
 Soldier—trained | moderate stats, one signature trick
 Elite—veteran/specialist | strong stats, two or more skills
 Boss—exceptional individual | high stats, unique skills, multiple phases when dramatic
+Legendary—world-threatening | overwhelming stats across the board, multiple unique skills/phases, can reshape the scene itself
+
+SCALING TO QUEST DIFFICULTY (only when the current scene is tied to an active tracked quest that has an assigned difficulty):
+- Very Easy / Easy: enemies sit below or at the low end of the party's current power — a comfortably winnable fight.
+- Medium: enemies sit roughly even with the party's current power — a fair, competitive fight.
+- Hard: enemies may run meaningfully above the party's current power — dangerous, but winnable with good tactics and resource use.
+- Very Hard: enemies can be brutally strong, pushing toward Legendary — victory should demand near-perfect play or a creative/non-combat solution.
+
+GENERAL / NON-QUEST ENCOUNTERS: for freeform or incidental combat with no tracked quest difficulty attached, do NOT force level-matching — pick whatever tier fits the scene and story logic. The scaling guidance above applies only to quest-tied encounters.
 
 DISTANCE & RANGE: track positioning narratively; ranged attacks in melee or beyond effective range suffer a penalty to the roll.
 </combat>

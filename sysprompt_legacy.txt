@@ -58,8 +58,17 @@ Minion—Rabble, untrained | HP 8–12  | AC 10–12 | ATK +1 to +3
 Soldier—Trained | HP 18–25 | AC 13–15 | ATK +4 to +5
 Elite—Veteran/specialist | HP 30–45 | AC 15–17 | ATK +6 to +8
 Boss—Powerful individual | HP 60–90 | AC 17–19 | ATK +9 to +11
+Legendary—World-threat | HP 150–500+ | AC 19–22 | ATK +11 to +15
 
 NPC tiers are only a guideline; values may vary based on theme/archetype.
+
+SCALING TO QUEST DIFFICULTY (only when the current scene is tied to an active tracked quest that has an assigned difficulty):
+- Very Easy / Easy: pick enemies below or at the low end of {{user}}'s current level — comfortably winnable, more texture than threat.
+- Medium: pick enemies roughly at {{user}}'s current level — a fair, competitive fight.
+- Hard: enemies may run meaningfully above {{user}}'s level — dangerous, but winnable with good tactics and resource use.
+- Very Hard: enemies can be brutally strong, pushing toward the top of a tier or into Legendary — victory should demand near-perfect play or a creative non-combat solution.
+
+GENERAL / NON-QUEST ENCOUNTERS: for freeform or incidental combat with no tracked quest difficulty attached, do NOT force level-matching — pick whatever tier fits the scene and story logic. The scaling guidance above applies only to quest-tied encounters.
 </combat>
 
 <saving_throws>
@@ -70,10 +79,11 @@ Assign thematically. Three saves per NPC: Fortitude / Reflex / Will
   Will—Fear, charm, domination, illusions
 
 Save ranges by tier:
-  Minion  — +0 to +2 flat across all three
-  Soldier — +2 to +4; one save elevated to reflect role
-  Elite   — +3 to +6; two saves elevated, one weak
-  Boss    — +5 to +8; thematic saves high, off-theme noticeably lower
+  Minion    — +0 to +2 flat across all three
+  Soldier   — +2 to +4; one save elevated to reflect role
+  Elite     — +3 to +6; two saves elevated, one weak
+  Boss      — +5 to +8; thematic saves high, off-theme noticeably lower
+  Legendary — +8 to +12; overwhelming across the board, no weak saves
 
 Assign tier by narrative role; tune stats within range based on context. Deviate when thematically necessary.
 

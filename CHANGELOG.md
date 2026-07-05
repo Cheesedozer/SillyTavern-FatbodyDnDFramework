@@ -2,6 +2,19 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.6.0] - 2026-07-05
+
+**Universal Inline Markers, Enemy Tier Scaling, and Legendary Tier.** Extends the v1.7.0 "Universal Marker Support" initiative from module *coverage* to marker *placement*, adds four new generic marker types styled after the Quest Log's own widgets, and gives the narrator concrete guidance for scaling enemies to quest difficulty and player level.
+
+### Added
+- **Inline marker placement**: `((BAR:50/100))`-style inline arguments let any marker (`((PILLS))`, `((BAR))`, `((BADGE))`, `((HIGHLIGHT))`, etc.) appear anywhere in a line, not just at the start — e.g. `Health: ((BAR:45/100))`. The legacy `((BAR)) rest of line` form is unchanged and fully backward compatible with existing saved memos.
+- **Four new generic markers**: `((OBJ))`/`((OBJ:done))`/`((OBJ:failed))` (checklist objectives), `((REWARD))` (gold-style reward chip), `((DIFFICULTY))` (color-coded difficulty badge), `((PROGRESS))` (mini animated progress bar + counter) — usable in any stock or custom field, independent of the dedicated Quest system's own data model. Documented via new entries in the custom-field editor's `EXAMPLES` sandbox text.
+- **NPC tier scaling guidance**: the `<combat>` NPC TIERS section now instructs the narrator to scale enemy strength to the active quest's difficulty and the player's level when a scene is quest-tied (Very Easy/Easy below level, Medium at level, Hard/Very Hard above level up to brutal), while explicitly telling it NOT to force level-matching for freeform/non-quest encounters. This guidance is gated behind the existing "Quest Difficulty" toggle (`buildSysprompt()`) and collapses to a short evergreen line when that toggle is off, since there'd be no difficulty value for it to reference.
+- **Legendary NPC tier**: a 5th tier (HP 150–500+, AC 19–22, ATK +11 to +15, saves +8 to +12) added above Boss, for world-threat-scale encounters, in both classic and Modern (non-numeric) sysprompts.
+
+### Changed
+- Consolidated the two duplicated marker regex/type-map implementations in `renderer.js` (`tryRenderMarker` and `blockToItems`'s COMBAT/PARTY/CHARACTER case) into a single shared `MARKER_NAMES`/`MARKER_TYPE_MAP`/`MARKER_TOKEN_RX` source.
+
 ## [3.5.0] - 2026-07-05
 
 **Live Megumin Suite compatibility.** Megumin's `[[FATBODY]]` block previously shipped its own frozen, hand-pasted snapshot of Fatbody's rules text — no live connection to Fatbody at all, so it silently drifted out of sync with Fatbody's actual current tag set and module toggles. Replaced with a real (opt-in, feature-detected) handshake.
