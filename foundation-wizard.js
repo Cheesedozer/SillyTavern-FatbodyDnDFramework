@@ -24,6 +24,7 @@ import {
     renderFoundationProse,
     commitFoundationAndInit,
 } from './foundation.js';
+import { scheduleAutoApply } from './sysprompt.js';
 
 const MAX_GENERATION_RETRIES = 3;
 
@@ -279,6 +280,7 @@ export function openFoundationWizard() {
         setBusy(true, 'Committing foundation…');
         try {
             await commitFoundationAndInit(chatId, candidate);
+            scheduleAutoApply();   // refresh Fatbody's own sysprompt + the additive cache for the newly-committed foundation
             close();
             globalThis._rpgRefreshRenderedView?.();
             globalThis._rpgRefreshHudHeaderButtons?.(chatId);

@@ -2,6 +2,22 @@
 
 All notable changes to the **Fatbody D&D Framework** will be documented in this file.
 
+## [3.5.0] - 2026-07-05
+
+**Live Megumin Suite compatibility.** Megumin's `[[FATBODY]]` block previously shipped its own frozen, hand-pasted snapshot of Fatbody's rules text — no live connection to Fatbody at all, so it silently drifted out of sync with Fatbody's actual current tag set and module toggles. Replaced with a real (opt-in, feature-detected) handshake.
+
+### Added
+- **`globalThis._rpgGetAdditiveSysprompt()`**: a synchronous, cached read of Fatbody's current additive-mode (rules-only) sysprompt text, published for the Megumin Suite's `[[FATBODY]]` block to pull live instead of using its own bundled static copy. Follows the existing `_rpgGetActivationMode`-style cross-extension global convention. Backed by a new module-level cache in `sysprompt.js`, refreshed on the same triggers as Fatbody's own sysprompt (settings changes, chat switch, boot) plus a new `globalThis._rpgRefreshAdditiveSysprompt()` nudge Megumin can call right after its own block toggle changes.
+- **`detectMeguminFatbodyBlock()`** (`world-progression.js`): a read-only detector, sibling to the existing `detectMeguminOverlap()`, reporting whether Megumin's `fatbody` block is enabled for the current profile.
+- **Automatic double-injection suppression**: when Suite Mode is on and Megumin's `fatbody` block is detected active, Fatbody now automatically skips its own additive extension-prompt push — Megumin's live pull becomes the single source of mechanics. Previously this was purely advisory (a toast warning telling the user not to combine both); nothing prevented it in code. The suppression requires Suite Mode as an explicit precondition (not just Megumin's flag alone) to avoid silently dropping mechanics if that flag is stale.
+- The Suite Mode / Additive Delivery warning toast now checks whether Megumin's block is actually active before firing, and distinguishes the safe case (info: "handled automatically") from the real remaining risk case — additive delivery + Megumin's block active without Suite Mode, which still double-injects.
+
+### Changed
+- Settings tooltips (Sysprompt Delivery, Suite Mode) and the README's "Running with Other Extensions → Megumin Suite" section now describe the live-pull setup (both Suite Mode and Additive delivery on) instead of the old "pick exactly one" guidance.
+- `commitFoundationAndInit()`'s two call sites (onboarding default-foundation path, Foundation Builder wizard) now call `scheduleAutoApply()` after committing — previously, locking a chat into Modern mode never refreshed Fatbody's own sysprompt or the new additive cache until some unrelated trigger fired.
+
+Note: the live-pulled additive text is prefixed with Fatbody's existing `ADDITIVE_HEADER` preamble, which Megumin's old hardcoded copy didn't include — a minor, expected content-shape change for anyone upgrading into this setup.
+
 ## [3.4.1] - 2026-07-02
 
 **World Progression bug-hunt.** A round of end-to-end testing (real browser, live LLM-round-trip driving) on 3.4.0 turned up several bugs severe enough that the Character Arc and Regional State layers were effectively non-functional in normal play. All fixed; the author's unit suite plus new regression coverage (229 tests) and a live E2E roleplay session both pass.

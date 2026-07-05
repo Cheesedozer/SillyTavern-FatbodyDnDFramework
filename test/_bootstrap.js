@@ -14,6 +14,7 @@
  */
 
 let _store = { rpg_tracker: {} };
+let _extensionPrompts = {};
 
 /** Seed the rpg_tracker settings object getSettings() will merge defaults into. */
 export function setSettings(obj) {
@@ -25,6 +26,16 @@ export function rawStore() {
     return _store;
 }
 
+/** Recorded setExtensionPrompt(key, value, ...) calls, keyed by prompt key. */
+export function extensionPrompts() {
+    return _extensionPrompts;
+}
+
+/** Clears the setExtensionPrompt recorder — call at the start of tests that assert on it. */
+export function resetExtensionPrompts() {
+    _extensionPrompts = {};
+}
+
 globalThis.SillyTavern = {
     getContext() {
         return {
@@ -33,6 +44,7 @@ globalThis.SillyTavern = {
             saveSettings() {},
             chat: [],
             eventSource: { on() {}, emit() {} },
+            setExtensionPrompt(key, value) { _extensionPrompts[key] = value; },
         };
     },
     libs: {},

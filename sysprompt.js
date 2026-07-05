@@ -7,7 +7,12 @@
  * writes the result into SillyTavern's Main prompt box (unless Suite Mode /
  * custom sysprompt is on — see the Megumin Suite contract).
  *
- * Imports: env.js, state-manager.js, constants.js, memo-processor.js
+ * Also maintains a synchronous cache of the additive (rules-only) variant,
+ * exposed to other extensions via globalThis._rpgGetAdditiveSysprompt() (see
+ * index.js) so Megumin Suite's [[FATBODY]] block can pull Fatbody's live
+ * rules instead of shipping its own frozen copy.
+ *
+ * Imports: env.js, state-manager.js, constants.js, memo-processor.js, world-progression.js
  * Extracted from index.js as part of the monolith split (behaviour unchanged).
  */
 
@@ -16,8 +21,12 @@ import { getSettings, getCampaignMode } from './state-manager.js';
 import { RT_PROMPTS, QUESTS_NARRATOR_LEGACY, QUESTS_NARRATOR_MODERN } from './constants.js';
 import { buildModulesInstructionText } from './memo-processor.js';
 import { getFoundation, foundationPlaceholders } from './foundation.js';
+import { detectMeguminFatbodyBlock } from './world-progression.js';
 
 let _autoApplyTimer = null;
+
+/** Synchronous cache backing globalThis._rpgGetAdditiveSysprompt() — see refreshAdditiveRulesCache(). */
+let _additiveRulesCache = { content: '', chatId: null };
 
 // ── Additive delivery (rules-only) ─────────────────────────────────────────────
 
@@ -112,12 +121,49 @@ export async function autoApplySysprompt() {
 }
 
 /**
+ * Refreshes the synchronous additive-rules cache read by
+ * globalThis._rpgGetAdditiveSysprompt() (Megumin Suite's live-pull API).
+ * Populated whenever additive delivery is active locally OR Megumin's own
+ * [[FATBODY]] block is active for the current profile — the latter case is
+ * what makes "Suite Mode + standalone delivery" (today's documented common
+ * setup) compute this content at all, since neither autoApplySysprompt() nor
+ * applyAdditiveSysprompt() ever call resolveSyspromptSource() for it.
+ * @param {boolean} meguminFatbodyActive
+ */
+async function refreshAdditiveRulesCache(meguminFatbodyActive) {
+    const s = getSettings();
+    if (!s.enabled || s.customSysprompt || !(s.syspromptDelivery === 'additive' || meguminFatbodyActive)) {
+        _additiveRulesCache = { content: '', chatId: null };
+        return;
+    }
+
+    const chatIdAtStart = SillyTavern.getContext().chatId || (typeof globalThis._rpgCurrentChatId === 'function' ? globalThis._rpgCurrentChatId() : '');
+    const { content } = await resolveSyspromptSource();
+
+    // Chat may have changed while the fetch was in flight — discard a stale result
+    // rather than caching content built against a chat that's no longer active.
+    const chatIdNow = SillyTavern.getContext().chatId || (typeof globalThis._rpgCurrentChatId === 'function' ? globalThis._rpgCurrentChatId() : '');
+    if (chatIdNow !== chatIdAtStart) return;
+
+    _additiveRulesCache = { content: content ? buildSysprompt(content, { variant: 'additive' }) : '', chatId: chatIdAtStart };
+}
+
+/** Synchronous read of the additive-rules cache — see refreshAdditiveRulesCache(). Never throws. */
+export function getAdditiveSyspromptCache() {
+    return _additiveRulesCache.content;
+}
+
+/**
  * Maintains the rules-only extension prompt for additive delivery.
  * Persistent like the router's 'rpg_tracker_lore' prompt: set once here, ST
  * includes it on every generation until cleared. Cleared whenever additive
  * delivery is not active so switching modes leaves no residue.
+ * @param {boolean} [meguminFatbodyActive] - whether Megumin's own [[FATBODY]]
+ *   block is active for the current profile. Defaults to a fresh detection so
+ *   direct callers (disable handler, manual refresh button) stay correct
+ *   without having to compute it themselves.
  */
-export async function applyAdditiveSysprompt() {
+export async function applyAdditiveSysprompt(meguminFatbodyActive = detectMeguminFatbodyBlock().active) {
     const ctx = SillyTavern.getContext();
     const setExtensionPrompt = ctx.setExtensionPrompt;
     if (typeof setExtensionPrompt !== 'function') return;
@@ -127,17 +173,26 @@ export async function applyAdditiveSysprompt() {
         setExtensionPrompt(ADDITIVE_PROMPT_KEY, '', 0, 0);
         return;
     }
+    // Double-injection guard: Megumin's [[FATBODY]] block already pulls this same
+    // cache live (see resolveFatbodyBlockContent() in Megumin's index.js). Only trust
+    // that signal when the user has also told Fatbody "Megumin owns my prompt" via
+    // Suite Mode — this narrows the risk of suppressing mechanics entirely because of
+    // a stale Megumin flag left over from an unrelated preset that doesn't actually
+    // reference [[FATBODY]].
+    if (s.suiteMode && meguminFatbodyActive) {
+        setExtensionPrompt(ADDITIVE_PROMPT_KEY, '', 0, 0);
+        return;
+    }
 
-    const { content } = await resolveSyspromptSource();
-    if (!content) return;
-
-    setExtensionPrompt(ADDITIVE_PROMPT_KEY, buildSysprompt(content, { variant: 'additive' }), 0, 0);
+    setExtensionPrompt(ADDITIVE_PROMPT_KEY, getAdditiveSyspromptCache(), 0, 0);
 }
 
 /** Single dispatcher: keeps both delivery paths consistent (each clears/skips itself when inactive). */
 export async function applySysprompt() {
+    const meguminFatbodyActive = detectMeguminFatbodyBlock().active;
+    await refreshAdditiveRulesCache(meguminFatbodyActive);
     await autoApplySysprompt();
-    await applyAdditiveSysprompt();
+    await applyAdditiveSysprompt(meguminFatbodyActive);
 }
 
 export function scheduleAutoApply() {
