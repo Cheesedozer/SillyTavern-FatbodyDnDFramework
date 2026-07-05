@@ -129,6 +129,42 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
             }
             case 'kv':
                 return `<div class="rt-card-kv"><span class="rt-card-key">${labelHtml}</span><span class="rt-card-val">${escapeHtmlWithColor(value)}</span></div>`;
+            case 'objective': {
+                const text = line.trim();
+                const status = rule.status || 'active';
+                const glyph = status === 'done' ? '✓' : status === 'failed' ? '✗' : '○';
+                const stateClass = status === 'done' ? ' rt-marker-obj-done' : status === 'failed' ? ' rt-marker-obj-failed' : '';
+                return `<div class="rt-entity-sub-line rt-marker-obj${stateClass}"><span class="rt-marker-obj-check">${glyph}</span><span>${escapeHtmlWithColor(text)}</span></div>`;
+            }
+            case 'reward': {
+                const text = line.trim();
+                return `<div class="rt-entity-sub-line"><span class="rt-reward-chip">${escapeHtmlWithColor(text)}</span></div>`;
+            }
+            case 'difficulty': {
+                const text = line.trim();
+                const { bg, color } = getDifficultyColor(text);
+                return `<div class="rt-entity-sub-line"><span class="rt-diff-badge" style="background:${bg};color:${color};">${escapeHtmlWithColor(text.toUpperCase())}</span></div>`;
+            }
+            case 'progress_bar': {
+                const pm = value.match(/(\d[\d,]*)\s*\/\s*(\d[\d,]*)/);
+                if (pm) {
+                    const cur = parseInt(pm[1].replace(/,/g, ''), 10);
+                    const max = parseInt(pm[2].replace(/,/g, ''), 10);
+                    const pct = max > 0 ? Math.max(0, Math.min(100, (cur / max) * 100)) : 0;
+                    let barBg = rule.color ? rule.color : 'linear-gradient(90deg,#8e44ad,#c084fc)';
+                    if (barId) barBg = getBarBackground(barId, barBg, pct);
+                    const recolorData = barId ? ` data-recolor-id="${escapeHtml(barId)}" data-recolor-current="${escapeHtml(barBg)}" title="Click to recolor"` : '';
+
+                    return `<div class="rt-entity-sub-line" style="gap:6px;">
+                        ${labelHtml}
+                        <div class="rt-progress-bar-wrap"${recolorData}>
+                            <div class="rt-progress-bar" style="width:${pct.toFixed(1)}%; background:${barBg}; transition:width 0.3s;"></div>
+                        </div>
+                        <span style="font-size:0.82em; opacity:0.85; white-space:nowrap;">${pm[1]}/${pm[2]}</span>
+                    </div>`;
+                }
+                return `<div class="rt-entity-sub-line">${labelHtml} ${escapeHtmlWithColor(value)}</div>`;
+            }
             case 'text':
             default:
                 return `<div class="rt-entity-sub-line">${labelHtml} ${escapeHtmlWithColor(value)}</div>`;
@@ -196,30 +232,92 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
     }
 
 
+    // ── Marker registry: single source of truth for ((TAG)) / ((TAG:arg)) tokens ──
+    // Bare form (no colon-arg) must be the first thing on a (trimmed) line — this
+    // preserves every existing saved memo / prompt example unchanged. The inline
+    // form (colon-arg embedded in the parens) can appear anywhere in a line, since
+    // the argument is unambiguously scoped by the parens themselves.
+    const MARKER_NAMES =
+        'PILLS|BAR|HPBAR|XPBAR|TEXT|BADGE|HIGHLIGHT|OBJ|REWARD|DIFFICULTY|PROGRESS|' +
+        'PLS|B|HPB|XB|HGT|BDG|HP|RWD|DIFF|PRG';
+    const MARKER_TYPE_MAP = {
+        PILLS: 'pills', PLS: 'pills',
+        BAR: 'hp_bar', B: 'hp_bar',
+        HPBAR: 'hp_bar', HPB: 'hp_bar',
+        HP: 'hp_bar',
+        XPBAR: 'xp_bar', XB: 'xp_bar',
+        TEXT: 'text',
+        BADGE: 'badge', BDG: 'badge',
+        HIGHLIGHT: 'highlight', HGT: 'highlight',
+        OBJ: 'objective',
+        REWARD: 'reward', RWD: 'reward',
+        DIFFICULTY: 'difficulty', DIFF: 'difficulty',
+        PROGRESS: 'progress_bar', PRG: 'progress_bar',
+    };
+    const MARKER_TOKEN_RX = new RegExp(`\\(\\((${MARKER_NAMES})(?::([^()]*))?\\)\\)`, 'i');
+
+    /** Difficulty word → badge color/text-color pair, shared by the ((DIFFICULTY))
+     *  marker. Unknown/custom strings fall back to a neutral gray badge. */
+    const DIFFICULTY_COLORS = {
+        'very easy': '#a3e635',
+        'easy': '#22c55e',
+        'medium': '#f59e0b',
+        'hard': '#f97316',
+        'very hard': '#ef4444',
+    };
+    export function getDifficultyColor(difficulty) {
+        const key = String(difficulty || '').trim().toLowerCase();
+        return DIFFICULTY_COLORS[key]
+            ? { bg: DIFFICULTY_COLORS[key], color: '#000' }
+            : { bg: 'rgba(120, 120, 120, 0.2)', color: 'rgba(255,255,255,0.9)' };
+    }
+
     /**
-     * If `line` begins with a ((MARKER)) prefix, renders it and returns HTML.
+     * Finds a ((MARKER)) or ((MARKER:arg)) token in `line` and renders it.
      * Returns null if no marker is present, so callers can fall through to
      * their own renderer. This makes markers work in ALL stock blocks.
+     *
+     * Bare markers (no colon-arg) must be the first thing on the line and
+     * consume the rest of the line as their content — the original, unchanged
+     * behavior every existing saved memo relies on. Markers with an inline
+     * colon-arg can appear anywhere in the line (start/middle/end); text
+     * before the token becomes a label, text after is appended as trailing
+     * "extra" text (same convention as the existing hp_bar "45/100 (5 temp)").
      */
     export function tryRenderMarker(line, tag = '', entityName = '') {
-        const m = line.match(/^\(\((PILLS|BAR|HPBAR|XPBAR|TEXT|BADGE|HIGHLIGHT|PLS|B|HPB|XB|HGT|BDG|HP)\)\)\s*(.*)$/i);
+        const m = line.match(MARKER_TOKEN_RX);
         if (!m) return null;
-        const typeMap = {
-            PILLS:'pills', PLS:'pills',
-            BAR:'hp_bar', B:'hp_bar',
-            HPBAR:'hp_bar', HPB:'hp_bar',
-            HP: 'hp_bar',
-            XPBAR:'xp_bar', XB:'xp_bar',
-            TEXT:'text',
-            BADGE:'badge', BDG:'badge',
-            HIGHLIGHT:'highlight', HGT:'highlight'
-        };
-        const markerType = m[1].toUpperCase();
-        const renderType = typeMap[markerType] || 'text';
-        const content = m[2].trim();
+        const markerCode = m[1].toUpperCase();
+        const hasArg = m[2] !== undefined;
+        const atStart = m.index === 0;
+        if (!hasArg && !atStart) return null;
+
+        const renderType = MARKER_TYPE_MAP[markerCode] || 'text';
+
+        // Objectives are a line-level checklist row, not something meant to be
+        // spliced mid-sentence — keep them anchored regardless of arg form.
+        if (markerCode === 'OBJ') {
+            if (!atStart) return null;
+            const statusArg = (m[2] || 'active').trim().toLowerCase();
+            const status = /^(done|complete|completed)$/.test(statusArg) ? 'done'
+                         : /^(fail|failed)$/.test(statusArg) ? 'failed' : 'active';
+            const text = line.slice(m.index + m[0].length).trim();
+            return renderSubFieldByRule({ renderType: 'objective', status }, text, null);
+        }
+
+        let content;
+        if (hasArg) {
+            const label = line.slice(0, m.index).trim().replace(/:\s*$/, '');
+            const value = (m[2] || '').trim();
+            const trailing = line.slice(m.index + m[0].length).trim();
+            const fullValue = trailing ? `${value} ${trailing}`.trim() : value;
+            content = label ? `${label}: ${fullValue}` : fullValue;
+        } else {
+            content = line.slice(m.index + m[0].length).trim();
+        }
 
         let barId = null;
-        if (renderType === 'hp_bar' || renderType === 'xp_bar') {
+        if (renderType === 'hp_bar' || renderType === 'xp_bar' || renderType === 'progress_bar') {
             const colonIdx = content.indexOf(':');
             const labelText = colonIdx !== -1 ? content.substring(0, colonIdx).trim() : 'Bar';
             barId = `${tag}:${entityName}:${labelText}`;
@@ -455,24 +553,15 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
                 let lastEntityIdx = -1;
                 let currentEntity = '';
 
-                const MARKER_RX = /^\(\((PILLS|BAR|XPBAR|TEXT|BADGE|HIGHLIGHT|HPBAR|PLS|B|XB|HGT|HPB|BDG|HP)\)\)\s*(.*)/i;
-                const MARKER_TYPE_MAP = {
-                    'PILLS': 'pills', 'PLS': 'pills',
-                    'BAR': 'hp_bar', 'B': 'hp_bar',
-                    'HPBAR': 'hp_bar', 'HPB': 'hp_bar',
-                    'HP': 'hp_bar',
-                    'XPBAR': 'xp_bar', 'XB': 'xp_bar',
-                    'TEXT': 'text',
-                    'BADGE': 'badge', 'BDG': 'badge',
-                    'HIGHLIGHT': 'highlight', 'HGT': 'highlight'
-                };
-
                 for (let i = 0; i < lines.length; i++) {
                     const rawLine = lines[i];
-                    const mm = rawLine.match(MARKER_RX);
-                    const markerCode = mm ? mm[1].toUpperCase() : null;
-                    const explicitType = mm ? MARKER_TYPE_MAP[markerCode] : null;
-                    const line = mm ? mm[2].trim() : rawLine;
+                    const mm = rawLine.match(MARKER_TOKEN_RX);
+                    // Only a bare (no colon-arg), line-start marker is treated as an
+                    // entity-anchor hint here — inline colon-arg markers are sub-field
+                    // content, handled later via tryRenderMarker(rawLine, ...).
+                    const isLegacyAnchor = !!mm && mm.index === 0 && mm[2] === undefined;
+                    const markerCode = isLegacyAnchor ? mm[1].toUpperCase() : null;
+                    const line = isLegacyAnchor ? rawLine.slice(mm[0].length).trim() : rawLine;
 
                     // 1. Combat Round header
                     if (tag === 'COMBAT' && /Combat Round\s*\d+/i.test(line)) {

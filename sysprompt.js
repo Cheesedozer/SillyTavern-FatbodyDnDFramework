@@ -257,6 +257,15 @@ export function buildSysprompt(rawText, { variant = 'standalone' } = {}) {
         // Also strip the 'past deadline' override rule — only applies when Frustration is active
         content = content.replace(/- If a quest is time-sensitive and the deadline passes.*\n/g, '');
     }
+    if (!mods.questsDifficulty) {
+        // The <combat> block's enemy-scaling guidance references quest difficulty,
+        // which will never be set without this toggle — collapse it to a shorter,
+        // always-applicable line instead of shipping dead instructions every turn.
+        content = content.replace(
+            /SCALING TO QUEST DIFFICULTY[\s\S]*?applies only to quest-tied encounters\.\n?/,
+            "Scale enemy strength to fit {{user}}'s current level and the narrative stakes of the scene.\n"
+        );
+    }
 
     content = content
         .replace(/\n{3,}/g, "\n\n")

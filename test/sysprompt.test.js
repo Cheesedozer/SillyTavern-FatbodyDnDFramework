@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { buildSysprompt, ADDITIVE_TAGS, ADDITIVE_HEADER, ADDITIVE_PROMPT_KEY, applySysprompt, getAdditiveSyspromptCache } from '../sysprompt.js';
+import { RT_PROMPTS } from '../constants.js';
 
 const SYSPROMPT_TXT = readFileSync(fileURLToPath(new URL('../sysprompt.txt', import.meta.url)), 'utf8');
 const SYSPROMPT_LEGACY_TXT = readFileSync(fileURLToPath(new URL('../sysprompt_legacy.txt', import.meta.url)), 'utf8');
@@ -139,6 +140,48 @@ test('applyAdditiveSysprompt publishes normally when Megumin is not installed at
     setSettings({ suiteMode: true, syspromptDelivery: 'additive' });
     await applySysprompt();
     assert.notEqual(extensionPrompts()[ADDITIVE_PROMPT_KEY], '', 'no Megumin-Suite key present — nothing to suppress for');
+});
+
+// ── Legendary NPC tier + quest-difficulty enemy scaling guidance ───────────────
+
+test('all three sysprompt files define the Legendary tier', () => {
+    assert.match(SYSPROMPT_TXT, /Legendary—World-threat \| HP 150–500\+ \| AC 19–22 \| ATK \+11 to \+15/);
+    assert.match(SYSPROMPT_LEGACY_TXT, /Legendary—World-threat \| HP 150–500\+ \| AC 19–22 \| ATK \+11 to \+15/);
+    assert.match(SYSPROMPT_MODERN_TXT, /Legendary—world-threatening/);
+});
+
+test('classic-mode files extend the saving-throw table with a Legendary row', () => {
+    for (const txt of [SYSPROMPT_TXT, SYSPROMPT_LEGACY_TXT]) {
+        assert.match(txt, /Legendary — \+8 to \+12; overwhelming across the board, no weak saves/);
+    }
+});
+
+test('drift guard: constants.js RT_PROMPTS fallbacks stay byte-identical to the .txt files', () => {
+    assert.equal(RT_PROMPTS['sysprompt.txt'], SYSPROMPT_TXT, 'sysprompt.txt fallback must mirror the live file exactly');
+    assert.equal(RT_PROMPTS['sysprompt_legacy.txt'], SYSPROMPT_LEGACY_TXT, 'sysprompt_legacy.txt fallback must mirror the live file exactly');
+});
+
+test('buildSysprompt keeps the full quest-difficulty scaling guidance when the toggle is on', () => {
+    setSettings({ syspromptModules: { questsDifficulty: true } });
+    const out = buildSysprompt(SYSPROMPT_TXT);
+    assert.match(out, /SCALING TO QUEST DIFFICULTY/);
+    assert.match(out, /GENERAL \/ NON-QUEST ENCOUNTERS/);
+});
+
+test('buildSysprompt collapses the scaling guidance to a short fallback line when the toggle is off', () => {
+    setSettings({ syspromptModules: { questsDifficulty: false } });
+    const out = buildSysprompt(SYSPROMPT_TXT);
+    assert.ok(!out.includes('SCALING TO QUEST DIFFICULTY'), 'detailed guidance removed');
+    assert.ok(!out.includes('GENERAL / NON-QUEST ENCOUNTERS'), 'detailed guidance removed');
+    assert.ok(out.includes("Scale enemy strength to fit {{user}}'s current level and the narrative stakes of the scene."), 'evergreen fallback sentence present');
+    assert.match(out, /Legendary—World-threat/, 'tier list itself is unaffected by the toggle');
+});
+
+test('the questsDifficulty gate applies the same way in Modern-mode sysprompt', () => {
+    setSettings({ syspromptModules: { questsDifficulty: false } });
+    const out = buildSysprompt(SYSPROMPT_MODERN_TXT);
+    assert.ok(!out.includes('SCALING TO QUEST DIFFICULTY'));
+    assert.ok(out.includes("Scale enemy strength to fit {{user}}'s current level and the narrative stakes of the scene."));
 });
 
 test('drift guard: every top-level tag in all sysprompt files is classified', () => {

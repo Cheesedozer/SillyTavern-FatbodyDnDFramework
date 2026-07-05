@@ -2039,6 +2039,60 @@
 .rt-quest-mood-tick-neutral   { left: 33.3%; }
 .rt-quest-mood-tick-deadline  { left: 66.6%; }
 
+/* ── Generic inline markers: ((OBJ)) / ((REWARD)) / ((DIFFICULTY)) / ((PROGRESS)) ──
+   Usable in any stock or custom field, independent of the Quest system's own
+   rt-quest-* classes (which stay coupled to the quest card's layout). */
+.rt-marker-obj {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.rt-marker-obj-check {
+    flex-shrink: 0;
+    font-size: 0.9em;
+    color: var(--rt-cat-bullet-color, var(--rt-accent));
+    margin-top: 1px;
+}
+
+.rt-marker-obj-done   { opacity: 0.45; text-decoration: line-through; }
+.rt-marker-obj-failed { color: #ff5555; text-decoration: line-through; opacity: 0.6; }
+
+.rt-reward-chip {
+    display: inline-block;
+    font-size: 0.8em;
+    background: rgba(255,215,0,0.08);
+    border: 1px solid rgba(255,215,0,0.2);
+    color: #ffd700;
+    border-radius: 4px;
+    padding: 1px 6px;
+}
+
+.rt-diff-badge {
+    display: inline-block;
+    font-size: 0.7em;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    border-radius: 4px;
+    padding: 1px 6px;
+    white-space: nowrap;
+}
+
+.rt-progress-bar-wrap {
+    flex: 1;
+    position: relative;
+    height: 10px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: rgba(255,255,255,0.1);
+}
+
+.rt-progress-bar {
+    height: 100%;
+    border-radius: 4px;
+}
+
 /* ── Context Debug Viewer ── */
 .rpg-debug-viewer {
     position: fixed;
