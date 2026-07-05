@@ -6,7 +6,7 @@ import { getDiceToolName, getDiceCommandName, getDiceCommandAliases, doDiceRoll,
 import {
     resetWorldProgTick, refreshWorldProgPacingPrompt, reconcileWorldProgRollbacks, forkWorldState,
     getWorldState, getChatWorldProg, forceAdvanceTempo, forcePhaseGate, runWorldProgReconciliation,
-    detectMeguminOverlap, replaceWorldState, replaceChatWorldProg,
+    detectMeguminOverlap, detectMeguminFatbodyBlock, replaceWorldState, replaceChatWorldProg,
 } from './world-progression.js';
 import { openCentralTensionWizard } from './central-tension-compiler.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
@@ -21,7 +21,7 @@ import { runStateModelPass, runChunkedStateAudit, handleLevelUp, sendDirectPromp
 import { buildAuditChunks } from './audit-chunker.js';
 import { buildRowTypeSelect, openCustomFieldEditor, openPromptEditor, exportModules, openShareModal, importModulesFromJson, refreshOrderList } from './custom-fields-ui.js';
 import { FOLDER_NAME } from './env.js';
-import { autoApplySysprompt, applyAdditiveSysprompt, applySysprompt, scheduleAutoApply, buildSysprompt } from './sysprompt.js';
+import { autoApplySysprompt, applyAdditiveSysprompt, applySysprompt, scheduleAutoApply, buildSysprompt, getAdditiveSyspromptCache } from './sysprompt.js';
 import { openFoundationWizard } from './foundation-wizard.js';
 import { commitFoundationAndInit, isModernCharacterPrompt } from './foundation.js';
 import { defaultFoundation } from './default-foundation.js';
@@ -1125,6 +1125,15 @@ import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight,
     // Rendered-view refresh hook for modules that mutate the memo outside the
     // normal state pass (skilltree-bridge after skill purchases).
     globalThis._rpgRefreshRenderedView = () => refreshRenderedView();
+    // Published for the Megumin Suite's [[FATBODY]] block: a synchronous, cached read
+    // of Fatbody's live additive-mode rules text (see sysprompt.js). Never throws;
+    // returns '' when Fatbody is disabled/customSysprompt/no chat yet — callers must
+    // feature-detect and fall back to their own bundled content on an empty string.
+    globalThis._rpgGetAdditiveSysprompt = () => { try { return getAdditiveSyspromptCache() || ''; } catch { return ''; } };
+    // Lets Megumin nudge a fresh pull right after its own [[FATBODY]] block toggle
+    // changes, instead of waiting for one of Fatbody's own triggers (chat switch,
+    // settings save) to eventually refresh the cache above.
+    globalThis._rpgRefreshAdditiveSysprompt = () => { try { scheduleAutoApply(); } catch { /* no-op */ } };
 
     // [runStateModelPass/handleLevelUp/sendDirectPrompt moved to state-pass.js]
 
@@ -1410,6 +1419,7 @@ ${resourceList}
             btn.disabled = true;
             try {
                 await commitFoundationAndInit(chatId, defaultFoundation());
+                scheduleAutoApply();   // refresh Fatbody's own sysprompt + the additive cache for the newly-committed foundation
             } catch (err) {
                 toastr['error'](`${err.message || err}`, 'Default foundation failed');
                 btn.disabled = false;
@@ -5548,9 +5558,11 @@ ${resourceList}
 
             $('#rpg_tracker_btn_update_sysprompt').on('click', async function () {
                 // Additive delivery: the Main prompt box is off-limits — refresh the
-                // rules-only extension prompt instead.
+                // rules-only extension prompt instead. Goes through applySysprompt() (not
+                // applyAdditiveSysprompt() alone) so the underlying cache is actually
+                // re-fetched, not just re-published from whatever was cached before.
                 if (getSettings().syspromptDelivery === 'additive') {
-                    await applyAdditiveSysprompt();
+                    await applySysprompt();
                     toastr['success']('Additive rules prompt refreshed (Main prompt box untouched).', 'RPG Tracker');
                     return;
                 }
@@ -6310,11 +6322,24 @@ ${resourceList}
             // Suite Mode toggle (Megumin Suite). When on, autoApplySysprompt() leaves the Main
             // prompt box alone — the Suite injects Fatbody mechanics via its [[FATBODY]] block.
             const suiteModeCb = /** @type {HTMLInputElement|null} */ (document.getElementById('rpg_tracker_suite_mode'));
+            // Real double-injection prevention lives in applyAdditiveSysprompt()
+            // (sysprompt.js), which auto-suppresses its own extension-prompt push
+            // whenever Suite Mode is on AND Megumin's [[FATBODY]] block is detected
+            // active. That suppression requires Suite Mode as an explicit precondition
+            // (narrows the blast radius of trusting Megumin's flag alone) — so additive
+            // delivery + Megumin's block active WITHOUT Suite Mode is still a real
+            // double-injection risk this toast needs to flag.
             const warnSuiteAdditiveOverlap = () => {
                 const fresh = getSettings();
-                if (fresh.suiteMode && fresh.syspromptDelivery === 'additive') {
+                if (fresh.syspromptDelivery !== 'additive' || !detectMeguminFatbodyBlock().active) return;
+                if (fresh.suiteMode) {
+                    toastr['info'](
+                        'Megumin Suite\'s [[FATBODY]] block is active and pulling Fatbody\'s rules live — Fatbody is skipping its own duplicate injection automatically.',
+                        'RPG Tracker', { timeOut: 8000 },
+                    );
+                } else {
                     toastr['warning'](
-                        'Suite Mode + Additive delivery: make sure the Megumin Suite\'s [[FATBODY]] block is NOT in use, or mechanics will be injected twice. Pick one source of Fatbody rules.',
+                        'Additive delivery is on and Megumin Suite\'s [[FATBODY]] block is active, but Suite Mode is OFF — mechanics will be injected twice. Turn on Suite Mode so Fatbody suppresses its own copy automatically.',
                         'RPG Tracker', { timeOut: 12000 },
                     );
                 }

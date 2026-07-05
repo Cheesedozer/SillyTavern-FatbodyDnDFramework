@@ -3,12 +3,12 @@
  * Locks the XML-block stripping + {{modulesText}} injection behaviour.
  */
 import './_bootstrap.js';
-import { setSettings } from './_bootstrap.js';
+import { setSettings, rawStore, extensionPrompts, resetExtensionPrompts } from './_bootstrap.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { buildSysprompt, ADDITIVE_TAGS, ADDITIVE_HEADER } from '../sysprompt.js';
+import { buildSysprompt, ADDITIVE_TAGS, ADDITIVE_HEADER, ADDITIVE_PROMPT_KEY, applySysprompt, getAdditiveSyspromptCache } from '../sysprompt.js';
 
 const SYSPROMPT_TXT = readFileSync(fileURLToPath(new URL('../sysprompt.txt', import.meta.url)), 'utf8');
 const SYSPROMPT_LEGACY_TXT = readFileSync(fileURLToPath(new URL('../sysprompt_legacy.txt', import.meta.url)), 'utf8');
@@ -76,6 +76,69 @@ test('modern sysprompt: contains the v3.0 sections and foundation placeholders',
     assert.ok(SYSPROMPT_MODERN_TXT.includes('[FALLBACK]'), 'no-tool-call fallback present');
     assert.ok(SYSPROMPT_MODERN_TXT.includes('SYSTEM DIRECTIVE: LEVEL UP'), 'directive-driven level-up protocol');
     assert.ok(SYSPROMPT_MODERN_TXT.includes('DOWNED'), 'standard lethality template specced');
+});
+
+// ── Megumin Suite live-pull cache (backs globalThis._rpgGetAdditiveSysprompt) ──
+
+test('additive cache stays empty when Fatbody is disabled', async () => {
+    setSettings({ enabled: false, suiteMode: true, syspromptDelivery: 'additive' });
+    rawStore()['Megumin-Suite'] = { profiles: { default: { blocks: ['fatbody'] } } };
+    await applySysprompt();
+    assert.equal(getAdditiveSyspromptCache(), '');
+});
+
+test('additive cache stays empty under Custom Sysprompt Mode', async () => {
+    setSettings({ customSysprompt: true, suiteMode: true, syspromptDelivery: 'additive' });
+    rawStore()['Megumin-Suite'] = { profiles: { default: { blocks: ['fatbody'] } } };
+    await applySysprompt();
+    assert.equal(getAdditiveSyspromptCache(), '');
+});
+
+test('additive cache populates for standalone delivery when Megumin\'s fatbody block is active (Suite Mode + standalone combo)', async () => {
+    // Neither autoApplySysprompt() nor the old applyAdditiveSysprompt() gate ever
+    // computed this content for this combination — it's the key new behavior that
+    // lets Megumin's [[FATBODY]] block pull something live in the first place.
+    setSettings({ suiteMode: true, syspromptDelivery: 'standalone' });
+    rawStore()['Megumin-Suite'] = { profiles: { default: { blocks: ['fatbody'] } } };
+    await applySysprompt();
+    const cached = getAdditiveSyspromptCache();
+    assert.ok(cached.startsWith(ADDITIVE_HEADER), 'additive header prepended');
+    assert.ok(cached.includes('<rng_system>'), 'mechanics tag present');
+    assert.ok(!cached.includes('<role>'), 'persona tag excluded');
+});
+
+test('additive cache stays empty for standalone delivery when Megumin\'s fatbody block is not active', async () => {
+    setSettings({ suiteMode: true, syspromptDelivery: 'standalone' });
+    rawStore()['Megumin-Suite'] = { profiles: { default: { blocks: [] } } };
+    await applySysprompt();
+    assert.equal(getAdditiveSyspromptCache(), '', 'plain Suite Mode with no fatbody block must not compute this content');
+});
+
+test('applyAdditiveSysprompt suppresses its own extension prompt when Suite Mode is on and Megumin\'s block is active', async () => {
+    resetExtensionPrompts();
+    setSettings({ suiteMode: true, syspromptDelivery: 'additive' });
+    rawStore()['Megumin-Suite'] = { profiles: { default: { blocks: ['fatbody'] } } };
+    await applySysprompt();
+    assert.equal(extensionPrompts()[ADDITIVE_PROMPT_KEY], '', 'suppressed — Megumin is already injecting the same content live');
+    assert.notEqual(getAdditiveSyspromptCache(), '', 'the cache itself must stay populated for Megumin to keep pulling');
+});
+
+test('applyAdditiveSysprompt does NOT suppress when Suite Mode is off, even if Megumin\'s block is active', async () => {
+    // This remains a real double-injection risk by design — suppression requires Suite
+    // Mode as an explicit precondition (see sysprompt.js), so this combo is instead
+    // flagged by warnSuiteAdditiveOverlap() in index.js rather than silently handled.
+    resetExtensionPrompts();
+    setSettings({ suiteMode: false, syspromptDelivery: 'additive' });
+    rawStore()['Megumin-Suite'] = { profiles: { default: { blocks: ['fatbody'] } } };
+    await applySysprompt();
+    assert.notEqual(extensionPrompts()[ADDITIVE_PROMPT_KEY], '', 'not suppressed without suiteMode as an explicit precondition');
+});
+
+test('applyAdditiveSysprompt publishes normally when Megumin is not installed at all', async () => {
+    resetExtensionPrompts();
+    setSettings({ suiteMode: true, syspromptDelivery: 'additive' });
+    await applySysprompt();
+    assert.notEqual(extensionPrompts()[ADDITIVE_PROMPT_KEY], '', 'no Megumin-Suite key present — nothing to suppress for');
 });
 
 test('drift guard: every top-level tag in all sysprompt files is classified', () => {

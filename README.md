@@ -81,12 +81,14 @@ https://www.youtube.com/watch?v=1n5x7VBJ0IU
 
 ### Megumin Suite
 
-The Suite's narrative engines and Fatbody's default sysprompt both want to own the narrator persona. Two supported setups — **pick exactly one**:
+The Suite's narrative engines and Fatbody's default sysprompt both want to own the narrator persona. Recommended setup (v3.5.0+): turn on **both**.
 
-1. **Additive delivery (recommended, v2.5.0+):** set *Sysprompt Delivery → Additive (rules only)* in Fatbody's settings. Fatbody never touches the Main prompt box; a rules-only prompt (dice, combat, XP, constraints — no role claim) is injected alongside the Suite's engine, which keeps the persona.
-2. **Suite Mode + `[[FATBODY]]`:** enable *Suite Mode* and let the Suite inject Fatbody mechanics through its `[[FATBODY]]` block.
+1. In Fatbody's settings, enable **Suite Mode** and set *Sysprompt Delivery → Additive (rules only)*. Fatbody never touches the Main prompt box.
+2. In the Suite, enable the **Fatbody D&D** block.
 
-Do **not** combine both, or the mechanics get injected twice (Fatbody warns if you try).
+With both on, the Suite's `[[FATBODY]]` block pulls Fatbody's *live* rules automatically — respecting whatever module toggles and campaign mode (D&D or Modern) are currently active — instead of a frozen snapshot, and Fatbody automatically skips its own duplicate injection. No manual coordination needed, and nothing gets injected twice.
+
+If you turn on Additive delivery and the Suite's block without also turning on Suite Mode, Fatbody warns you — that combination still injects mechanics twice, since the automatic suppression is gated on Suite Mode being explicitly enabled. And if you're running an older version of either extension, or only have one of them installed, the Suite's block quietly falls back to its bundled static ruleset instead.
 
 Also recommended: disable the Suite's **NPC Bank** and **memory archiver** (they duplicate the Lorebook Agent / fight the tracker's chat reads), and set Fatbody's **External Token Reserve** (Advanced Options) to ~1000–2000 since the Suite injects after Fatbody's budget is computed.
 
