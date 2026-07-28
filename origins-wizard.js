@@ -33,16 +33,131 @@ import {
     vibesForNsfw, modifiersForContext, emptySelections, evaluateIncompatibilities,
     optionBlockReason, validateDraft, randomizeSelections, pursuerNeeded,
     buildProfileGenerationPrompt, validateOriginProfile, buildOriginMemoBlock,
-    writeOriginToMemo, buildStatGenPrompt,
+    writeOriginToMemo, buildStatGenPrompt, buildFirstMessagePrompt,
 } from './origins-engine.js';
-import { getSettings } from './state-manager.js';
-import { sendAgentTurn } from './llm-client.js';
+import { getSettings, getEffectiveRouterCampaignPrefix } from './state-manager.js';
+import { sendAgentTurn, sendStateRequest } from './llm-client.js';
 import { extractFoundationJson as extractJsonBlock } from './foundation.js';
+import { writeBookToDisk } from './router.js';
 import { RT } from './shared-state.js';
 
 const MAX_GENERATION_RETRIES = 3;
 
 let _wizardOpen = false;
+
+// ── Lorebook canon (the spec's Consistency Ledger; commitFoundation template) ─
+
+/**
+ * Writes the committed origin's canon into `${prefix}_Origin` in one
+ * writeBookToDisk call: an active, keyword-triggered Nation entry (plus the
+ * secondary home nation if present), an active Pursuer entry, and a disabled
+ * full-profile backup entry (prose + fenced JSON, recoverable — the
+ * foundation-book pattern). Adds the book to the campaign stack.
+ */
+async function writeOriginCanonBook(chatId, profile) {
+    const prefix = getEffectiveRouterCampaignPrefix(chatId);
+    if (!prefix) throw new Error('No campaign prefix — cannot write the origin lorebook.');
+    const bookName = `${prefix}_Origin`;
+    let bookData = null;
+    try {
+        bookData = await SillyTavern.getContext().loadWorldInfo(bookName);
+    } catch (_) { /* new book */ }
+    if (!bookData?.entries) {
+        bookData = { entries: {}, name: bookName, scan_depth: 4, token_budget: 400, recursive: false, extensions: {} };
+    }
+    const uids = Object.keys(bookData.entries).map(Number).filter(n => !isNaN(n));
+    let nextUid = uids.length > 0 ? Math.max(...uids) + 1 : 0;
+    const baseEntry = {
+        keysecondary: [], constant: false, selective: false, selectiveLogic: 0,
+        addMemo: true, order: 100, position: 0, probability: 100,
+        useProbability: false, depth: 4, group: '', groupOverride: false, groupWeight: 100,
+    };
+    const addEntry = (comment, key, content, disable) => {
+        bookData.entries[nextUid] = { ...baseEntry, uid: nextUid, comment, key, content, disable };
+        nextUid++;
+    };
+
+    const nationText = (n) =>
+        `${n.name} — ${n.government}; culture: ${n.cultureVibes}; ${n.environment}; majority population ${n.majorityRace}.\n`
+        + `Viewed by outsiders: ${n.outsiderView}\nDaily life & aesthetics: ${n.tone}\n`
+        + `(Canon — reuse these facts verbatim; never re-roll them.)`;
+    addEntry(`Origin Nation: ${profile.nation.name}`, [profile.nation.name], nationText(profile.nation), false);
+    if (profile.secondaryNation?.name) {
+        addEntry(`Home Nation: ${profile.secondaryNation.name}`, [profile.secondaryNation.name], nationText(profile.secondaryNation), false);
+    }
+    if (profile.pursuer) {
+        const p = profile.pursuer;
+        addEntry(`Pursuer: ${p.identity}`, [p.identity],
+            `Pursuer of ${profile.name}: ${p.identity} (${p.affiliation}). Motive: ${p.motive}. `
+            + `Capability: ${p.resources}. Awareness: ${p.awareness}.${p.leverage ? ` Leverage held: ${p.leverage}` : ''}\n`
+            + `Persistent NPC/faction reference — instantiated once at character creation; never regenerate or merge.`, false);
+    }
+    addEntry(`Origin Profile: ${profile.name}`, [profile.name, profile.origin],
+        `${profile.origin} — ${profile.name}${profile.title ? `, ${profile.title}` : ''} (${profile.race}).\n\n${profile.backstory}\n\n`
+        + `Social lever: ${profile.socialLever.text} (legible to: ${profile.socialLever.legibleTo})\n`
+        + `Personal lever: ${profile.personalLever.text}\nWorld-threat tie-in: ${profile.worldThreatTieIn}\n`
+        + `Narrator-private quest directions (surface lazily, never as a list):\n${profile.questSeeds.map(q => `- ${q}`).join('\n')}\n\n`
+        + `\`\`\`json\n${JSON.stringify(profile, null, 2)}\n\`\`\``, true);
+
+    await writeBookToDisk(bookName, bookData);
+
+    const s = getSettings();
+    const books = new Set(s.chatStates[chatId].campaignBooks || []);
+    books.add(bookName);
+    s.chatStates[chatId].campaignBooks = [...books];
+    SillyTavern.getContext().saveSettingsDebounced();
+}
+
+// ── Opening narration (spec §8) ──────────────────────────────────────────────
+
+/** Generates the opening narration — narrator connection first, state model
+ *  as fallback (prose quality matters; the state model always works). */
+async function generateOpeningNarration(profile, frameId, nsfw) {
+    const ctx = SillyTavern.getContext();
+    const prompt = buildFirstMessagePrompt(profile, frameId, nsfw);
+    if (typeof ctx.generateRaw === 'function') {
+        try {
+            const result = await ctx.generateRaw({ prompt, systemPrompt: '', bypassAll: true });
+            const text = typeof result === 'string' ? result : result?.choices?.[0]?.message?.content ?? '';
+            if (text.trim()) return text.trim();
+        } catch (e) {
+            console.warn('[RPG Tracker] Narrator opening generation failed, falling back to the state model:', e);
+        }
+    }
+    const text = await sendStateRequest(getSettings(), 'You are the narrator of a fantasy roleplay campaign. Follow the instructions exactly and output only prose.', prompt, null);
+    return String(text || '').trim();
+}
+
+/**
+ * Inserts the opening as the first ASSISTANT message of the chat. No repo
+ * precedent exists for this (sendSystemMessage produces system messages), so
+ * it feature-detects the context API and fails soft to a system message.
+ * @returns {boolean} whether the text made it into the chat in any form
+ */
+async function insertOpeningMessage(text) {
+    const ctx = SillyTavern.getContext();
+    try {
+        const name = ctx.characters?.[ctx.characterId]?.name || ctx.name2 || 'Narrator';
+        const message = {
+            name, is_user: false, is_system: false,
+            send_date: new Date().toLocaleString(),
+            mes: text,
+            extra: { api: 'manual', model: 'origins-opening' },
+        };
+        ctx.chat.push(message);
+        if (typeof ctx.addOneMessage === 'function') await ctx.addOneMessage(message);
+        if (typeof ctx.saveChat === 'function') await ctx.saveChat();
+        return true;
+    } catch (e) {
+        console.warn('[RPG Tracker] Could not insert the opening as an assistant message:', e);
+        try {
+            SillyTavern.getContext().sendSystemMessage?.('generic', text);
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+}
 
 // ── Draft persistence ────────────────────────────────────────────────────────
 
@@ -546,6 +661,10 @@ export function openOriginsWizard() {
         }
     }
 
+    /** Post-commit opening-narration state: generated text awaits the player's
+     *  accept (or regenerate) before being inserted into the chat. */
+    let opening = { profile: null, text: '', error: '' };
+
     async function commit() {
         if (busy) return;
         const origin = ORIGINS_BY_ID[draft.originId];
@@ -564,6 +683,8 @@ export function openOriginsWizard() {
             const s = getSettings();
             const st = chatStateFor(chatId);
             const profile = draft.profile;
+            const frameId = draft.frameId;
+            const nsfw = !!draft.nsfw;
             st.origin = {
                 committed: {
                     ...profile,
@@ -573,7 +694,7 @@ export function openOriginsWizard() {
                     appearance: JSON.parse(JSON.stringify(draft.appearance || {})),
                     selections: JSON.parse(JSON.stringify(draft.selections)),
                 },
-                nsfw: !!draft.nsfw,
+                nsfw,
             };
             delete st.onboarding; // the committed origin drives readiness from here
             SillyTavern.getContext().saveSettingsDebounced();
@@ -590,12 +711,70 @@ export function openOriginsWizard() {
             idx.saveSettings();
             idx.syncMemoView();
 
-            toastr['success'](`${profile.name} is ready. The origin is locked for this campaign.`, 'Origins');
-            close();
+            // Lorebook canon — non-blocking, like the tension compiler's
+            // faction seeding: a lorebook failure must not lose the commit.
+            setBusy(true, 'Writing nation & pursuer canon to the lorebook…');
+            try {
+                await writeOriginCanonBook(chatId, profile);
+            } catch (e) {
+                console.warn('[RPG Tracker] Origin lorebook write failed:', e);
+                toastr['warning'](`Origin canon lorebook could not be written (${e.message || e}) — the profile is still saved in the tracker.`, 'Origins');
+            }
+
             globalThis._rpgRefreshHudHeaderButtons?.(chatId);
+            toastr['success'](`${profile.name} is ready. The origin is locked for this campaign.`, 'Origins');
+
+            // Hand off to the opening-narration pane (regenerate before insert).
+            opening = { profile, frameId, nsfw, text: '', error: '' };
+            renderOpeningPane();
+            await generateOpening();
         } catch (e) {
             setBusy(false, `❌ Commit failed: ${e.message || e} — click Commit again to resume.`);
         }
+    }
+
+    // ── Opening pane (spec §8: generate → review/regenerate → insert) ────────
+
+    async function generateOpening() {
+        setBusy(true, 'Writing your opening scene…');
+        try {
+            opening.text = await generateOpeningNarration(opening.profile, opening.frameId, opening.nsfw);
+            opening.error = opening.text ? '' : 'The narrator returned an empty opening.';
+        } catch (e) {
+            opening.error = `${e.message || e}`;
+        }
+        setBusy(false, opening.error ? `⚠️ ${opening.error}` : 'Review your opening — regenerate freely, then begin.');
+        renderOpeningPane();
+    }
+
+    function renderOpeningPane() {
+        railEl.innerHTML = '';
+        forgeBtn.style.display = 'none';
+        prevBtn.style.visibility = 'hidden';
+        nextBtn.style.visibility = 'hidden';
+        contentEl.innerHTML = `
+            <div style="font-weight:bold;">🎬 Opening Scene <span style="opacity:0.6;font-weight:normal;">(${esc(OPENING_FRAMES.find(f => f.id === opening.frameId)?.label || '')})</span></div>
+            <div style="margin-top:8px;padding:10px;border:1px solid rgba(255,255,255,0.12);border-radius:8px;white-space:pre-wrap;font-size:0.88em;line-height:1.5;min-height:160px;">${opening.text ? esc(opening.text) : `<span style="opacity:0.5;font-style:italic;">${opening.error ? esc(opening.error) : 'Writing…'}</span>`}</div>
+            <div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end;">
+                <select id="rt-og-open-frame" class="text_pole" style="${SELECT_STYLE}max-width:200px;">
+                    ${OPENING_FRAMES.map(f => `<option value="${f.id}"${opening.frameId === f.id ? ' selected' : ''}>${esc(f.label)}</option>`).join('')}
+                </select>
+                <button id="rt-og-open-regen" class="menu_button interactable">↺ Regenerate</button>
+                <button id="rt-og-open-accept" class="menu_button interactable" style="background:rgba(0,200,140,0.25);border-color:#00c88c;"${opening.text ? '' : ' disabled'}>✅ Begin adventure</button>
+            </div>
+            <div style="${HINT}margin-top:4px;text-align:right;">Accepting inserts this as the story's first message. Your character is already saved either way.</div>`;
+        contentEl.querySelector('#rt-og-open-frame')?.addEventListener('change', e => { opening.frameId = e.target.value; });
+        contentEl.querySelector('#rt-og-open-regen')?.addEventListener('click', () => { if (!busy) generateOpening(); });
+        contentEl.querySelector('#rt-og-open-accept')?.addEventListener('click', async () => {
+            if (busy || !opening.text) return;
+            setBusy(true, 'Starting the story…');
+            const inserted = await insertOpeningMessage(opening.text);
+            if (!inserted) {
+                setBusy(false, '⚠️ Could not write into the chat — copy the opening text manually.');
+                return;
+            }
+            close();
+        });
     }
 
     // ── Forge: full-random one-click path (spec §7.4) ────────────────────────

@@ -691,14 +691,16 @@ export function getCampaignMode(chatId) {
  * Whether the active chat is ready to start a World Arc: a Modern campaign
  * with its class locked, or a D&D campaign (no class-lock concept exists for
  * D&D in this codebase — classes are fluid/multiclass, so onboarding is
- * considered complete once the ruleset itself is picked).
+ * considered complete once the ruleset itself is picked). An Origins commit
+ * (v4.0) deletes the onboarding flag, so a committed origin also counts as
+ * D&D-ready.
  * @param {object|null|undefined} chatState - settings.chatStates[chatId]
  * @param {string} chatId
  * @returns {boolean}
  */
 export function isOnboardingArcReady(chatState, chatId) {
     const modernReady = getCampaignMode(chatId) === 'modern' && !!chatState?.progression?.classId;
-    const dndReady = chatState?.onboarding?.mode === 'dnd';
+    const dndReady = chatState?.onboarding?.mode === 'dnd' || !!chatState?.origin?.committed;
     return modernReady || dndReady;
 }
 
