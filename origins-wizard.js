@@ -249,7 +249,10 @@ export function openOriginsWizard() {
         return;
     }
     if (!st.origin) st.origin = {};
-    if (!st.origin.draft) st.origin.draft = freshDraft();
+    if (!st.origin.draft) {
+        st.origin.draft = freshDraft();
+        st.origin.draft.nsfw = !!getSettings().originsNsfwDefault;
+    }
     const draft = st.origin.draft;
 
     _wizardOpen = true;

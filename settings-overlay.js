@@ -28,6 +28,7 @@ import { getSettings } from './state-manager.js';
 const TAB_DEFS = [
     { id: 'general', icon: 'fa-gears', label: 'General' },
     { id: 'narrator', icon: 'fa-dice-d20', label: 'Narrator & Quests' },
+    { id: 'origins', icon: 'fa-dna', label: 'Origins' },
     { id: 'visuals', icon: 'fa-palette', label: 'Visuals' },
     { id: 'statemodel', icon: 'fa-brain', label: 'State Model' },
     { id: 'agent', icon: 'fa-route', label: 'Lorebook Agent' },

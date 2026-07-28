@@ -191,6 +191,9 @@ You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These
         chatStates: {},
         quests: [],
         questLegacyMode: false,
+        // v4.0 Origins character creation
+        originsEnabled: true,       // offer 🧬 Origins on the D&D onboarding step
+        originsNsfwDefault: false,  // initial state of the per-campaign NSFW toggle
         syspromptModules: {
             loot: true,
             random_events: true,

@@ -423,7 +423,7 @@ import { saveSettings, refreshRenderedView, syncMemoView, updateUIMemo, bindRend
                         // Use modern Clipboard API if available and in secure context
                         if (navigator.clipboard && window.isSecureContext) {
                             await navigator.clipboard.writeText(jsonString);
-                            toastr['success']('Module code copied to clipboard!', 'Fatbody Framework');
+                            toastr['success']('Module code copied to clipboard!', 'Origins RPG Framework');
                             return;
                         }
 
@@ -443,13 +443,13 @@ import { saveSettings, refreshRenderedView, syncMemoView, updateUIMemo, bindRend
                         document.body.removeChild(ta);
 
                         if (success) {
-                            toastr['success']('Module code copied to clipboard!', 'Fatbody Framework');
+                            toastr['success']('Module code copied to clipboard!', 'Origins RPG Framework');
                         } else {
                             throw new Error('execCommand returned false');
                         }
                     } catch (err) {
                         console.error('[Fatbody Framework] clipboard copy failed:', err);
-                        toastr['error']('Could not copy automatically. Please select the text manually.', 'Fatbody Framework');
+                        toastr['error']('Could not copy automatically. Please select the text manually.', 'Origins RPG Framework');
                     }
                 });
             }
@@ -484,12 +484,12 @@ import { saveSettings, refreshRenderedView, syncMemoView, updateUIMemo, bindRend
         try {
             parsed = JSON.parse(jsonString.trim());
         } catch {
-            toastr['error']('Invalid JSON. Please paste a valid module export.', 'Fatbody Framework');
+            toastr['error']('Invalid JSON. Please paste a valid module export.', 'Origins RPG Framework');
             return;
         }
 
         if (parsed?.format !== 'fatbody-custom-module' || !Array.isArray(parsed?.modules)) {
-            toastr['error']("This doesn't look like a Fatbody module export.", 'Fatbody Framework');
+            toastr['error']("This doesn't look like a Fatbody module export.", 'Origins RPG Framework');
             return;
         }
 
@@ -501,7 +501,7 @@ import { saveSettings, refreshRenderedView, syncMemoView, updateUIMemo, bindRend
         });
 
         if (incoming.length === 0) {
-            toastr['warning']('No valid modules found in the export.', 'Fatbody Framework');
+            toastr['warning']('No valid modules found in the export.', 'Origins RPG Framework');
             return;
         }
 
@@ -513,7 +513,7 @@ import { saveSettings, refreshRenderedView, syncMemoView, updateUIMemo, bindRend
         if (stockConflicts.length > 0) {
             toastr['error'](
                 `Cannot import: [${stockConflicts.map(m => m.tag).join('], [')}] clash with built-in stock modules.`,
-                'Fatbody Framework'
+                'Origins RPG Framework'
             );
             return;
         }
@@ -561,14 +561,14 @@ import { saveSettings, refreshRenderedView, syncMemoView, updateUIMemo, bindRend
         }
 
         if (importedCount === 0) {
-            toastr['info']('No modules were imported (all conflicts were skipped).', 'Fatbody Framework');
+            toastr['info']('No modules were imported (all conflicts were skipped).', 'Origins RPG Framework');
             return;
         }
 
         saveSettings();
         refreshOrderList();
         syncMemoView();
-        toastr['success'](`Imported ${importedCount} custom module(s).`, 'Fatbody Framework');
+        toastr['success'](`Imported ${importedCount} custom module(s).`, 'Origins RPG Framework');
     }
 
     // ───────────────────────────────────────────────────────────────────────────

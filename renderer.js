@@ -868,7 +868,7 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
         return `${withBack ? '<div style="width: 100%; flex-shrink: 0;"><button class="rt-ob-back" title="Back to the previous step">← Back</button></div>' : ''}
                 <div style="text-align: center; width: 100%; margin-bottom: 4px; flex-shrink: 0;">
                     <div class="rt-empty-icon">📜</div>
-                    <div style="font-size: 17px; font-weight: bold; color: var(--rt-text);">Fatbody D&D Framework</div>
+                    <div style="font-size: 17px; font-weight: bold; color: var(--rt-text);">Origins RPG Framework</div>
                     ${subtitle ? `<div style="font-size: 12px; opacity: 0.7; font-style: italic; margin-top: 2px;">${subtitle}</div>` : ''}
                 </div>`;
     }
@@ -1008,6 +1008,7 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
     /** The Origins entry section shown at the top of the D&D step: open the
      *  creation wizard, or resume/discard an in-progress draft. */
     export function renderOriginsEntry(chatState) {
+        if (getSettings().originsEnabled === false) return '';
         const origin = chatState?.origin;
         if (origin?.committed) return '';
         const draft = origin?.draft;
