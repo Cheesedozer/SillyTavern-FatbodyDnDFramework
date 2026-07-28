@@ -39,7 +39,12 @@ import { getSettings, getEffectiveRouterCampaignPrefix } from './state-manager.j
 import { sendAgentTurn, sendStateRequest } from './llm-client.js';
 import { extractFoundationJson as extractJsonBlock } from './foundation.js';
 import { writeBookToDisk } from './router.js';
+import { FOLDER_NAME } from './env.js';
+import { getRequestHeaders } from '../../../../script.js';
 import { RT } from './shared-state.js';
+
+const SETTING_CARD_NAME = 'Vaelmarch';
+const SETTING_CARD_URL = 'https://github.com/Cheesedozer/SillyTavern-OriginsRPGFramework/tree/main/setting-cards';
 
 const MAX_GENERATION_RETRIES = 3;
 
@@ -181,6 +186,39 @@ function freshDraft() {
     };
 }
 
+// ── Setting-card install (spec §2.4: one-click, manual download as fallback) ─
+
+/** Whether the bundled Vaelmarch narrator card is already in the character list. */
+export function isSettingCardInstalled() {
+    try {
+        const chars = SillyTavern.getContext().characters || [];
+        return chars.some(c => (c?.name || '').trim().toLowerCase() === SETTING_CARD_NAME.toLowerCase());
+    } catch (_) {
+        return false;
+    }
+}
+
+/**
+ * Installs the bundled setting card through SillyTavern's character-import
+ * API (the first /api/characters/* usage in this extension — same raw-fetch
+ * approach as writeBookToDisk). Throws on failure; callers fail soft to the
+ * manual GitHub download.
+ */
+export async function installSettingCard() {
+    const resp = await fetch(`/scripts/extensions/third-party/${FOLDER_NAME}/setting-cards/vaelmarch.json`);
+    if (!resp.ok) throw new Error(`Could not load the bundled card (${resp.status}).`);
+    const blob = await resp.blob();
+    const fd = new FormData();
+    fd.append('avatar', new File([blob], `${SETTING_CARD_NAME}.json`, { type: 'application/json' }));
+    fd.append('file_type', 'json');
+    const headers = { ...getRequestHeaders() };
+    delete headers['Content-Type']; // let the browser set the multipart boundary
+    const res = await fetch('/api/characters/import', { method: 'POST', headers, body: fd });
+    if (!res.ok) throw new Error(`Import failed (${res.status}).`);
+    // Refresh ST's character list so the card appears without a reload.
+    try { await SillyTavern.getContext().getCharacters?.(); } catch (_) { /* cosmetic */ }
+}
+
 // ── Small helpers ────────────────────────────────────────────────────────────
 
 function esc(str) {
@@ -292,8 +330,20 @@ export function openOriginsWizard() {
     // ── Step renderers ───────────────────────────────────────────────────────
 
     function renderOptionsStep() {
+        const cardInstalled = isSettingCardInstalled();
         contentEl.innerHTML = `
             <div style="font-size:0.9em;line-height:1.45;opacity:0.9;">Origins builds a fully-realized character — race, appearance, and a BG3-style origin with real mechanical hooks: a <b>social lever</b> NPCs react to and a <b>personal lever</b> that pressures you over time. Everything feeds the tracker, the narrator, and your campaign's world threat.</div>
+            <div style="${FIELD_LABEL}">Narrator card</div>
+            <div id="rt-og-card-check" style="padding:8px;border:1px solid rgba(255,255,255,0.12);border-radius:6px;font-size:0.82em;">
+                ${cardInstalled
+                    ? `✅ The <b>${esc(SETTING_CARD_NAME)}</b> setting card is installed. Run this campaign in a chat with it (or any empty narrator card of your own).`
+                    : `The bundled <b>${esc(SETTING_CARD_NAME)}</b> setting card narrates this world and ships with an empty first message — your opening scene is generated from the character you create here.<br>
+                       <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+                           <button id="rt-og-install-card" class="menu_button interactable">📥 Install narrator card</button>
+                           <a href="${SETTING_CARD_URL}" target="_blank" rel="noopener" style="font-size:0.9em;opacity:0.7;">manual download</a>
+                       </div>
+                       <span style="${HINT}">Optional — any empty narrator card works; the framework carries all mechanics.</span>`}
+            </div>
             <div style="${FIELD_LABEL}">Starting level</div>
             <select id="rt-og-level" class="text_pole" style="${SELECT_STYLE}max-width:140px;">
                 ${[...Array(20).keys()].map(i => `<option value="${i + 1}"${draft.level === i + 1 ? ' selected' : ''}>Level ${i + 1}</option>`).join('')}
@@ -304,6 +354,21 @@ export function openOriginsWizard() {
                 <span>Enable NSFW content for this campaign.<br><span style="${HINT}">Reveals the optional Intimate Physical Details section and mature worldbuilding choices — each stays an individual opt-in, all off by default. Leave unchecked for a fully SFW campaign.</span></span>
             </label>
             <div style="margin-top:14px;${HINT}">Setting: ${esc(ORIGINS_SETTING.name)} — ${esc(ORIGINS_SETTING.blurb)}</div>`;
+        contentEl.querySelector('#rt-og-install-card')?.addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            btn.textContent = 'Installing…';
+            try {
+                await installSettingCard();
+                toastr['success'](`${SETTING_CARD_NAME} narrator card installed — open a chat with it to run this campaign.`, 'Origins');
+                renderOptionsStep();
+            } catch (err) {
+                console.warn('[RPG Tracker] Setting-card install failed:', err);
+                toastr['warning'](`Automatic install failed (${err.message || err}). Use the manual download link instead.`, 'Origins');
+                btn.disabled = false;
+                btn.textContent = '📥 Install narrator card';
+            }
+        });
         contentEl.querySelector('#rt-og-level').addEventListener('change', e => { draft.level = Number(e.target.value) || 1; save(); });
         contentEl.querySelector('#rt-og-nsfw').addEventListener('change', e => {
             draft.nsfw = !!e.target.checked;
