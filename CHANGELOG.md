@@ -8,15 +8,22 @@ All notable changes to the **Origins RPG Framework** (formerly the Fatbody D&D F
 
 ### Added
 - **"Show HUD" button in the extensions drawer** (`settings-stub.html`) and a **"Show HUD panel" checkbox** in the settings overlay's General tab (`settings.html`). Both toggle the HUD, stay in sync with each other, with the wand-menu item, and with the header ✕. Re-showing a HUD whose element has gone missing rebuilds it via `createPanel()` instead of doing nothing.
-- `globalThis._rpgSetHudVisible(visible)` as a console escape hatch, mirroring the existing `_rpgSetWorldProgHudVisible`.
+- **`/hud` slash command** (`show` / `hide` / `toggle` / `reset`) — the last-resort way back, since it needs no extension UI to be reachable.
+- **"Reset HUD position" button** on both settings surfaces, and `resetPanelGeometry()` in `panel-geometry.js`. Rebuilds the panel, un-hides it, un-collapses it, and discards saved position/size so it returns to its default corner.
+- `globalThis._rpgSetHudVisible(visible)` and `globalThis._rpgResetHud()` as console escape hatches, mirroring the existing `_rpgSetWorldProgHudVisible`.
 
 ### Changed
 - **HUD visibility now persists** as `settings.hudHidden`. Previously the ✕ set an inline `display: none` that nothing recorded, so a closed HUD silently reappeared on every reload; now the choice is respected across sessions, and the new settings controls are the way back.
 - The wand-menu item is labelled **"Origins RPG Framework"** (was the pre-rebrand "Fatbody D&D Framework", which no longer matched the extensions drawer).
 
 ### Fixed
-- The wand-menu item is no longer lost for the whole session when SillyTavern's `#extensionsMenu` isn't built yet at init — `addWandButton()` retries instead of returning permanently, and guards against inserting a duplicate.
+- **A fresh install of this repo was completely broken.** `env.js` resolved the install folder by matching the script URL against a hardcoded list of *legacy* names (`SillyTavern-FatbodyDnDFramework`, `SillyTavern-RPGStateTracker`) and fell back to the pre-rebrand name. Installing under the current repo name — which is what cloning or SillyTavern's "install from URL" produces — matched nothing, so `FOLDER_NAME` pointed at a directory that does not exist and every template, sysprompt, setting-card and asset fetch 404'd, taking the whole settings UI with it. Resolution now comes from `import.meta.url`, which is correct for any folder name including user renames; the DOM probe remains as a secondary fallback and the final fallback is the current name.
+- **Hiding the HUD corrupted its saved geometry.** A hidden element measures as all-zeros, and the `ResizeObserver` fires on hide — so closing the HUD wrote `{0,0,0,0}` over good geometry. `savePanelGeometry()` now refuses to persist a hidden or degenerate measurement.
+- **Non-finite saved coordinates could strand the panel with no anchor.** `Math.max(0, Math.min(w, NaN))` is `NaN`, which invalidated the `left`/`top` declarations *after* `right`/`bottom` had been set to `auto`, leaving the fixed-position panel with nothing to position against. Such values are now dropped rather than clamped, and off-screen positions keep a visible margin on screen.
+- `setHudVisible(true)` now verifies the panel actually landed on screen and resets its geometry if not — showing the HUD always produces a *visible* HUD.
+- The wand-menu item is no longer lost for the whole session when SillyTavern's `#extensionsMenu` isn't built yet at init — `addWandButton()` retries instead of returning permanently, and replaces a stale button left by a previous init.
 - The wand item toggles the persisted state rather than the raw inline style, so it no longer *hides* a HUD that is visible but merely unnoticed, and no longer dead-clicks when the panel element is absent.
+- Settings templates are fetched with real cache-busting. `renderExtensionTemplateAsync`'s third argument is Handlebars *template data*, not a cache-buster, so `{ v: Date.now() }` never forced a refetch and an updated settings pane could be served stale after an update.
 
 ## [4.0.0] - 2026-07-28
 

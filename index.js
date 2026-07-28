@@ -28,7 +28,7 @@ import { defaultFoundation } from './default-foundation.js';
 import { selectClassAndForge } from './skill-forge.js';
 import { initSettingsOverlay, openSettingsOverlay } from './settings-overlay.js';
 import { openSkillTreeTab, onSkillTreeChatChanged, pushSkillTreeState } from './skilltree-bridge.js';
-import { savePanelGeometry, loadPanelGeometry, saveDeltaHeight, loadDeltaHeight, makeDraggable, makeResizableTR, setupResizeObserver, setupDeltaResize } from './panel-geometry.js';
+import { savePanelGeometry, loadPanelGeometry, resetPanelGeometry, saveDeltaHeight, loadDeltaHeight, makeDraggable, makeResizableTR, setupResizeObserver, setupDeltaResize } from './panel-geometry.js';
 
     // FOLDER_NAME imported from env.js
 
@@ -2017,9 +2017,19 @@ ${resourceList}
 
         if (panel instanceof HTMLElement) {
             panel.style.display = visible ? 'flex' : 'none';
-            // Re-clamp geometry on show: loadPanelGeometry sanitizes coordinates against
-            // the current viewport, which also rescues a panel parked off-screen.
-            if (visible) loadPanelGeometry(panel);
+            if (visible) {
+                // Showing the HUD must always produce a *visible* HUD. Re-clamp the saved
+                // geometry, then verify the result actually lands on screen — stale or
+                // degenerate saves would otherwise leave the panel stranded where no
+                // amount of clicking "Show HUD" can retrieve it.
+                loadPanelGeometry(panel);
+                const rect = panel.getBoundingClientRect();
+                const offScreen = rect.width < 1 || rect.height < 1
+                    || rect.right < 40 || rect.bottom < 40
+                    || rect.left > window.innerWidth - 40
+                    || rect.top > window.innerHeight - 40;
+                if (offScreen) resetPanelGeometry(panel);
+            }
         }
 
         updatePanelStatus();
@@ -2028,9 +2038,32 @@ ${resourceList}
         return !!panel && visible;
     }
 
+    /**
+     * Full HUD rescue: rebuild it if missing, un-hide it, un-collapse it, and throw away
+     * any saved position/size so it returns to the stylesheet's default corner.
+     * The one action that works no matter how the HUD was lost.
+     */
+    function resetHud() {
+        const s = getSettings();
+        s.trackerCollapsed = false;
+        saveSettings();
+
+        setHudVisible(true);
+
+        const panel = document.getElementById('rpg-tracker-panel');
+        if (panel instanceof HTMLElement) {
+            panel.classList.remove('rt-panel-collapsed');
+            resetPanelGeometry(panel);
+            const icon = panel.querySelector('#rpg-tracker-collapse-btn i');
+            if (icon) icon.className = 'fa-solid fa-chevron-up';
+        }
+        return !!panel;
+    }
+
     // Exposed for the same reason as _rpgSetWorldProgHudVisible: a console/global escape
     // hatch when the HUD is hidden and the settings UI is somehow unavailable.
     globalThis._rpgSetHudVisible = setHudVisible;
+    globalThis._rpgResetHud = resetHud;
 
     /**
      * UI Implementation
@@ -4793,13 +4826,33 @@ ${resourceList}
 
         createPanel();
 
+        // Load a settings template, genuinely bypassing caches.
+        //
+        // renderExtensionTemplateAsync's third argument is Handlebars *template data*, not a
+        // cache-buster: ST memoizes compiled templates, so passing { v: Date.now() } never
+        // forced a refetch and an updated settings pane could be served stale after an
+        // extension update. Neither of our templates contains a Handlebars expression, so a
+        // plain no-cache fetch is both sufficient and more predictable. Fall back to ST's
+        // loader if the direct fetch fails for any reason.
+        const loadSettingsTemplate = async (name) => {
+            try {
+                const resp = await fetch(
+                    `/scripts/extensions/third-party/${FOLDER_NAME}/${name}.html?v=${Date.now()}`,
+                    { cache: 'no-cache' },
+                );
+                if (resp.ok) return await resp.text();
+                console.warn(`[RPG Tracker] ${name}.html fetch returned ${resp.status}; falling back to the template loader.`);
+            } catch (e) {
+                console.warn(`[RPG Tracker] ${name}.html direct fetch failed; falling back to the template loader.`, e);
+            }
+            return await renderExtensionTemplateAsync(`third-party/${FOLDER_NAME}`, name, { v: Date.now() });
+        };
+
         try {
-            // Load Settings UI using the dynamic folder name
-            // Use a cache-busting parameter to ensure we get the fresh file from the server.
             // The dropdown gets the slim stub; the full settings markup lives in the
             // overlay, which MUST be in the DOM before the ID-based bindings below run.
-            const stubHtml = await renderExtensionTemplateAsync(`third-party/${FOLDER_NAME}`, 'settings-stub', { v: Date.now() });
-            const html = await renderExtensionTemplateAsync(`third-party/${FOLDER_NAME}`, 'settings', { v: Date.now() });
+            const stubHtml = await loadSettingsTemplate('settings-stub');
+            const html = await loadSettingsTemplate('settings');
             // Third-party plugins should go to extensions_settings2 (right column) if available
             if ($('#extensions_settings2').length) {
                 $('#extensions_settings2').append(stubHtml);
@@ -4817,6 +4870,10 @@ ${resourceList}
             });
             $('#rpg_tracker_hud_visible').on('change', function () {
                 setHudVisible(!!$(this).prop('checked'));
+            });
+            $('#rpg_tracker_btn_reset_hud, #rpg_tracker_btn_reset_hud_stub').on('click', () => {
+                resetHud();
+                toastr['success']('HUD reset to its default position.', 'RPG Tracker');
             });
             syncHudVisibilityControls();
 
@@ -5073,6 +5130,7 @@ ${resourceList}
 
             registerDiceFunctionTool();
             registerDiceSlashCommand();
+            registerHudSlashCommand();
 
             // ─── Quest System ───
             import('./quests.js').then(({ registerLogQuestTool, installQuestDebugTools, computeFrustration }) => {
@@ -6606,6 +6664,54 @@ ${resourceList}
         // Agent may be embedded in the main panel or detached to body
         for (const el of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('#rpg-tracker-agent'))) {
             el.style.setProperty('--rt-base-size', s + 'px');
+        }
+    }
+
+    /**
+     * `/hud show|hide|toggle|reset` — the last-resort way back to the HUD. Unlike the
+     * wand item and the settings drawer, this needs no extension UI to be reachable,
+     * so it still works when the panel and the settings panes are all unavailable.
+     */
+    function registerHudSlashCommand() {
+        const { SlashCommand, SlashCommandParser, ARGUMENT_TYPE, SlashCommandArgument } = SillyTavern.getContext();
+        if (!SlashCommand || !SlashCommandParser) return;
+
+        try {
+            SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+                name: 'hud',
+                callback: (_args, value) => {
+                    const action = String(value || 'toggle').trim().toLowerCase();
+                    switch (action) {
+                        case 'hide':
+                            setHudVisible(false);
+                            return 'HUD hidden.';
+                        case 'reset':
+                            resetHud();
+                            return 'HUD reset to its default position and shown.';
+                        case 'show':
+                            setHudVisible(true);
+                            return 'HUD shown.';
+                        case 'toggle':
+                        case '':
+                            setHudVisible(!!getSettings().hudHidden);
+                            return getSettings().hudHidden ? 'HUD hidden.' : 'HUD shown.';
+                        default:
+                            return `Unknown action "${action}". Use show, hide, toggle or reset.`;
+                    }
+                },
+                helpString: 'Show, hide or reset the Origins RPG Framework HUD. Use <code>/hud reset</code> if the HUD has gone missing — it rebuilds the panel and restores its default position.',
+                returns: 'status message',
+                unnamedArgumentList: [
+                    SlashCommandArgument.fromProps({
+                        description: 'show, hide, toggle (default) or reset',
+                        isRequired: false,
+                        typeList: [ARGUMENT_TYPE.STRING],
+                        enumList: ['show', 'hide', 'toggle', 'reset'],
+                    }),
+                ],
+            }));
+        } catch (e) {
+            console.error('[RPG Tracker] Failed to register /hud slash command', e);
         }
     }
 
