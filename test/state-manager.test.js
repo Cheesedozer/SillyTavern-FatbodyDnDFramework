@@ -34,6 +34,16 @@ test('getSettings fills defaults on an empty store', () => {
     assert.deepEqual(s.blockOrder, EXPECTED_BLOCK_ORDER_DEFAULT);
 });
 
+test('hudHidden defaults to false, and a persisted true survives the defaults merge', () => {
+    // The HUD reopen flow depends on both halves: a fresh install must show the HUD,
+    // and a user who closed it must still find it closed after a reload.
+    setSettings({});
+    assert.equal(getSettings().hudHidden, false);
+
+    setSettings({ hudHidden: true });
+    assert.equal(getSettings().hudHidden, true);
+});
+
 test('getSettings does not clobber existing user values', () => {
     setSettings({ suiteMode: true, fontSize: 22 });
     const s = getSettings();

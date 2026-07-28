@@ -175,6 +175,7 @@ You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These
         blockOrder: [...DEFAULT_BLOCK_ORDER],
         legacyDiceNaming: false,
         closeCount: 0,
+        hudHidden: false,
         trackerCollapseHintShown: false,
         lookbackMessages: 2,
         directPromptContext: 5,
