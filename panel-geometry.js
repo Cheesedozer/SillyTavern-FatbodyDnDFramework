@@ -10,7 +10,26 @@
 const GEOMETRY_KEY = 'rpg_tracker_geometry';
 const DELTA_HEIGHT_KEY = 'rpg_tracker_delta_height';
 
+/** How much of the panel must stay on screen for saved geometry to be usable. */
+const MIN_VISIBLE_PX = 80;
+
+/**
+ * A hidden element measures as all-zeros. Saving that would overwrite good geometry
+ * with {0,0,0,0} — and because the ResizeObserver fires when the panel is hidden,
+ * this used to happen every time the HUD was closed.
+ * @param {{ getBoundingClientRect: () => DOMRect }} panel
+ * @returns {boolean} true when the rect reflects a real, laid-out element
+ */
+function hasUsableRect(panel) {
+    const rect = panel.getBoundingClientRect();
+    return Number.isFinite(rect.width) && Number.isFinite(rect.height)
+        && rect.width >= 1 && rect.height >= 1;
+}
+
 export function savePanelGeometry(panel) {
+    // Never persist a measurement taken while the panel is hidden or unlaid-out.
+    if (!hasUsableRect(panel)) return;
+
     const rect = panel.getBoundingClientRect();
     const isCollapsed = panel.classList.contains('rt-panel-collapsed');
     let savedGeo = {};
@@ -27,6 +46,20 @@ export function savePanelGeometry(panel) {
 }
 
 /**
+ * Forget any saved geometry and strip the inline positioning, so the panel falls
+ * back to its stylesheet defaults (top: 100px; right: 20px). The escape hatch for
+ * a panel that has been stranded off-screen or shrunk to nothing.
+ * @param {HTMLElement} [panel]
+ */
+export function resetPanelGeometry(panel) {
+    try { localStorage.removeItem(GEOMETRY_KEY); } catch {}
+    if (!panel || !panel.style) return;
+    for (const prop of ['left', 'top', 'right', 'bottom', 'width', 'height']) {
+        panel.style[prop] = '';
+    }
+}
+
+/**
  * @param {HTMLElement} panel
  */
 export function loadPanelGeometry(panel) {
@@ -34,9 +67,15 @@ export function loadPanelGeometry(panel) {
         const saved = JSON.parse(localStorage.getItem(GEOMETRY_KEY));
         if (!saved) return;
 
-        // Sanitize coordinates to prevent "bricking" off-screen
-        const left = saved.left !== undefined ? Math.max(0, Math.min(window.innerWidth - 50, saved.left)) : undefined;
-        const top = saved.top !== undefined ? Math.max(0, Math.min(window.innerHeight - 50, saved.top)) : undefined;
+        // Sanitize coordinates to prevent "bricking" off-screen. Non-finite values must be
+        // dropped rather than clamped: Math.max(0, Math.min(w, NaN)) is NaN, which makes the
+        // left/top declarations invalid while right/bottom have already been set to 'auto' —
+        // the fixed-position panel then has no anchor at all and renders nowhere useful.
+        const clamp = (value, limit) => (
+            Number.isFinite(value) ? Math.max(0, Math.min(limit - MIN_VISIBLE_PX, value)) : undefined
+        );
+        const left = clamp(saved.left, window.innerWidth);
+        const top = clamp(saved.top, window.innerHeight);
 
         if (left !== undefined) { panel.style.left = left + 'px'; panel.style.right = 'auto'; }
         if (top !== undefined) { panel.style.top = top + 'px'; panel.style.bottom = 'auto'; }
