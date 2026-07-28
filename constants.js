@@ -102,6 +102,7 @@ Example:
     skills: `Acquired skills (Modern mode). The skill LIST is maintained by the engine — NEVER add, remove, rename, or re-describe a skill. Your ONLY job in this section is tracking active-skill usage: decrement remaining uses when a skill is used, set/decrement cooldowns (1 per combat round), and restore uses/cooldowns on rest per the power system. Format each entry exactly as provided:
 - Skill Name (cost/cooldown state, type, canonical descriptor)
 If usage state changed, re-output the ENTIRE [SKILLS] block.`,
+    origin: `Character origin profile (Origins campaigns). This block is written by the engine at character creation and is CANON — NEVER add, remove, rename, or rewrite its lines. Your ONLY permitted change is the "Current Goal" line, and only when the narrative has clearly and explicitly changed what the character wants right now. If you update it, re-output the ENTIRE [ORIGIN] block with only that line changed. Otherwise omit this block from your output entirely.`,
     quests: `Quest status updates ONLY. When a quest objective is completed or a quest concludes, emit a [QUESTS] block containing ONLY a JSON object with an "updates" array. Each entry must have the quest "id" and only the fields that changed: "status" (active/completed/failed), "difficulty", and/or "objectives" (array of {"id", "status", "progress"}). For quantity-based objectives (e.g. "collect 6 mushrooms"), include "progress" as the current count (e.g. 4) even if the objective is not yet completed. NOTE: Do NOT fail quests for time-out/deadline reasons (the system handles those automatically), but YOU MUST mark a quest as "failed" if it becomes narratively impossible (e.g. a protection target dies). Do NOT re-emit the full quest schema. If no quest changed, omit this block entirely.`,
     quests_legacy: `Track quests using the [QUESTS] block. Maintain the COMPLETE list of all quests at all times — active, completed, and failed. Only add a quest if [QUEST ACCEPTED] is outputted in the narrative. NEVER ADD A QUEST UNLESS YOU SEE [QUEST ACCEPTED]. A quest simply being listed does not mean it is accepted.
 
@@ -615,7 +616,7 @@ Declare their COMBAT PROFILE immediately:
 export const BLOCK_ICONS = {
     TIME: '🕒', XP: '🇽🇵', CHARACTER: '🧙', PARTY: '👥',
     COMBAT: '⚔️', INVENTORY: '🎒', ABILITIES: '✨', SPELLS: '📖',
-    QUESTS: '📋', SKILLS: '🌳',
+    QUESTS: '📋', SKILLS: '🌳', ORIGIN: '🧬',
 };
 
 // BLOCK_ORDER now derives from the module registry (single source of truth for
@@ -624,7 +625,7 @@ export const BLOCK_ICONS = {
 export const PAGE_SIZE = 8;
 
 /** Sections that should NEVER be paginated — always show all entries. */
-export const NO_PAGINATE = new Set(['CHARACTER', 'ABILITIES']);
+export const NO_PAGINATE = new Set(['CHARACTER', 'ABILITIES', 'ORIGIN']);
 
 // ── Wikidot spell-link overrides ──────────────────────────────────────────────
 // dnd5e.wikidot.com page slugs that do NOT follow the mechanical slugify rule
