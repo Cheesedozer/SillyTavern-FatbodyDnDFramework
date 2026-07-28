@@ -161,6 +161,27 @@ test('drift guard: constants.js RT_PROMPTS fallbacks stay byte-identical to the 
     assert.equal(RT_PROMPTS['sysprompt_legacy.txt'], SYSPROMPT_LEGACY_TXT, 'sysprompt_legacy.txt fallback must mirror the live file exactly');
 });
 
+// ── <origin_levers> (v4.0 Origins narrator rules) ──────────────────────────────
+
+test('both classic-mode files carry the self-gating <origin_levers> section; modern does not', () => {
+    for (const [name, txt] of [['sysprompt.txt', SYSPROMPT_TXT], ['sysprompt_legacy.txt', SYSPROMPT_LEGACY_TXT]]) {
+        assert.ok(txt.includes('<origin_levers>'), `${name} has the section`);
+        assert.ok(txt.includes('applies ONLY if an [ORIGIN] block exists'), `${name} section self-gates on the memo block`);
+    }
+    assert.ok(!SYSPROMPT_MODERN_TXT.includes('<origin_levers>'), 'Origins is D&D-mode only — modern file untouched');
+});
+
+test('origin_levers is additive-eligible (mechanics, not persona) and strippable via its toggle', () => {
+    setSettings({});
+    assert.ok(ADDITIVE_TAGS.includes('origin_levers'));
+    const additive = buildSysprompt(SYSPROMPT_TXT, { variant: 'additive' });
+    assert.ok(additive.includes('SOCIAL LEVER'), 'additive variant keeps the lever rules');
+    setSettings({ syspromptModules: { origin_levers: false } });
+    const stripped = buildSysprompt(SYSPROMPT_TXT);
+    assert.ok(!stripped.includes('SOCIAL LEVER'), 'toggle off strips the section');
+    assert.ok(!stripped.includes('<origin_levers>'));
+});
+
 test('buildSysprompt keeps the full quest-difficulty scaling guidance when the toggle is on', () => {
     setSettings({ syspromptModules: { questsDifficulty: true } });
     const out = buildSysprompt(SYSPROMPT_TXT);

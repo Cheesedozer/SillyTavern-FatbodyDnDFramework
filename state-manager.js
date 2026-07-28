@@ -196,6 +196,7 @@ You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These
             random_events: true,
             resting: true,
             quests: true,
+            origin_levers: true,
             questsDeadlines: false,
             questsFrustration: false,
             questsDifficulty: false
