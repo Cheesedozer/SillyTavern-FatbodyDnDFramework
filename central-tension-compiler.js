@@ -49,9 +49,24 @@ The central tension JSON object MUST have exactly this shape:
 Constraints: milestoneChain must have exactly 5 to 8 items — these are invariant plot pressure points the world is heading toward regardless of player action; the player decides HOW they play out and WHO they happen to, never WHETHER they happen. factionSeeds is optional (0-4 items). chapter1Seeds must have exactly 3 to 5 items, tangible and specific ("A raven watches from the rooftop and flies north" — never "you feel a sense of unease"), with at least one item tiedTo:"world" and at least one tiedTo:"character".`;
 
 function buildCompilerSystemPrompt(input, cardContext) {
-    const { source, categoryIds, customText } = input;
+    const { source, categoryIds, customText, originProfile } = input;
     let sourceInstruction;
-    if (source === 'custom') {
+    if (source === 'origin' && originProfile) {
+        // v4.0 Origins: the committed origin seeds the tension — the personal
+        // lever becomes the intimate stake, the world-threat tie-in the epic one.
+        sourceInstruction = `The player committed an Origins character; build the central tension FROM their origin (spec: the world-threat tie-in is the connective thread between personal history and the campaign-scale problem).
+
+### Committed origin
+${originProfile.origin} — ${originProfile.name}${originProfile.title ? `, ${originProfile.title}` : ''} (${originProfile.race})
+Backstory: ${originProfile.backstory}
+Personal lever: ${originProfile.personalLever?.text || ''}
+Social lever: ${originProfile.socialLever?.text || ''} (legible to: ${originProfile.socialLever?.legibleTo || ''})
+${originProfile.pursuer ? `Pursuer: ${originProfile.pursuer.identity} — motive: ${originProfile.pursuer.motive}; ${originProfile.pursuer.awareness}.${originProfile.pursuer.leverage ? ` Leverage: ${originProfile.pursuer.leverage}` : ''}` : ''}
+World-threat tie-in: ${originProfile.worldThreatTieIn}
+Origin nation: ${originProfile.nation?.name} — ${originProfile.nation?.government}; ${originProfile.nation?.cultureVibes}; ${originProfile.nation?.outsiderView}
+
+Rules for this mode: "intimateConflict" must grow out of the personal lever (and pursuer, if any) — the pressure already bearing on this character. "epicConflict" must grow out of the world-threat tie-in — the campaign-scale problem that proceeds whether or not the player acts. Personal closure and the world threat stay separate tracks that intersect narratively but never gate one another; the milestone chain tracks the WORLD threat's pressure points, not the character's personal quest list. Reuse the origin's named canon (nation, pursuer) rather than inventing parallel versions of them.`;
+    } else if (source === 'custom') {
         sourceInstruction = `The player wrote this central tension idea in their own words:\n"${customText}"\n\nExpand and structure it into the schema below. Do not replace their core idea — sharpen it into something that can sustain a 5-8 milestone campaign.`;
     } else if (source === 'preset') {
         const blurb = CENTRAL_TENSION_CATEGORIES.filter(c => categoryIds.includes(c.id)).map(c => `- ${c.label}: ${c.blurb}`).join('\n');
@@ -193,6 +208,8 @@ export function openCentralTensionWizard() {
     }
     const existing = getWorldState(chatId);
     const hasExisting = !!existing?.milestoneChain?.length;
+    // v4.0 Origins: a committed origin unlocks (and preselects) the 4th mode.
+    const originProfile = getSettings().chatStates?.[chatId]?.origin?.committed || null;
 
     _wizardOpen = true;
     const overlay = document.createElement('div');
@@ -208,10 +225,12 @@ export function openCentralTensionWizard() {
 
             <div id="rt-ctc-setup" style="flex:1;overflow-y:auto;padding:10px 14px;display:flex;flex-direction:column;gap:10px;">
                 <div style="display:flex;gap:6px;">
+                    ${originProfile ? '<button class="menu_button interactable rt-ctc-mode-btn" data-mode="origin" style="flex:1;">🧬 From my origin</button>' : ''}
                     <button class="menu_button interactable rt-ctc-mode-btn" data-mode="preset" style="flex:1;">Pick categories</button>
                     <button class="menu_button interactable rt-ctc-mode-btn" data-mode="custom" style="flex:1;">Write my own</button>
                     <button class="menu_button interactable rt-ctc-mode-btn" data-mode="ai" style="flex:1;">Let the AI decide</button>
                 </div>
+                <div id="rt-ctc-mode-origin" style="display:none;font-size:0.85em;opacity:0.8;">The architect builds the campaign's central tension from your committed origin: your <b>personal lever</b> seeds the intimate stake, your <b>world-threat tie-in</b> seeds the epic one, and your nation and pursuer stay canon.</div>
                 <div id="rt-ctc-mode-preset" style="display:none;">
                     <div style="font-size:0.8em;opacity:0.7;margin-bottom:6px;">Pick 1-4 categories — the architect will blend or choose from them to fit the current character card.</div>
                     <div id="rt-ctc-categories" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;"></div>
@@ -287,15 +306,24 @@ export function openCentralTensionWizard() {
             overlay.querySelector('#rt-ctc-mode-preset').style.display = mode === 'preset' ? 'block' : 'none';
             overlay.querySelector('#rt-ctc-mode-custom').style.display = mode === 'custom' ? 'block' : 'none';
             overlay.querySelector('#rt-ctc-mode-ai').style.display = mode === 'ai' ? 'block' : 'none';
+            const originPanel = overlay.querySelector('#rt-ctc-mode-origin');
+            if (originPanel) originPanel.style.display = mode === 'origin' ? 'block' : 'none';
             refreshGenerateEnabled();
         });
     });
     categoriesEl.addEventListener('change', refreshGenerateEnabled);
     customTextEl.addEventListener('input', refreshGenerateEnabled);
 
+    // A committed origin preselects its mode — the World Arc gate flows
+    // straight from origin commit to a tension seeded by it (spec §11).
+    if (originProfile) {
+        overlay.querySelector('.rt-ctc-mode-btn[data-mode="origin"]')?.click();
+    }
+
     function currentInput() {
         if (mode === 'preset') return { source: 'preset', categoryIds: selectedCategoryIds(), customText: '' };
         if (mode === 'custom') return { source: 'custom', categoryIds: [], customText: customTextEl.value.trim() };
+        if (mode === 'origin') return { source: 'origin', categoryIds: [], customText: '', originProfile };
         return { source: 'ai_generated', categoryIds: [], customText: '' };
     }
 
@@ -362,7 +390,9 @@ export function openCentralTensionWizard() {
         try {
             await commitCentralTension(chatId, candidate.parsed, {
                 source: candidate.input.source,
-                rawInput: candidate.input.source === 'preset' ? candidate.input.categoryIds.join(',') : candidate.input.customText,
+                rawInput: candidate.input.source === 'preset' ? candidate.input.categoryIds.join(',')
+                    : candidate.input.source === 'origin' ? `origin:${candidate.input.originProfile?.origin || ''} (${candidate.input.originProfile?.name || ''})`
+                    : candidate.input.customText,
             });
             RT.worldArcGateSkippedChats.delete(chatId);
             close();
