@@ -2,6 +2,22 @@
 
 All notable changes to the **Origins RPG Framework** (formerly the Fatbody D&D Framework) will be documented in this file.
 
+## [4.0.1] - 2026-07-28
+
+**The HUD can be reopened from settings.** Closing the HUD with the header ✕ left no way back from either settings surface — the only reopen path was a wand-menu item that was easy to miss, and easy to lose entirely.
+
+### Added
+- **"Show HUD" button in the extensions drawer** (`settings-stub.html`) and a **"Show HUD panel" checkbox** in the settings overlay's General tab (`settings.html`). Both toggle the HUD, stay in sync with each other, with the wand-menu item, and with the header ✕. Re-showing a HUD whose element has gone missing rebuilds it via `createPanel()` instead of doing nothing.
+- `globalThis._rpgSetHudVisible(visible)` as a console escape hatch, mirroring the existing `_rpgSetWorldProgHudVisible`.
+
+### Changed
+- **HUD visibility now persists** as `settings.hudHidden`. Previously the ✕ set an inline `display: none` that nothing recorded, so a closed HUD silently reappeared on every reload; now the choice is respected across sessions, and the new settings controls are the way back.
+- The wand-menu item is labelled **"Origins RPG Framework"** (was the pre-rebrand "Fatbody D&D Framework", which no longer matched the extensions drawer).
+
+### Fixed
+- The wand-menu item is no longer lost for the whole session when SillyTavern's `#extensionsMenu` isn't built yet at init — `addWandButton()` retries instead of returning permanently, and guards against inserting a duplicate.
+- The wand item toggles the persisted state rather than the raw inline style, so it no longer *hides* a HUD that is visible but merely unnoticed, and no longer dead-clicks when the panel element is absent.
+
 ## [4.0.0] - 2026-07-28
 
 **The Origins update — BG3-style character creation, an original setting, and the rebrand to Origins RPG Framework.** D&D-mode onboarding gains a full character-creation system inspired by Baldur's Gate 3's origins: pick a race and appearance, choose one of eight origins with real mechanical hooks (a *social lever* NPCs react to and a *personal lever* that pressures you over time), and commit into a campaign where the narrator, tracker, quests, Central Tension, and Lorebook Agent all know who you are. The full design lives in `docs/origins-spec-v2.md`; everything integrates with existing systems rather than duplicating them.

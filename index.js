@@ -1972,6 +1972,67 @@ ${resourceList}
 
 
     /**
+     * Push the current HUD visibility into every control that mirrors it, so the
+     * header ✕, the wand menu item, the extensions-drawer button and the settings
+     * overlay checkbox never disagree about the state.
+     */
+    function syncHudVisibilityControls() {
+        const hidden = !!getSettings().hudHidden;
+
+        const cb = document.getElementById('rpg_tracker_hud_visible');
+        if (cb instanceof HTMLInputElement) cb.checked = !hidden;
+
+        const stubBtn = document.getElementById('rpg_tracker_btn_show_hud');
+        if (stubBtn instanceof HTMLElement) {
+            stubBtn.innerHTML = hidden
+                ? '<i class="fa-solid fa-eye"></i> Show HUD'
+                : '<i class="fa-solid fa-eye-slash"></i> Hide HUD';
+        }
+    }
+
+    /**
+     * Single entry point for showing/hiding the main HUD panel.
+     *
+     * Persists the choice in `settings.hudHidden` so a closed HUD stays closed across
+     * reloads, and self-heals: if the panel element is gone (failed init, manual
+     * removal) showing it rebuilds the panel from scratch rather than dead-ending.
+     *
+     * @param {boolean} visible
+     * @returns {boolean} whether the panel is now visible
+     */
+    function setHudVisible(visible) {
+        let panel = document.getElementById('rpg-tracker-panel');
+
+        if (!panel && visible) {
+            // No element to un-hide — rebuild it. createPanel() re-wires every handler
+            // and clears stale detached panels, so this is safe as long as no
+            // #rpg-tracker-panel already exists (it does not remove one by ID).
+            createPanel();
+            panel = document.getElementById('rpg-tracker-panel');
+        }
+
+        const settings = getSettings();
+        settings.hudHidden = !visible;
+        saveSettings();
+
+        if (panel instanceof HTMLElement) {
+            panel.style.display = visible ? 'flex' : 'none';
+            // Re-clamp geometry on show: loadPanelGeometry sanitizes coordinates against
+            // the current viewport, which also rescues a panel parked off-screen.
+            if (visible) loadPanelGeometry(panel);
+        }
+
+        updatePanelStatus();
+        syncHudVisibilityControls();
+
+        return !!panel && visible;
+    }
+
+    // Exposed for the same reason as _rpgSetWorldProgHudVisible: a console/global escape
+    // hatch when the HUD is hidden and the settings UI is somehow unavailable.
+    globalThis._rpgSetHudVisible = setHudVisible;
+
+    /**
      * UI Implementation
      */
     function createPanel() {
@@ -2283,6 +2344,10 @@ ${resourceList}
         `;
 
         document.body.appendChild(panel);
+
+        // Restore a HUD the user closed in a previous session. CSS gives .rpg-tracker-panel
+        // `display: flex`, so without this a closed HUD silently reappears on every reload.
+        if (settings.hudHidden) panel.style.display = 'none';
 
         const header = panel.querySelector('#rpg-tracker-header');
         if (header instanceof HTMLElement) {
@@ -4348,11 +4413,12 @@ ${resourceList}
 
         // Close panel
         panel.querySelector('#rpg-tracker-close-btn').addEventListener('click', () => {
-            panel.style.display = 'none';
-            settings.closeCount = (settings.closeCount || 0) + 1;
+            setHudVisible(false);
+            const s = getSettings();
+            s.closeCount = (s.closeCount || 0) + 1;
             // Only show toast on the 1st close and every 10th close thereafter
-            if (settings.closeCount === 1 || settings.closeCount % 10 === 0) {
-                toastr['info']('Tracker hidden. You can reopen it at any time from the Extensions (Wand) Menu.', 'RPG Tracker');
+            if (s.closeCount === 1 || s.closeCount % 10 === 0) {
+                toastr['info']('Tracker hidden. Reopen it with the "Show HUD" button in the Origins RPG Framework panel (Extensions menu), or from the Extensions (Wand) menu.', 'RPG Tracker');
             }
             saveSettings();
         });
@@ -4742,6 +4808,17 @@ ${resourceList}
             }
             initSettingsOverlay(html);
             $('#rpg_tracker_btn_open_settings').on('click', openSettingsOverlay);
+
+            // HUD visibility — bound on both surfaces so the HUD is always reachable:
+            // the extensions drawer button (always available) and the settings overlay
+            // checkbox. setHudVisible keeps them, the wand item and the header ✕ in sync.
+            $('#rpg_tracker_btn_show_hud').on('click', () => {
+                setHudVisible(!!getSettings().hudHidden);
+            });
+            $('#rpg_tracker_hud_visible').on('change', function () {
+                setHudVisible(!!$(this).prop('checked'));
+            });
+            syncHudVisibilityControls();
 
             // Bind drawer toggles ONLY for our own content to avoid global conflicts
             $('.rpg-tracker-settings').on('click', '.inline-drawer-toggle', function(e) {
@@ -6532,9 +6609,18 @@ ${resourceList}
         }
     }
 
-    function addWandButton() {
+    function addWandButton(attempt = 0) {
+        // Drop any button left by a previous init: its click handler closes over the
+        // stale module instance (and its createPanel), so replacing beats skipping.
+        document.getElementById('toggle_rpg_tracker_wand_button')?.remove();
+
         const wandContainer = document.getElementById('extensionsMenu');
-        if (!wandContainer) return;
+        if (!wandContainer) {
+            // ST may not have built the wand menu yet when init() runs. Giving up here
+            // used to leave the HUD with no reopen path at all for the whole session.
+            if (attempt < 10) setTimeout(() => addWandButton(attempt + 1), 500);
+            return;
+        }
 
         const btn = document.createElement('div');
         btn.id = 'toggle_rpg_tracker_wand_button';
@@ -6542,15 +6628,14 @@ ${resourceList}
 
         btn.innerHTML = `
             <div class="fa-solid fa-clipboard-list extensionsMenuExtensionButton"></div>
-            <span>Fatbody D&D Framework</span>
+            <span>Origins RPG Framework</span>
         `;
 
+        // Toggle the persisted state rather than the raw inline style: a panel that is
+        // visible but merely unnoticed no longer gets hidden by the "reopen" click, and
+        // a missing panel is rebuilt instead of dead-ending.
         btn.addEventListener('click', () => {
-            const panel = document.getElementById('rpg-tracker-panel');
-            if (panel) {
-                const isHidden = panel.style.display === 'none';
-                panel.style.display = isHidden ? 'flex' : 'none';
-            }
+            setHudVisible(!!getSettings().hudHidden);
         });
 
         wandContainer.appendChild(btn);
