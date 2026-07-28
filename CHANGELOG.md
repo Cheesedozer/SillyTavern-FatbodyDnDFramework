@@ -1,6 +1,28 @@
 # Changelog
 
-All notable changes to the **Fatbody D&D Framework** will be documented in this file.
+All notable changes to the **Origins RPG Framework** (formerly the Fatbody D&D Framework) will be documented in this file.
+
+## [4.0.0] - 2026-07-28
+
+**The Origins update — BG3-style character creation, an original setting, and the rebrand to Origins RPG Framework.** D&D-mode onboarding gains a full character-creation system inspired by Baldur's Gate 3's origins: pick a race and appearance, choose one of eight origins with real mechanical hooks (a *social lever* NPCs react to and a *personal lever* that pressures you over time), and commit into a campaign where the narrator, tracker, quests, Central Tension, and Lorebook Agent all know who you are. The full design lives in `docs/origins-spec-v2.md`; everything integrates with existing systems rather than duplicating them.
+
+### Added
+- **Origins creation wizard** (`origins-wizard.js`): a full-screen six-step overlay (campaign options → race → appearance → origin → origin details → review & commit) opened from the new 🧬 entry on the D&D onboarding step. Drafts persist per chat (`chatStates[chatId].origin.draft`) and survive reloads with a "Resume — step N" button; per-step 🎲 Random buttons and a one-click **⚒️ Forge me a character** path randomize everything and land on review. The classic archetype quick-roll remains untouched below it.
+- **Twelve races and eight origins** (`origins-data.js`): Aasimar, Dragonborn, Dwarf, Elf, Gnome, Goliath, Halfling, Human, Orc, Tiefling, Vampire, and the original hivemind **Silkborn** — each with reference data (habitat, lifespan, naming, appearance ranges) that seeds nation defaults and AI proposals. Origins: Exiled Royal, Vampire Lord, Freed Undead Minion, Oathbreaker Knight, Willing Cultist, Artifact-Bound Nobody, Abandoned Champion, Defector Spy — each with story blanks, enumerated modifiers, a Core Nation Block (12 culture vibes with AI-internal descriptions, government/environment lists), a Pursuer Block, incompatibility rules, and narrator-private quest directions.
+- **Origins engine** (`origins-engine.js`, pure/node-tested): live incompatibility enforcement (hard blocks disable options with the rule's reason; soft tensions require an in-fiction explanation; narrative rules feed generation), the **Lever Guarantee** (no combination of choices can produce a character without an active personal lever — substitutes are offered where a default lever is disabled), the race–origin matrix (Vampire race locks to Vampire Lord / Exiled Royal), and the generate → validate → retry(≤3) profile compiler contract.
+- **The world of Vaelmarch**: an original post-imperial setting built so dynamically generated nations are canon-safe — the fallen Argent Concord, the Order of the Sealed Lamp, the Six Houses, and the Silkborn Chorus-Weave are the only fixed anchors. Ships as a Character Card V2 setting-narrator (`setting-cards/vaelmarch.json`) with an **empty first message by design**, installable in one click from the wizard (`/api/characters/import`) or manually from the repo.
+- **Generated opening scene**: committing generates the campaign's first message from the finished profile via the narrator connection (state-model fallback), with an in-medias-res / quiet-start frame choice and free regeneration *before* it is inserted as the chat's first assistant message.
+- **`[ORIGIN]` memo block** (`module-registry.js`, appended last, opt-in per campaign like `SKILLS`): a compact engine-written canon block the state extractor may only touch on the "Current Goal" line. Full canon (backstory, nation, pursuer, quest directions) lives in a new `${prefix}_Origin` campaign lorebook written at commit.
+- **`<origin_levers>` sysprompt section** (classic-mode files + additive delivery): narrator rules for honoring the levers, advancing the pursuer plausibly, surfacing origin quests lazily through the normal quest flow, and never silently resolving intentional tensions. Self-gates on the presence of an `[ORIGIN]` block.
+- **Central Tension "🧬 From my origin" mode** (`central-tension-compiler.js`): with a committed origin, the World Arc gate preselects a fourth compiler mode that seeds `intimateConflict` from the personal lever and `epicConflict` from the world-threat tie-in, reusing the origin's named nation/pursuer canon.
+- **Origin-tagged quests**: `LogQuest` gains an optional `origin_thread` parameter; tagged quests carry `source: "origin"` and an `[origin: …]` marker in the injected active-quest text (JSON quest mode; the legacy text serializer drops the tag).
+- **Origins settings tab**: offer-during-onboarding toggle, the NSFW default for new campaigns, and the `origin_levers` sysprompt toggle.
+- **Master NSFW toggle per campaign**: one switch on the wizard's first step gates the Intimate Physical Details appearance section, mature worldbuilding modifiers, and the gated culture vibe — each remaining an individual opt-in, all off by default.
+
+### Changed
+- **Rebranded to Origins RPG Framework, v4.0.0**: `manifest.json` display name, onboarding header, settings stub, skill-tree tab title, and toast titles. Internal identifiers are untouched (settings key `rpg_tracker`, `rt-`/`rpg-` CSS prefixes, the `FatbodyRollTheDice` tool name, Megumin's `[[FATBODY]]` block contract), so existing installs, settings, and integrations survive unchanged.
+- `saveChatState()` now preserves the new per-chat `origin` slot; `isOnboardingArcReady()` treats a committed origin as D&D-ready (the wizard deletes the onboarding flag at commit, mirroring the foundation commit).
+- Tests: 322 passing (49 new across `test/origins-data.test.js`, `test/origins-engine.test.js`, and extensions to the onboarding/state-manager/sysprompt suites), including a property test that randomized selections validate for every origin across 25 seeds.
 
 ## [3.6.0] - 2026-07-05
 

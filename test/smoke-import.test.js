@@ -30,6 +30,13 @@ if (!globalThis.window) globalThis.window = globalThis;
 
 test('index.js and its split modules link and evaluate without throwing', async () => {
     await import('../index.js');
+    // origins-wizard.js is loaded dynamically at click time in production, so
+    // it is NOT in index.js's static graph — import it explicitly or a broken
+    // export/import in it would go unnoticed until a user clicks 🧬 Origins.
+    const wizard = await import('../origins-wizard.js');
+    assert.equal(typeof wizard.openOriginsWizard, 'function');
+    assert.equal(typeof wizard.discardOriginDraft, 'function');
+    assert.equal(typeof wizard.installSettingCard, 'function');
     // The Megumin/runtime global bridges must be installed at module load.
     assert.equal(typeof globalThis._rpgRenderRouterUI, 'function');
     assert.equal(typeof globalThis._rpgRefreshAgentManifest, 'function');

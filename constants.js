@@ -102,6 +102,7 @@ Example:
     skills: `Acquired skills (Modern mode). The skill LIST is maintained by the engine — NEVER add, remove, rename, or re-describe a skill. Your ONLY job in this section is tracking active-skill usage: decrement remaining uses when a skill is used, set/decrement cooldowns (1 per combat round), and restore uses/cooldowns on rest per the power system. Format each entry exactly as provided:
 - Skill Name (cost/cooldown state, type, canonical descriptor)
 If usage state changed, re-output the ENTIRE [SKILLS] block.`,
+    origin: `Character origin profile (Origins campaigns). This block is written by the engine at character creation and is CANON — NEVER add, remove, rename, or rewrite its lines. Your ONLY permitted change is the "Current Goal" line, and only when the narrative has clearly and explicitly changed what the character wants right now. If you update it, re-output the ENTIRE [ORIGIN] block with only that line changed. Otherwise omit this block from your output entirely.`,
     quests: `Quest status updates ONLY. When a quest objective is completed or a quest concludes, emit a [QUESTS] block containing ONLY a JSON object with an "updates" array. Each entry must have the quest "id" and only the fields that changed: "status" (active/completed/failed), "difficulty", and/or "objectives" (array of {"id", "status", "progress"}). For quantity-based objectives (e.g. "collect 6 mushrooms"), include "progress" as the current count (e.g. 4) even if the objective is not yet completed. NOTE: Do NOT fail quests for time-out/deadline reasons (the system handles those automatically), but YOU MUST mark a quest as "failed" if it becomes narratively impossible (e.g. a protection target dies). Do NOT re-emit the full quest schema. If no quest changed, omit this block entirely.`,
     quests_legacy: `Track quests using the [QUESTS] block. Maintain the COMPLETE list of all quests at all times — active, completed, and failed. Only add a quest if [QUEST ACCEPTED] is outputted in the narrative. NEVER ADD A QUEST UNLESS YOU SEE [QUEST ACCEPTED]. A quest simply being listed does not mean it is accepted.
 
@@ -272,6 +273,17 @@ Track XP as a running total across outputs.
 <quests>
 When the player formally accepts a quest or task from an NPC, you MUST call the LogQuest tool. If a duration is given (e.g., 'four days'), you MUST calculate the specific "Day N" timestamp based on the current in-world time. After LogQuest finishes, output *[QUEST ACCEPTED]*. Do NOT do this for rumors, casual mentions, or tasks the player has not yet agreed to.
 </quests>
+
+<origin_levers>
+ORIGIN SYSTEM — applies ONLY if an [ORIGIN] block exists in the State Memo. If no [ORIGIN] block exists, ignore this section entirely.
+- The [ORIGIN] block is engine-written canon from character creation. Never contradict it, and never rewrite it (the tracker owns it). The lorebook holds the full origin canon — backstory, nation, pursuer; reuse those established facts verbatim and never re-roll them on later mention.
+- SOCIAL LEVER: NPCs matching the lever's "legible to" description can recognize the character, and recognition must carry real consequences — changed prices, closed doors, drawn blades, whispered reports — according to each NPC's own culture and allegiances. NPCs outside that description do not recognize the character.
+- PERSONAL LEVER: keep it active as recurring in-fiction pressure (a clock, cost, curse, dependency, or leverage). It should force decisions over time, not sit as backstory flavor. Escalate it gradually and visibly.
+- PURSUER: a persistent NPC/faction instantiated at creation. Advance their position plausibly offscreen as time passes; their awareness changes only through events, never at random. Do not invent a second pursuer for the same origin.
+- ORIGIN QUESTS: surface the character's personal origin threads LAZILY — only when the scene makes one plausible (a relevant location, NPC, or piece of information), then run it through the normal quest flow. Never front-load several origin threads at once; distribute them across the whole campaign. Personal closure and any world-scale threat are separate tracks that intersect narratively but never gate one another.
+- TENSIONS: where the origin's facts contain an intentional contradiction (recorded at creation), surface the tension explicitly as a story beat when it becomes relevant — never silently resolve it.
+- If this campaign is SFW, keep every origin element SFW.
+</origin_levers>
 
 <level_up_protocol>
 LEVEL-UP PROCEDURE — triggers whenever XP crosses a threshold mid-output:
@@ -512,6 +524,17 @@ When the player formally accepts a quest from an NPC, describe it clearly in the
 When an objective is completed, mention it naturally in the narrative. When a quest concludes (success or failure), narrate the outcome.
 </quests>
 
+<origin_levers>
+ORIGIN SYSTEM — applies ONLY if an [ORIGIN] block exists in the State Memo. If no [ORIGIN] block exists, ignore this section entirely.
+- The [ORIGIN] block is engine-written canon from character creation. Never contradict it, and never rewrite it (the tracker owns it). The lorebook holds the full origin canon — backstory, nation, pursuer; reuse those established facts verbatim and never re-roll them on later mention.
+- SOCIAL LEVER: NPCs matching the lever's "legible to" description can recognize the character, and recognition must carry real consequences — changed prices, closed doors, drawn blades, whispered reports — according to each NPC's own culture and allegiances. NPCs outside that description do not recognize the character.
+- PERSONAL LEVER: keep it active as recurring in-fiction pressure (a clock, cost, curse, dependency, or leverage). It should force decisions over time, not sit as backstory flavor. Escalate it gradually and visibly.
+- PURSUER: a persistent NPC/faction instantiated at creation. Advance their position plausibly offscreen as time passes; their awareness changes only through events, never at random. Do not invent a second pursuer for the same origin.
+- ORIGIN QUESTS: surface the character's personal origin threads LAZILY — only when the scene makes one plausible (a relevant location, NPC, or piece of information), then run it through the normal quest flow. Never front-load several origin threads at once; distribute them across the whole campaign. Personal closure and any world-scale threat are separate tracks that intersect narratively but never gate one another.
+- TENSIONS: where the origin's facts contain an intentional contradiction (recorded at creation), surface the tension explicitly as a story beat when it becomes relevant — never silently resolve it.
+- If this campaign is SFW, keep every origin element SFW.
+</origin_levers>
+
 <level_up_protocol>
 LEVEL-UP PROCEDURE — triggers whenever XP crosses a threshold mid-output:
 
@@ -615,7 +638,7 @@ Declare their COMBAT PROFILE immediately:
 export const BLOCK_ICONS = {
     TIME: '🕒', XP: '🇽🇵', CHARACTER: '🧙', PARTY: '👥',
     COMBAT: '⚔️', INVENTORY: '🎒', ABILITIES: '✨', SPELLS: '📖',
-    QUESTS: '📋', SKILLS: '🌳',
+    QUESTS: '📋', SKILLS: '🌳', ORIGIN: '🧬',
 };
 
 // BLOCK_ORDER now derives from the module registry (single source of truth for
@@ -624,7 +647,7 @@ export const BLOCK_ICONS = {
 export const PAGE_SIZE = 8;
 
 /** Sections that should NEVER be paginated — always show all entries. */
-export const NO_PAGINATE = new Set(['CHARACTER', 'ABILITIES']);
+export const NO_PAGINATE = new Set(['CHARACTER', 'ABILITIES', 'ORIGIN']);
 
 // ── Wikidot spell-link overrides ──────────────────────────────────────────────
 // dnd5e.wikidot.com page slugs that do NOT follow the mechanical slugify rule

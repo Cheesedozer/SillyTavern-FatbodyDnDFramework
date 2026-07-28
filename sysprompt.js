@@ -47,6 +47,10 @@ export const ADDITIVE_TAGS = [
     'end_of_output_footer', 'state_memo', 'constraints',
     // Modern-mode (sysprompt_modern.txt) mechanics sections
     'power_system', 'skills', 'lethality',
+    // v4.0 Origins lever/canon rules — mechanics, not persona (self-gating:
+    // the section tells the narrator to ignore itself when no [ORIGIN] block
+    // exists in the State Memo).
+    'origin_levers',
 ];
 
 export const ADDITIVE_HEADER =

@@ -81,7 +81,8 @@ export function renderQuestsAsPlainText(quests, currentTime) {
     
     let text = "### ACTIVE QUESTS\n";
     for (const q of relevantQuests) {
-        text += `- **${q.title}** (Given by ${q.giver_name} at ${q.giver_location})\n`;
+        const originTag = q.source === 'origin' ? ` [origin${q.origin_thread ? `: ${q.origin_thread}` : ''}]` : '';
+        text += `- **${q.title}**${originTag} (Given by ${q.giver_name} at ${q.giver_location})\n`;
 
         // Always show deadline/mood when data is available, regardless of module flags
         if (q.deadline_time) {
@@ -239,6 +240,11 @@ export function registerLogQuestTool() {
                 description: 'All rewards promised by the NPC. One entry per reward (e.g. "100 GP", "Elara\'s family heirloom").',
                 items: { type: 'string' },
             },
+            origin_thread: {
+                type: 'string',
+                description:
+                    'ONLY for quests arising from the player character\'s committed Origins background (their personal origin threads, per the ORIGIN SYSTEM rules): a 2-5 word label for which origin thread this quest advances (e.g. "reclaim the throne", "rival former-minion"). Omit for all other quests, and always omit when the campaign has no [ORIGIN] block.'
+            },
         };
 
         const required = ['title', 'giver_name', 'giver_location', 'objectives'];
@@ -287,6 +293,14 @@ export function registerLogQuestTool() {
             action: async (args) => {
                 const s = getSettings();
 
+                // Origin tagging (v4.0): only persisted when the active chat
+                // actually has a committed origin — the parameter itself is
+                // always in the schema (tool registration is not per-chat).
+                const questChatId = SillyTavern.getContext().chatId
+                    || (typeof globalThis._rpgCurrentChatId === 'function' ? globalThis._rpgCurrentChatId() : null);
+                const hasOrigin = !!s.chatStates?.[questChatId]?.origin?.committed;
+                const originThread = hasOrigin ? String(args.origin_thread || '').trim() : '';
+
                 // Extract T-1 time from the memo
                 const tMatch = s.currentMemo?.match(/\[TIME\]([\s\S]*?)\[\/TIME\]/i);
                 let acceptedTime = "08:00 AM, Day 1"; // Fallback
@@ -314,7 +328,11 @@ export function registerLogQuestTool() {
                     frustration_coefficient: isFrustration ? (args.frustration_coefficient || 1.0) : undefined,
                     auto_fail: (isDeadlines && !isFrustration),
                     accepted_time: acceptedTime,
-                    status: 'active'
+                    status: 'active',
+                    // Unknown fields round-trip intact through the JSON quest
+                    // store (JSON mode only — the legacy text serializer drops them).
+                    source: originThread ? 'origin' : undefined,
+                    origin_thread: originThread || undefined,
                 };
 
                 // Stage the quest — do NOT write to currentMemo yet.

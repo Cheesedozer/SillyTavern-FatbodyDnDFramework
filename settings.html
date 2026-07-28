@@ -28,7 +28,7 @@
 
             <div style="margin-top: 10px;">
                 <small style="display: block; margin-bottom: 4px; font-weight: bold; opacity: 0.9;">Sysprompt Delivery
-                    <i class="fa-solid fa-circle-question interactable" title="Standalone: Fatbody writes the full D&amp;D system prompt (role + rules) into the Main prompt box. Additive: Fatbody never touches the Main prompt box — a rules-only prompt (no persona) is injected alongside whatever system prompt you or another extension (e.g. Megumin Suite engines) provide. If Megumin's own [[FATBODY]] block is active and Suite Mode is also on, Fatbody automatically skips this injection so Megumin's live pull is the single source of mechanics — no manual coordination needed."></i>
+                    <i class="fa-solid fa-circle-question interactable" title="Standalone: the framework writes the full D&amp;D system prompt (role + rules) into the Main prompt box. Additive: the framework never touches the Main prompt box — a rules-only prompt (no persona) is injected alongside whatever system prompt you or another extension (e.g. Megumin Suite engines) provide. If Megumin's own [[FATBODY]] block is active and Suite Mode is also on, the framework automatically skips this injection so Megumin's live pull is the single source of mechanics — no manual coordination needed."></i>
                 </small>
                 <label class="checkbox_label">
                     <input type="radio" name="rpg_tracker_sysprompt_delivery" value="standalone" />
@@ -49,7 +49,7 @@
             <label class="checkbox_label" style="margin-top: 10px;">
                 <input id="rpg_tracker_suite_mode" type="checkbox" />
                 <span>Suite Mode (Megumin Suite)</span>
-                <i class="fa-solid fa-circle-question interactable" title="Enable when running alongside the Megumin Suite. The Suite owns the Main prompt and injects Fatbody mechanics via its [[FATBODY]] block, which now pulls Fatbody's LIVE rules automatically (respecting your current module toggles and campaign mode) — no manual syncing, and Fatbody won't also inject them separately. Runtime state (RNG queue, state memo, quests) is still injected as normal."></i>
+                <i class="fa-solid fa-circle-question interactable" title="Enable when running alongside the Megumin Suite. The Suite owns the Main prompt and injects this framework's mechanics via its [[FATBODY]] block, which now pulls the framework's LIVE rules automatically (respecting your current module toggles and campaign mode) — no manual syncing, and the framework won't also inject them separately. Runtime state (RNG queue, state memo, quests) is still injected as normal."></i>
             </label>
 
             <label class="checkbox_label" style="margin-top: 10px;">
@@ -110,6 +110,33 @@
                     <label class="checkbox_label"><input type="checkbox" id="rpg_sysprompt_mod_random_events" /><span>🌍 Events</span></label>
                     <label class="checkbox_label"><input type="checkbox" id="rpg_sysprompt_mod_resting" /><span>💤 Resting</span></label>
                 </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- TAB: ORIGINS (v4.0) -->
+    <section class="rt-settings-tab" data-tab="origins">
+        <div class="flex-container flexFlowColumn gap-1">
+            <div style="border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; padding: 8px 10px;">
+                <small style="display: block; margin-bottom: 6px; font-weight: bold; opacity: 0.9;">🧬 Origins Character Creation</small>
+                <div class="flex-container flexFlowColumn gap-1" style="padding-left: 5px;">
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="rpg_origins_enabled" />
+                        <span>Offer Origins during D&amp;D onboarding</span>
+                        <i class="fa-solid fa-circle-question interactable" title="Shows the 🧬 Origins entry on the D&amp;D onboarding step of new campaigns. Turning this off leaves the classic archetype quick-roll as the only path. Existing campaigns are never affected."></i>
+                    </label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="rpg_origins_nsfw_default" />
+                        <span>New Origins campaigns start with NSFW enabled</span>
+                        <i class="fa-solid fa-circle-question interactable" title="Sets the initial state of the per-campaign mature-content toggle on the wizard's first step. Each campaign can still flip it during creation, and every gated element stays an individual opt-in either way."></i>
+                    </label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="rpg_sysprompt_mod_origin_levers" />
+                        <span>Origin narrator rules (levers, canon, lazy origin quests)</span>
+                        <i class="fa-solid fa-circle-question interactable" title="Injects the &lt;origin_levers&gt; section of the system prompt. It self-gates on the presence of an [ORIGIN] block, so non-Origins chats are unaffected — only disable this if you want origin play rules fully removed from the prompt."></i>
+                    </label>
+                </div>
+                <small style="display: block; margin-top: 8px; opacity: 0.6; font-style: italic; line-height: 1.35;">Character creation itself runs from the tracker panel of a new D&amp;D campaign (🧬 Origins). The bundled Vaelmarch narrator card lives in the repo's <code>setting-cards/</code> folder and can be installed with one click from the wizard's first step.</small>
             </div>
         </div>
     </section>
@@ -246,7 +273,7 @@
             <label>History Context (States)</label>
             <input id="rpg_tracker_history_count" type="text" inputmode="numeric" pattern="[0-9]*" class="text_pole" value="1" />
             <label>External Token Reserve
-                <i class="fa-solid fa-circle-question interactable" title="Tokens held back from Fatbody's injection budget for OTHER extensions that add prompt content after Fatbody runs (e.g. Megumin Suite). Set ~1000-2000 when running Megumin Suite; leave 0 otherwise. Extensions that register their prompts normally (e.g. VectFox) are measured automatically and don't need this."></i>
+                <i class="fa-solid fa-circle-question interactable" title="Tokens held back from the framework's injection budget for OTHER extensions that add prompt content after the framework runs (e.g. Megumin Suite). Set ~1000-2000 when running Megumin Suite; leave 0 otherwise. Extensions that register their prompts normally (e.g. VectFox) are measured automatically and don't need this."></i>
             </label>
             <input id="rpg_tracker_external_reserve" type="text" inputmode="numeric" pattern="[0-9]*" class="text_pole" value="0" />
         </div>

@@ -20,6 +20,7 @@ const EXPECTED_MEMO_MODULES = {
     character: true, party: true, combat: true, inventory: true,
     abilities: true, spells: true, time: true, xp: true, quests: true,
     skills: false,   // v3.0 Modern-mode module — opt-in per chat
+    origin: false,   // v4.0 Origins module — opt-in per chat at origin commit
 };
 const EXPECTED_BLOCK_ORDER_DEFAULT = ['COMBAT', 'CHARACTER', 'PARTY', 'INVENTORY', 'ABILITIES', 'SPELLS', 'XP', 'TIME'];
 
@@ -60,8 +61,8 @@ test('LINCHPIN: routerModules is deep-equal to but not aliased with DEFAULT_MODU
     assert.equal(DEFAULT_MODULES.npc.enabled, true, 'mutating settings must not mutate the hoisted default');
 });
 
-test('byte-equality guard: BLOCK_ORDER is the historical literal + SKILLS (v3.0)', () => {
-    assert.deepEqual(BLOCK_ORDER, ['COMBAT', 'CHARACTER', 'PARTY', 'INVENTORY', 'ABILITIES', 'SPELLS', 'XP', 'TIME', 'QUESTS', 'SKILLS']);
+test('byte-equality guard: BLOCK_ORDER is the historical literal + SKILLS (v3.0) + ORIGIN (v4.0)', () => {
+    assert.deepEqual(BLOCK_ORDER, ['COMBAT', 'CHARACTER', 'PARTY', 'INVENTORY', 'ABILITIES', 'SPELLS', 'XP', 'TIME', 'QUESTS', 'SKILLS', 'ORIGIN']);
 });
 
 test('byte-equality guard: settings.modules defaults are stable', () => {
@@ -215,6 +216,21 @@ test('isOnboardingArcReady: D&D ruleset picked is ready — no class-lock concep
     setSettings({ chatStates: { dndPicked: { onboarding: { mode: 'dnd' } } } });
     const st = getSettings().chatStates.dndPicked;
     assert.equal(isOnboardingArcReady(st, 'dndPicked'), true);
+});
+
+test('isOnboardingArcReady: a committed origin is ready even after the onboarding flag is deleted (v4.0)', async () => {
+    const { isOnboardingArcReady } = await import('../state-manager.js');
+    // The Origins wizard deletes chatState.onboarding at commit (mirroring the
+    // foundation commit) — the committed origin must carry gate readiness.
+    setSettings({ chatStates: { originDone: { origin: { committed: { name: 'X' } } } } });
+    const st = getSettings().chatStates.originDone;
+    assert.equal(isOnboardingArcReady(st, 'originDone'), true);
+    // An in-progress draft alone is NOT ready.
+    setSettings({ chatStates: { originDraft: { onboarding: { mode: 'dnd' }, origin: { draft: { step: 'race' } } } } });
+    const st2 = getSettings().chatStates.originDraft;
+    assert.equal(isOnboardingArcReady(st2, 'originDraft'), true, 'still ready via the dnd onboarding flag');
+    setSettings({ chatStates: { draftOnly: { origin: { draft: { step: 'race' } } } } });
+    assert.equal(isOnboardingArcReady(getSettings().chatStates.draftOnly, 'draftOnly'), false);
 });
 
 test('isOnboardingArcReady: neither ruleset picked (fresh/mode-select) is not ready', async () => {

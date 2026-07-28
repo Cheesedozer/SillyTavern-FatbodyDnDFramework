@@ -1309,7 +1309,7 @@ ${resourceList}
         const st = getSettings().chatStates?.[chatId];
         const cls = (st?.foundation?.CLASS_ROSTER || []).find(c => c.id === classId);
         if (!cls) {
-            toastr['error'](`Unknown class "${classId}".`, 'Fatbody Framework');
+            toastr['error'](`Unknown class "${classId}".`, 'Origins RPG Framework');
             return;
         }
         const setStatus = (m) => {
@@ -1326,10 +1326,10 @@ ${resourceList}
             // push the freshly forged constellation to it explicitly.
             pushSkillTreeState(chatId);
             if (nodeCount) {
-                toastr['success'](`${cls.name} locked in — ${nodeCount} skills forged. Open the Skill Tree (🌳) to spend your points!`, 'Fatbody Framework', { timeOut: 10000 });
+                toastr['success'](`${cls.name} locked in — ${nodeCount} skills forged. Open the Skill Tree (🌳) to spend your points!`, 'Origins RPG Framework', { timeOut: 10000 });
             }
             if (RT.stateModelRunning) {
-                toastr['info']('State Model is busy — use the character buttons to generate your character when it finishes.', 'Fatbody Framework');
+                toastr['info']('State Model is busy — use the character buttons to generate your character when it finishes.', 'Origins RPG Framework');
                 return;
             }
             setStatus(`Creating your ${cls.name}…`);
@@ -1383,11 +1383,28 @@ ${resourceList}
         // ── Onboarding flow: mode picker → D&D / Modern setup (empty memo only) ──
         const onboardingChatId = () => SillyTavern.getContext().chatId || RT.currentChatId || null;
 
+        // Origins creation wizard (v4.0) — loaded on demand, mirrors the
+        // skilltree-bridge dynamic-import pattern to keep init lean.
+        el.querySelector('#rt-origins-open-btn')?.addEventListener('click', async () => {
+            try {
+                const { openOriginsWizard } = await import('./origins-wizard.js');
+                openOriginsWizard();
+            } catch (e) {
+                toastr['error'](`${e.message || e}`, 'Could not open the Origins wizard');
+            }
+        });
+        el.querySelector('#rt-origins-discard-btn')?.addEventListener('click', async () => {
+            if (!confirm('Discard your in-progress Origins character? This cannot be undone.')) return;
+            const { discardOriginDraft } = await import('./origins-wizard.js');
+            discardOriginDraft(onboardingChatId());
+            refresh();
+        });
+
         // Step 1: pick a ruleset. Persisted per chat so the flow survives reloads.
         el.querySelectorAll('.rt-mode-btn[data-mode]').forEach(btn => {
             btn.addEventListener('click', () => {
                 const chatId = onboardingChatId();
-                if (!chatId) { toastr['warning']('Open a chat first.', 'Fatbody Framework'); return; }
+                if (!chatId) { toastr['warning']('Open a chat first.', 'Origins RPG Framework'); return; }
                 const s = getSettings();
                 if (!s.chatStates) s.chatStates = {};
                 if (!s.chatStates[chatId]) s.chatStates[chatId] = {};
@@ -1413,7 +1430,7 @@ ${resourceList}
         el.querySelector('#rt-modern-custom')?.addEventListener('click', () => openFoundationWizard());
         el.querySelector('#rt-modern-default')?.addEventListener('click', async (e) => {
             const chatId = onboardingChatId();
-            if (!chatId) { toastr['warning']('Open a chat first.', 'Fatbody Framework'); return; }
+            if (!chatId) { toastr['warning']('Open a chat first.', 'Origins RPG Framework'); return; }
             if (RT.onboardingForge) return;
             const btn = /** @type {HTMLButtonElement} */ (e.currentTarget);
             btn.disabled = true;
@@ -4839,7 +4856,7 @@ ${resourceList}
                     }
                     await refreshExtensionPrompt();   // clears router lore (now also gated on enabled)
                     await applyAdditiveSysprompt();   // clears the additive rules prompt (gated on enabled)
-                    toastr['info']('Fatbody disabled — D&D system prompt removed.', 'RPG Tracker');
+                    toastr['info']('Origins RPG Framework disabled — system prompt removed.', 'RPG Tracker');
                 }
 
                 // Both re-evaluate their own sub-toggles internally, but unregister first
@@ -5416,7 +5433,7 @@ ${resourceList}
             $('#rpg_tracker_export_all_modules').on('click', () => {
                 const s = getSettings();
                 if (!s.customFields || s.customFields.length === 0) {
-                    toastr['info']('No custom modules to export.', 'Fatbody Framework');
+                    toastr['info']('No custom modules to export.', 'Origins RPG Framework');
                     return;
                 }
                 exportModules(s.customFields);
@@ -5679,7 +5696,19 @@ ${resourceList}
                 { key: 'random_events', id: 'rpg_sysprompt_mod_random_events' },
                 { key: 'resting',       id: 'rpg_sysprompt_mod_resting' },
                 { key: 'quests',        id: 'rpg_sysprompt_mod_quests' },
+                { key: 'origin_levers', id: 'rpg_sysprompt_mod_origin_levers' },
             ];
+
+            // ── Origins tab toggles (v4.0) ──
+            $('#rpg_origins_enabled').prop('checked', getSettings().originsEnabled !== false).on('change', function () {
+                getSettings().originsEnabled = !!$(this).prop('checked');
+                saveSettings();
+                refreshRenderedView(); // the onboarding panel shows/hides the 🧬 entry live
+            });
+            $('#rpg_origins_nsfw_default').prop('checked', !!getSettings().originsNsfwDefault).on('change', function () {
+                getSettings().originsNsfwDefault = !!$(this).prop('checked');
+                saveSettings();
+            });
             _syspromptModDefs.forEach(({ key, id }) => {
                 const s = getSettings();
                 const val = s.syspromptModules?.[key] ?? true;

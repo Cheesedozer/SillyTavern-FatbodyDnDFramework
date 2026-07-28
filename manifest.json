@@ -1,11 +1,11 @@
 {
-    "display_name": "Fatbody D&D Framework",
-    "version": "3.6.0",
+    "display_name": "Origins RPG Framework",
+    "version": "4.0.0",
     "author": "Disgusting Fatbody",
     "js": "index.js",
     "css": "style.css",
     "loading_order": 20,
     "generate_interceptor": "rpgTrackerInterceptor",
-    "homePage": "https://github.com/MultihogAurelius/SillyTavern-FatbodyDnDFramework",
+    "homePage": "https://github.com/Cheesedozer/SillyTavern-OriginsRPGFramework",
     "auto_update": true
 }

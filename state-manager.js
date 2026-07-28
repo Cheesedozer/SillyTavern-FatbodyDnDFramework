@@ -191,11 +191,15 @@ You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These
         chatStates: {},
         quests: [],
         questLegacyMode: false,
+        // v4.0 Origins character creation
+        originsEnabled: true,       // offer 🧬 Origins on the D&D onboarding step
+        originsNsfwDefault: false,  // initial state of the per-campaign NSFW toggle
         syspromptModules: {
             loot: true,
             random_events: true,
             resting: true,
             quests: true,
+            origin_levers: true,
             questsDeadlines: false,
             questsFrustration: false,
             questsDifficulty: false
@@ -667,6 +671,10 @@ export function saveChatState(chatId) {
         // World Progression session-local state — written by world-progression.js
         // directly, never by the normal save cycle (same class as foundation/progression above).
         worldProg: existing.worldProg,
+        // v4.0 Origins state ({draft, committed, nsfw}) — written by the Origins
+        // wizard directly, never by the normal save cycle. Must be preserved
+        // here or the next saveChatState would silently wipe it.
+        origin: existing.origin,
     };
     SillyTavern.getContext().saveSettingsDebounced();
 }
@@ -687,14 +695,16 @@ export function getCampaignMode(chatId) {
  * Whether the active chat is ready to start a World Arc: a Modern campaign
  * with its class locked, or a D&D campaign (no class-lock concept exists for
  * D&D in this codebase — classes are fluid/multiclass, so onboarding is
- * considered complete once the ruleset itself is picked).
+ * considered complete once the ruleset itself is picked). An Origins commit
+ * (v4.0) deletes the onboarding flag, so a committed origin also counts as
+ * D&D-ready.
  * @param {object|null|undefined} chatState - settings.chatStates[chatId]
  * @param {string} chatId
  * @returns {boolean}
  */
 export function isOnboardingArcReady(chatState, chatId) {
     const modernReady = getCampaignMode(chatId) === 'modern' && !!chatState?.progression?.classId;
-    const dndReady = chatState?.onboarding?.mode === 'dnd';
+    const dndReady = chatState?.onboarding?.mode === 'dnd' || !!chatState?.origin?.committed;
     return modernReady || dndReady;
 }
 

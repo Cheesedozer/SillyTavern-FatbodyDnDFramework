@@ -49,6 +49,12 @@ export const MEMO_MODULES = [
     // existing D&D chats see zero reordering. Renders via the ABILITIES list
     // renderer (same `- Name (resource, description)` shape).
     { id: 'skills',    tag: 'SKILLS',    enabledByDefault: false, order: 9, renderType: 'ABILITIES', inDefaultBlockOrder: false },
+    // v4.0 Origins: the committed origin profile (engine-written at character
+    // creation; extractor may only touch the "Current Goal" line). Disabled by
+    // default — Origins campaign commit enables it per-chat. Appended LAST and
+    // excluded from the default block order so existing chats see zero
+    // reordering. Renders via the default kv-line renderer (its own tag).
+    { id: 'origin',    tag: 'ORIGIN',    enabledByDefault: false, order: 10, renderType: 'ORIGIN', inDefaultBlockOrder: false },
 ];
 
 const ORDERED = [...MEMO_MODULES].sort((a, b) => a.order - b.order);
