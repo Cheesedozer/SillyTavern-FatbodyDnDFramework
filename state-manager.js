@@ -667,6 +667,10 @@ export function saveChatState(chatId) {
         // World Progression session-local state — written by world-progression.js
         // directly, never by the normal save cycle (same class as foundation/progression above).
         worldProg: existing.worldProg,
+        // v4.0 Origins state ({draft, committed, nsfw}) — written by the Origins
+        // wizard directly, never by the normal save cycle. Must be preserved
+        // here or the next saveChatState would silently wipe it.
+        origin: existing.origin,
     };
     SillyTavern.getContext().saveSettingsDebounced();
 }

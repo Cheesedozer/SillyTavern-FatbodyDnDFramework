@@ -1383,6 +1383,23 @@ ${resourceList}
         // ── Onboarding flow: mode picker → D&D / Modern setup (empty memo only) ──
         const onboardingChatId = () => SillyTavern.getContext().chatId || RT.currentChatId || null;
 
+        // Origins creation wizard (v4.0) — loaded on demand, mirrors the
+        // skilltree-bridge dynamic-import pattern to keep init lean.
+        el.querySelector('#rt-origins-open-btn')?.addEventListener('click', async () => {
+            try {
+                const { openOriginsWizard } = await import('./origins-wizard.js');
+                openOriginsWizard();
+            } catch (e) {
+                toastr['error'](`${e.message || e}`, 'Could not open the Origins wizard');
+            }
+        });
+        el.querySelector('#rt-origins-discard-btn')?.addEventListener('click', async () => {
+            if (!confirm('Discard your in-progress Origins character? This cannot be undone.')) return;
+            const { discardOriginDraft } = await import('./origins-wizard.js');
+            discardOriginDraft(onboardingChatId());
+            refresh();
+        });
+
         // Step 1: pick a ruleset. Persisted per chat so the flow survives reloads.
         el.querySelectorAll('.rt-mode-btn[data-mode]').forEach(btn => {
             btn.addEventListener('click', () => {

@@ -3,6 +3,11 @@ import { escapeHtml, highlightParens, parseInWorldTime, formatTimeDiff } from '.
 import { BLOCK_ICONS, PAGE_SIZE, NO_PAGINATE, SPELL_SLUG_OVERRIDES } from './constants.js';
 import { BLOCK_ORDER } from './module-registry.js';
 import { classEmoji } from './default-foundation.js';
+import {
+    deriveWizardStep as deriveOriginsWizardStep,
+    WIZARD_STEPS as ORIGINS_WIZARD_STEPS,
+    WIZARD_STEP_LABELS as ORIGINS_WIZARD_STEP_LABELS,
+} from './origins-engine.js';
 import { RT } from './shared-state.js';
 
 // ── Renderer module: pure HTML string producers, localStorage helpers ──
@@ -1000,9 +1005,34 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
                 ${renderTrackerExplainer()}`;
     }
 
+    /** The Origins entry section shown at the top of the D&D step: open the
+     *  creation wizard, or resume/discard an in-progress draft. */
+    export function renderOriginsEntry(chatState) {
+        const origin = chatState?.origin;
+        if (origin?.committed) return '';
+        const draft = origin?.draft;
+        if (draft) {
+            const step = deriveOriginsWizardStep(draft);
+            const stepNum = ORIGINS_WIZARD_STEPS.indexOf(step) + 1;
+            return `<div style="display:flex;gap:8px;width:100%;margin: 4px 0; flex-shrink: 0;">
+                    <button id="rt-origins-open-btn" class="rt-mode-btn" style="flex:1;">
+                        <span class="rt-mode-btn-icon">🧬</span>
+                        <span class="rt-mode-btn-text"><b>Resume Character Creation</b><br><small>Step ${stepNum} of ${ORIGINS_WIZARD_STEPS.length} — ${escapeHtml(ORIGINS_WIZARD_STEP_LABELS[step] || step)}</small></span>
+                    </button>
+                    <button id="rt-origins-discard-btn" title="Discard the in-progress character and start over" style="flex-shrink:0;background:none;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:var(--rt-text-muted);font-size:0.75em;padding:2px 8px;cursor:pointer;">✕ Start over</button>
+                </div>`;
+        }
+        return `<button id="rt-origins-open-btn" class="rt-mode-btn" style="width:100%;margin: 4px 0; flex-shrink: 0;">
+                    <span class="rt-mode-btn-icon">🧬</span>
+                    <span class="rt-mode-btn-text"><b>Origins</b> <small>(recommended)</small><br><small>Full character creation — race, appearance, and a BG3-style origin with living story hooks.</small></span>
+                </button>`;
+    }
+
     /** Step 2a — the classic D&D archetype window (+ persona class selector). */
-    function renderDndStep() {
-        return `${renderOnboardingHeader('D&D — roll your character', true)}
+    function renderDndStep(chatState) {
+        return `${renderOnboardingHeader('D&D — create your character', true)}
+                ${renderOriginsEntry(chatState)}
+                <div style="width: 100%; text-align: center; font-size: 11px; opacity: 0.55; font-style: italic; flex-shrink: 0;">— or roll a quick character —</div>
                 <div style="display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin: 8px 0 4px 0; flex-shrink: 0;">
                     <span style="font-size: 12px; opacity: 0.8; font-weight: bold; font-style: italic;">Starting Level:</span>
                     <select id="rt-starting-level" class="text_pole" style="width: auto; min-width: 60px; padding: 2px 4px; font-size: 12px; height: 24px; border-radius: 4px; background: var(--black70a);">
@@ -1120,7 +1150,7 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
             const forgeBusy = !!(RT.onboardingForge && (!chatId || RT.onboardingForge.chatId === chatId));
             let body;
             switch (step) {
-                case 'dnd':              body = renderDndStep(); break;
+                case 'dnd':              body = renderDndStep(st); break;
                 case 'modern-path':      body = renderModernPathStep(); break;
                 case 'modern-class':     body = renderModernClassStep(st, forgeBusy); break;
                 case 'modern-character': body = renderModernCharacterStep(st, forgeBusy); break;

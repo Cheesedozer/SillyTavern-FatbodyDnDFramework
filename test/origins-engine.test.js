@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 
 import {
     WIZARD_STEPS, deriveWizardStep, allowedOriginsForRace, isOriginAllowedForRace,
-    vibesForNsfw, modifiersForContext, emptySelections, evaluateIncompatibilities,
+    vibesForNsfw, modifiersForContext, emptySelections, evaluateIncompatibilities, pursuerNeeded,
     optionBlockReason, validateVibes, checkLeverGuarantee, validateDraft,
     randomizeSelections, validateOriginProfile, buildOriginMemoBlock,
     writeOriginToMemo, buildProfileGenerationPrompt, buildStatGenPrompt,
@@ -130,6 +130,22 @@ test('narrative rules surface as guidance, never as blockers', () => {
     assert.ok(results.every(r => r.level === 'narrative' ? r.satisfied : true));
     assert.ok(results.some(r => r.id === 'tyrant_vindication' && r.level === 'narrative'));
     assert.equal(optionBlockReason(fu, emptySelections(), 'archetype', 'fallen_tyrant'), null);
+});
+
+test('pursuerNeeded follows each origin\'s pursuer mode', () => {
+    const sel = emptySelections();
+    assert.equal(pursuerNeeded(ORIGINS_BY_ID['exiled_royal'], sel), true, 'required');
+    assert.equal(pursuerNeeded(ORIGINS_BY_ID['artifact_nobody'], sel), true, 'default_on');
+    sel.modifiers.claimants = 'none';
+    assert.equal(pursuerNeeded(ORIGINS_BY_ID['artifact_nobody'], sel), false, 'default_on opted out');
+    const sel2 = emptySelections();
+    assert.equal(pursuerNeeded(ORIGINS_BY_ID['vampire_lord'], sel2), false, 'conditional off');
+    sel2.modifiers.slumber_reason = 'hiding';
+    assert.equal(pursuerNeeded(ORIGINS_BY_ID['vampire_lord'], sel2), true, 'conditional on');
+    const sel3 = emptySelections();
+    assert.equal(pursuerNeeded(ORIGINS_BY_ID['abandoned_champion'], sel3), false, 'optional off');
+    sel3.modifiers.replacement = 'rival_faith';
+    assert.equal(pursuerNeeded(ORIGINS_BY_ID['abandoned_champion'], sel3), true, 'optional on');
 });
 
 // ── Lever Guarantee ──────────────────────────────────────────────────────────

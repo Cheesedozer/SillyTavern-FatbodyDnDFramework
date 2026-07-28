@@ -105,6 +105,21 @@ export function emptySelections() {
     };
 }
 
+/**
+ * Whether the Pursuer Block form should be live for the current selections
+ * (spec §4.5 + per-origin pursuer notes in §5).
+ */
+export function pursuerNeeded(originDef, selections) {
+    const sel = selections || {};
+    switch (originDef?.pursuer) {
+        case 'required': return true;
+        case 'default_on': return sel.modifiers?.claimants !== 'none';
+        case 'conditional': return sel.modifiers?.slumber_reason === 'hiding';
+        case 'optional': return !!sel.modifiers?.replacement;
+        default: return false;
+    }
+}
+
 function ruleMatches(rule, selections) {
     const mods = selections?.modifiers || {};
     for (const [modId, optId] of Object.entries(rule.when || {})) {
