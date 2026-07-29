@@ -13,13 +13,14 @@
  * the messages in place, so this works with ANY preset, not just ones whose
  * authoring extension has a cooperating block registry.
  *
- * Imports: state-manager.js, sysprompt.js, memo-processor.js
+ * Imports: state-manager.js, sysprompt.js, memo-processor.js, shared-state.js
  * Imported by: index.js (event wiring, settings), narrative-hooks.js (budget).
  */
 
 import { getSettings } from './state-manager.js';
 import { getAdditiveSyspromptCache } from './sysprompt.js';
 import { estimateTokens } from './memo-processor.js';
+import { isInternalRequestActive } from './shared-state.js';
 
 /** The literal users paste into their preset. Matched case-insensitively. */
 export const ORIGINS_MARKER = '[[ORIGINS]]';
@@ -70,13 +71,13 @@ export function _resetMarkerWarning() {
 }
 
 function warnMissingMarker() {
+    if (_warnedMissingMarker) return;
+    _warnedMissingMarker = true;
     console.warn(
         `[Origins Framework] Preset Marker is enabled but ${ORIGINS_MARKER} was not found in the prompt. `
         + 'Falling back to appending the mechanics to the first system message — paste the marker into your '
         + 'preset to control where they land.',
     );
-    if (_warnedMissingMarker) return;
-    _warnedMissingMarker = true;
     try {
         toastr['warning'](
             `Preset Marker is on but ${ORIGINS_MARKER} isn't in your preset. Mechanics were appended to the first `
@@ -131,7 +132,16 @@ export function handlePresetMarker(eventData) {
     // Safety net: the marker is enabled and we have rules to inject, but the preset
     // never references it — without this the turn silently ships with no mechanics
     // at all, since applyAdditiveSysprompt() has already suppressed its own push.
-    if (!found && payload) {
+    //
+    // Not for the framework's own agent turns, though. Those run through generateRaw,
+    // which still emits this event, and their prompts are assembled here with
+    // bypassAll — the user's preset, and therefore the marker, was never going to be
+    // in one. Firing the fallback there appends the entire ruleset to a small prompt
+    // asking only for structured JSON, and warns about a marker nobody omitted.
+    // Deliberately scoped to the fallback rather than an early return at the top:
+    // substitution and stripping stay unconditional, so a real turn that happens to
+    // overlap a background pass can never leak a literal marker to the model.
+    if (!found && payload && !isInternalRequestActive()) {
         const systemMsg = messages.find(m => m?.role === 'system' && typeof m.content === 'string');
         if (systemMsg) {
             systemMsg.content = `${systemMsg.content}\n\n${payload}`;
