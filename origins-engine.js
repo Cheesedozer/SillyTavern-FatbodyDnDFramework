@@ -689,6 +689,54 @@ export function buildOriginCanonSection(profile) {
 }
 
 /**
+ * Normalizes the [ORIGIN] block in a merged memo back to engine truth — the same
+ * contract applyModernProgression enforces for [XP], for the same reason.
+ *
+ * mergeMemo treats every tag uniformly: it clobbers a block wholesale on replace
+ * and deletes it outright on [ORIGIN]REMOVED[/ORIGIN]. So the "engine owns this
+ * block" guarantee in the extractor prompt (constants.js `origin`) was prose with
+ * nothing behind it — the state model could rewrite the character's race, nation
+ * or pursuer, or drop the block entirely.
+ *
+ * The one edit that prompt does permit is the Current Goal line, so that is
+ * harvested rather than reverted. Persisting it back to `committed` also closes a
+ * latent drift: publishOriginArcTieIn rebuilds this whole block from `committed`,
+ * which would otherwise restore the creation-time goal.
+ *
+ * No-op for every campaign without a committed origin.
+ *
+ * @param {object} settings
+ * @param {string} merged - the memo after mergeMemo
+ * @param {string|null} [chatId] - defaults to the active chat
+ * @returns {string}
+ */
+export function applyOriginCanon(settings, merged, chatId = null) {
+    try {
+        const id = chatId || (typeof globalThis._rpgCurrentChatId === 'function'
+            ? globalThis._rpgCurrentChatId()
+            : SillyTavern.getContext().chatId);
+        if (!id) return merged;
+
+        const committed = settings?.chatStates?.[id]?.origin?.committed;
+        if (!committed) return merged;
+
+        const block = String(merged || '').match(/\[ORIGIN\]([\s\S]*?)\[\/ORIGIN\]/i);
+        if (block) {
+            const goal = block[1].match(/^[ \t]*Current Goal:[ \t]*(.+)$/im);
+            const next = goal?.[1]?.trim();
+            if (next && next !== committed.currentGoal) committed.currentGoal = next;
+        }
+
+        // Re-derive from `committed`: reverts any other rewritten line, and
+        // re-appends the block when the extractor deleted it.
+        return writeOriginToMemo(merged, buildOriginMemoBlock(committed, ORIGINS_BY_ID[committed.originId]));
+    } catch (e) {
+        console.warn('[RPG Tracker] Origin canon normalization failed open:', e);
+        return merged;
+    }
+}
+
+/**
  * Pure regex replace-or-append of the [ORIGIN] block in a memo string
  * (the writeXpLineToMemo shape from memo-processor.js).
  */

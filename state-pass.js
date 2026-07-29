@@ -17,6 +17,7 @@ import { ensureTierPregenerated } from './skill-forge.js';
 import { stripMemoHtml } from './renderer.js';
 import { checkQuestDeadlines } from './quests.js';
 import { buildAuditChunks } from './audit-chunker.js';
+import { applyOriginCanon } from './origins-engine.js';
 import { RT } from './shared-state.js';
 import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refreshRenderedView } from './index.js';
 
@@ -185,6 +186,10 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
         // Modern mode: threshold detection + XP-line normalization (engine truth).
         // Must run before history archival so snapshots carry the corrected line.
         merged = applyModernProgression(settings, merged, passChatId);
+
+        // Origins: same treatment for [ORIGIN] — also before archival, so a
+        // rollback can never restore a snapshot carrying rewritten canon.
+        merged = applyOriginCanon(settings, merged, passChatId);
 
         // Late completion after a chat switch: the live globals now
         // belong to ANOTHER chat. Commit the result into the pass
@@ -529,6 +534,7 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                 // creation (which goes through this direct path) never gets the
                 // Level/XP line. No-op for D&D chats.
                 merged = applyModernProgression(settings, merged, passChatId);
+                merged = applyOriginCanon(settings, merged, passChatId);
 
                 if (merged !== sanitizedCurrent) {
                     const delta = computeDelta(sanitizedCurrent, merged);

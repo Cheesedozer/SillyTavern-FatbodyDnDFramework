@@ -260,6 +260,48 @@ export function buildKeyringText(allBooks, activeKeys = []) {
 }
 
 /**
+ * Normalizes an entry label or keyword for identity comparison: strips a leading
+ * "[...]" timestamp stamp, lowercases, trims. Matches the record-dedup
+ * normalization in applyAction so both paths agree on what "same name" means.
+ * @param {unknown} raw
+ * @returns {string} normalized name, or '' when there is nothing to match on
+ */
+export function normalizeEntryName(raw) {
+    return String(raw || '').replace(/^\[.*?\]\s*/i, '').toLowerCase().trim();
+}
+
+/**
+ * Builds a campaign-wide name -> "bookName::uid" index over every archive entry.
+ *
+ * Indexes BOTH `comment` and every value in `key[]`, because the two can diverge
+ * on engine-written canon: the origin pursuer's comment is "Pursuer: <identity>"
+ * while its key is the bare "<identity>" the agent uses as a record label. A
+ * comment-only comparison misses that, which is how a second, model-invented
+ * record of the same pursuer gets created in a different book.
+ *
+ * Inert entries (recoverable backups) are skipped — they are not addressable.
+ * First writer wins, preserving the previous inline-index behavior.
+ *
+ * @param {object} allBooks - bookName -> ST world-info book
+ * @returns {Map<string, string>}
+ */
+export function buildEntryLookup(allBooks) {
+    const index = new Map();
+    for (const [bookName, book] of Object.entries(allBooks || {})) {
+        for (const [uid, entry] of Object.entries(book?.entries || {})) {
+            if (isInertLoreEntry(entry)) continue;
+            const id = `${bookName}::${uid}`;
+            const names = [entry.comment, ...(Array.isArray(entry.key) ? entry.key : [])];
+            for (const n of names) {
+                const norm = normalizeEntryName(n);
+                if (norm && !index.has(norm)) index.set(norm, id);
+            }
+        }
+    }
+    return index;
+}
+
+/**
  * Precomputes a flat, lowercased search index over all archive entries so that
  * grep_lore is O(n) per query instead of re-lowercasing every entry on each
  * query inside the agent loop. Rebuilt whenever archiveBooks is (re)fetched.
@@ -915,7 +957,7 @@ Thought: I see a new NPC named Barnaby in Khelt's Rust-Lantern District. I will 
                             properties: {
                                 record: {
                                     type: 'array',
-                                    description: 'New entries to create. Recording an entry with an existing label automatically updates it.',
+                                    description: 'New entries to create. Recording an entry whose label matches an existing entry\'s label or keywords automatically updates that entry instead, searching every lorebook in the campaign — so an entity already recorded under another category is never duplicated.',
                                     items: {
                                         type: 'object',
                                         properties: {
@@ -1031,6 +1073,7 @@ Available actions:
 - commit({"record": [...], "update": [...], "activate": [...], "deactivate": [...], "delete_ids": [...]}) ? write all changes and finish
 
 commit record items: {"label": "Name only (NO tag prefix)", "keys": ["kw1","kw2"], "content": "...", "category": "NPC|LOC|FAC|QUEST|EVENT"}
+  (A record whose label matches an existing entry's label or keywords in ANY campaign lorebook updates that entry instead of creating a duplicate.)
 commit update items: {"id": "Book::UID", "content": "new text to append"}
 
 ## EXAMPLE
@@ -1444,6 +1487,12 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
     const bookQueue = new Map();
 
     const knownBookNames = Object.keys(allBooks);
+    // Campaign-wide identity index, built once per commit. Basic mode has always
+    // deduped across books (parseBasicTags); agent mode only ever searched its own
+    // target book, so the tool schema's promise that recording an existing label
+    // updates it was false the moment the entity lived in another book — which is
+    // how the origin pursuer (in _Origin) got a second record in _NPCs.
+    const entryLookup = buildEntryLookup(allBooks);
     for (const rec of records) {
         const cat = (rec.category || rec.comment || '').toUpperCase();
         const catName = Object.keys(catMap).find(k => cat.includes(k));
@@ -1490,6 +1539,21 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
         }
         rec.keys = cleanKeys(rec.keys || []);
 
+        // Campaign-wide identity check. On a hit, re-target the record to the book
+        // that already holds the entity and remember its uid; because bookQueue is
+        // keyed by book, the existing per-book commit path then appends the delta
+        // with no extra load and no second write. Appending is safe for pinned
+        // canon: the update path preserves existing content and only adds to it.
+        const existingId = entryLookup.get(normalizeEntryName(rec.label));
+        if (existingId) {
+            const [foundBook, foundUid] = existingId.split('::');
+            if (foundBook !== targetBook && settings.debugMode) {
+                console.log(`[RPG Tracker] Record "${rec.label}" already exists as ${existingId} — updating it instead of creating a duplicate in ${targetBook}.`);
+            }
+            targetBook = foundBook;
+            rec._existingUid = foundUid;
+        }
+
         if (!bookQueue.has(targetBook)) bookQueue.set(targetBook, []);
         bookQueue.get(targetBook).push(rec);
     }
@@ -1528,15 +1592,21 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
         }
 
         for (const rec of recs) {
-            // Deduplication: skip if an entry with this label already exists
-            const cleanLabel = (rec.label || '').replace(/^\[.*?\]\s*/i, '').toLowerCase().trim();
-            let existingUid = null;
-            for (const [uid, entry] of Object.entries(bookData.entries)) {
-                // Never merge a new record into an inert backup — appending chronicle
-                // text to the serialized profile would corrupt the recovery payload.
-                if (isInertLoreEntry(entry)) continue;
-                const entryLabel = (entry.comment || '').replace(/^\[.*?\]\s*/i, '').toLowerCase().trim();
-                if (entryLabel === cleanLabel) { existingUid = uid; break; }
+            // Deduplication: skip if an entry with this label already exists.
+            // A uid resolved campaign-wide in Phase A wins — it matched on the
+            // entry's keywords as well as its label, so it catches entities whose
+            // stored comment differs from the name the model used (e.g. the origin
+            // pursuer, filed as "Pursuer: <identity>" but keyed on "<identity>").
+            const cleanLabel = normalizeEntryName(rec.label);
+            let existingUid = rec._existingUid && bookData.entries[rec._existingUid] ? rec._existingUid : null;
+            if (!existingUid) {
+                for (const [uid, entry] of Object.entries(bookData.entries)) {
+                    // Never merge a new record into an inert backup — appending chronicle
+                    // text to the serialized profile would corrupt the recovery payload.
+                    if (isInertLoreEntry(entry)) continue;
+                    const entryLabel = normalizeEntryName(entry.comment);
+                    if (entryLabel === cleanLabel) { existingUid = uid; break; }
+                }
             }
 
             if (existingUid) {
@@ -1833,17 +1903,13 @@ function parseBasicTags(text, archiveBooks) {
     const action = { record: [], update: [], activate: [], deactivate: [], delete_ids: [], rewrite: [], consolidate: [] };
     const settings = getSettings();
 
-    // Build a single lowercased-comment -> "bookName::uid" index over all archive entries.
-    // Lets every ACTIVATE/DEACTIVATE/DELETE tag and processMatch() resolve a name with one
-    // Map lookup instead of rescanning every book×entry per tag (and avoids the old
-    // outer-loop bug where a break only exited the inner entries loop).
-    const entryIndex = new Map();
-    for (const [bookName, book] of Object.entries(archiveBooks)) {
-        for (const [uid, entry] of Object.entries(book.entries)) {
-            const key = (entry.comment || '').toLowerCase();
-            if (key && !entryIndex.has(key)) entryIndex.set(key, `${bookName}::${uid}`);
-        }
-    }
+    // Campaign-wide name -> "bookName::uid" index. Lets every ACTIVATE/DEACTIVATE/
+    // DELETE tag and processMatch() resolve a name with one Map lookup instead of
+    // rescanning every book×entry per tag (and avoids the old outer-loop bug where
+    // a break only exited the inner entries loop). Shared with applyAction so both
+    // parsers agree on entry identity; it also skips inert backups, which the
+    // previous inline index did not.
+    const entryIndex = buildEntryLookup(archiveBooks);
 
     // REWRITE tag parser
     const rewriteRegex = /\[\[REWRITE:\s*([^|]+)\|([\s\S]*?)\]\]/gi;
@@ -1870,7 +1936,7 @@ function parseBasicTags(text, archiveBooks) {
         const keys = (keywords || '').split(',').map(k => k.trim());
 
         // Check for existing by name (single Map lookup)
-        const existingId = entryIndex.get(name.toLowerCase()) || null;
+        const existingId = entryIndex.get(normalizeEntryName(name)) || null;
 
         if (existingId) {
             action.update.push({ id: existingId, content });
@@ -1891,7 +1957,7 @@ function parseBasicTags(text, archiveBooks) {
         const parts = inner.split('|').map(p => p.trim());
 
         if ((tagName === 'ACTIVATE' || tagName === 'DEACTIVATE' || tagName === 'DELETE') && parts.length >= 1) {
-            const name = inner.trim().toLowerCase();
+            const name = normalizeEntryName(inner);
             let targetList = [];
             if (tagName === 'ACTIVATE') targetList = action.activate;
             else if (tagName === 'DEACTIVATE') targetList = action.deactivate;

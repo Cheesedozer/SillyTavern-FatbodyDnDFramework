@@ -194,3 +194,125 @@ test('migrateOriginCanonEntries splits a legacy combined Origin Profile entry', 
         globalThis.fetch = prevFetch;
     }
 });
+
+// ── [ORIGIN] canon enforcement in the state pass ─────────────────────────────
+//
+// mergeMemo treats every tag uniformly: a replace clobbers the whole block and
+// [ORIGIN]REMOVED[/ORIGIN] deletes it. The "engine owns this block" guarantee in
+// the extractor prompt had nothing behind it, so the state model could rewrite
+// the character's race or nation, or drop the block entirely. applyOriginCanon
+// re-derives it from `committed` after every pass, exactly as the XP line is
+// normalized, while preserving the one edit the prompt permits.
+
+function committedProfile() {
+    return {
+        name: 'Serevaine', title: 'the Interred', race: 'Vampire', origin: 'Vault-Sleeper',
+        originId: 'exiled_royal',
+        nation: {
+            name: 'Orthalan', majorityRace: 'Human', government: 'Merchant council',
+            cultureVibes: 'ledger-bound', environment: 'Fog-drowned delta',
+            outsiderView: 'Rich and unsentimental.', tone: 'Ink, brass and river damp.',
+        },
+        socialLever: { text: 'A vault-brand on the throat', legibleTo: 'Orthalan archivists' },
+        personalLever: { text: 'She must feed within the week.' },
+        pursuer: { identity: 'The Sealed Hand', motive: 'Recover the vault key', awareness: 'Suspects she woke' },
+        currentGoal: 'Reach the border archive alive.',
+        personalityVoice: 'Clipped, archival.',
+    };
+}
+
+/** Seeds a chat state with a committed origin and returns { settings, committed }. */
+async function withCommittedOrigin() {
+    const { setSettings } = await import('./_bootstrap.js');
+    const { getSettings } = await import('../state-manager.js');
+    setSettings({ chatStates: { chat1: { origin: { committed: committedProfile() } } } });
+    const settings = getSettings();
+    return { settings, committed: settings.chatStates.chat1.origin.committed };
+}
+
+test('applyOriginCanon reverts a rewritten canon line', async () => {
+    const { applyOriginCanon } = await import('../origins-engine.js');
+    const { settings } = await withCommittedOrigin();
+
+    const tampered = '[ORIGIN]\nOrigin: Vault-Sleeper\nRace: Werewolf\n[/ORIGIN]';
+    const out = applyOriginCanon(settings, tampered, 'chat1');
+
+    assert.match(out, /Race: Vampire/, 'engine truth wins over the extractor');
+    assert.doesNotMatch(out, /Werewolf/);
+    assert.match(out, /Nation: Orthalan/, 'the full block is re-derived, not patched');
+});
+
+test('applyOriginCanon keeps a changed Current Goal and persists it to committed', async () => {
+    const { applyOriginCanon } = await import('../origins-engine.js');
+    const { settings, committed } = await withCommittedOrigin();
+
+    const updated = '[ORIGIN]\nRace: Vampire\nCurrent Goal: Find who sealed the vault.\n[/ORIGIN]';
+    const out = applyOriginCanon(settings, updated, 'chat1');
+
+    assert.match(out, /Current Goal: Find who sealed the vault\./);
+    // Persisting matters: publishOriginArcTieIn rebuilds this block from
+    // `committed`, and would otherwise restore the creation-time goal.
+    assert.equal(committed.currentGoal, 'Find who sealed the vault.');
+});
+
+test('applyOriginCanon makes [ORIGIN]REMOVED[/ORIGIN] a no-op', async () => {
+    const { mergeMemo } = await import('../memo-processor.js');
+    const { applyOriginCanon } = await import('../origins-engine.js');
+    const { settings } = await withCommittedOrigin();
+
+    const base = '[TIME]\n08:00 AM, Day 1\n[/TIME]\n\n[ORIGIN]\nRace: Vampire\n[/ORIGIN]';
+    const merged = mergeMemo(base, '[ORIGIN]REMOVED[/ORIGIN]');
+    assert.doesNotMatch(merged, /Race: Vampire/, 'sanity: mergeMemo really does delete it');
+
+    const out = applyOriginCanon(settings, merged, 'chat1');
+    assert.match(out, /\[ORIGIN\][\s\S]*Race: Vampire[\s\S]*\[\/ORIGIN\]/);
+    assert.match(out, /\[TIME\]/, 'other blocks are untouched');
+});
+
+test('applyOriginCanon is a no-op for a campaign with no committed origin', async () => {
+    const { setSettings } = await import('./_bootstrap.js');
+    const { getSettings } = await import('../state-manager.js');
+    const { applyOriginCanon } = await import('../origins-engine.js');
+
+    setSettings({ chatStates: { chat1: {} } });
+    const memo = '[TIME]\n08:00 AM, Day 1\n[/TIME]';
+    assert.equal(applyOriginCanon(getSettings(), memo, 'chat1'), memo);
+    assert.equal(applyOriginCanon(getSettings(), memo, 'unknown-chat'), memo);
+});
+
+// ── cross-book entry identity ────────────────────────────────────────────────
+
+test('buildEntryLookup indexes comments AND keywords, and skips inert entries', async () => {
+    const { buildEntryLookup, normalizeEntryName } = await import('../router.js');
+
+    const books = {
+        Camp_Origin: {
+            entries: {
+                // The shape writeOriginCanonBook produces: the label carries a
+                // "Pursuer: " prefix the agent never uses, but the key is the
+                // bare identity it does use.
+                0: { comment: 'Pursuer: The Sealed Hand', key: ['The Sealed Hand'], content: 'Motive: recover the key.' },
+                1: BACKUP,
+            },
+        },
+        Camp_NPCs: { entries: { 0: { comment: 'Barnaby', key: ['Barnaby', 'blacksmith'], content: 'A smith.' } } },
+    };
+
+    const idx = buildEntryLookup(books);
+    assert.equal(idx.get('pursuer: the sealed hand'), 'Camp_Origin::0', 'matches on comment');
+    assert.equal(idx.get('the sealed hand'), 'Camp_Origin::0', 'matches on keyword — the pursuer case');
+    assert.equal(idx.get('blacksmith'), 'Camp_NPCs::0');
+    assert.equal(idx.get('origin profile backup: serevaine'), undefined, 'inert backups are unaddressable');
+
+    assert.equal(normalizeEntryName('[Day 3] Ruined Bridge'), 'ruined bridge', 'strips a timestamp stamp');
+    assert.equal(normalizeEntryName(null), '');
+});
+
+test('buildEntryLookup is first-writer-wins on a duplicate name', async () => {
+    const { buildEntryLookup } = await import('../router.js');
+    const idx = buildEntryLookup({
+        A: { entries: { 0: { comment: 'Ash', key: [] } } },
+        B: { entries: { 0: { comment: 'Ash', key: [] } } },
+    });
+    assert.equal(idx.get('ash'), 'A::0');
+});
