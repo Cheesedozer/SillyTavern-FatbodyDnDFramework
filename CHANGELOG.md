@@ -2,6 +2,25 @@
 
 All notable changes to the **Origins RPG Framework** (formerly the Fatbody D&D Framework) will be documented in this file.
 
+## [Unreleased]
+
+**Origin creation keeps its promises.** Playtesting found the wizard blocking completion on three fields it explicitly labelled as AI-proposed, and the generator hanging Silkborn hivemind canon on a Dragonborn.
+
+### Fixed
+- **"Empty → AI proposes" now actually works.** `validateDraft` rejected an empty **Nation name** and **Pursuer identity** before generation ever ran, and `checkLeverGuarantee` did the same for **Leverage** on Exiled Royal / Defector Spy — all three sitting directly under UI labels promising the AI would fill them. The draft gate now checks only the structured selects (government, environment, majority race, pursuer affiliation/motive/capability/awareness) that the model cannot infer. The Lever Guarantee moved to where it belongs: `validateOriginProfile` rejects a *generated* profile with a blank leverage, and the repair loop retries — so the guarantee holds without the player having to type it.
+- **"⚒️ Forge me a character" was completely broken.** `randomizeSelections` deliberately leaves those same three fields empty, so the one-click path always died on `Fix first: Nation name is empty.` The test suite masked it by hand-injecting placeholder values before asserting; that fixture is gone and a regression test now runs a randomized draft through `validateDraft` untouched.
+- **Silkborn canon leaked onto other races.** Three independent routes, all closed: the Chorus-Weave setting anchor was injected into *every* generation prompt regardless of race (`anchorsForDraft` now withholds `raceLocked` anchors unless the character is that race or their nation runs hive consensus); Exiled Royal's own `leverPersonal` string named the Silkborn branch to every race taking that origin (split into `leverPersonalByRace`, resolved by `personalLeverFor`); and nothing validated the result (`checkRaceExclusivity` now rejects a profile carrying another race's signature mechanic, feeding the term back through the existing repair loop).
+- **Levers were written in system vocabulary.** The `[ORIGIN]` block is both the narrator's context and the player's HUD card, so a lever described as "the Silkborn Severance Block … acting as her personal lever" was rendered straight to the player. The schema spec now marks `socialLever.text`, `personalLever.text`, `currentGoal`, and `personalityVoice` as player-facing and requires in-fiction phrasing; mechanical framing belongs in the narrator-private `questSeeds`.
+- **Physical description never reached the narrator.** The appearance descriptors were used once at generation and then dropped from the memo, the lorebook, and the HUD — so in play the narrator had only whatever the model folded into the backstory. A compact `Appearance:` line now rides in `[ORIGIN]` (fixing the HUD gap and the context gap together), with the full field-by-field detail in a keyword-triggered `_Origin` lorebook entry.
+- **The NSFW intimate section collected data that went nowhere.** `INTIMATE_FIELDS` was imported by the engine and never referenced — six fields written to the draft and read by nothing. They now feed the generation prompt (NSFW-gated, so an SFW draft can never carry them into a call whose system message asserts SFW) and a lorebook entry, and are deliberately kept out of the always-on memo the HUD renders. Turning NSFW off now clears them unconditionally rather than only when a selections object exists.
+- The HUD header read **Fatbody D&D Framework**; it now matches the v4.0 rebrand.
+
+### Added
+- **Anti-generic directive in every generation prompt** (`ANTI_GENERIC_DIRECTIVE` / `antiGenericBlock`): a self-check against reasoning from genre convention, or from the most vivid fixture already in context, instead of from the player's actual selections — with a per-prompt tail for origin profiles, opening narration, stat sheets, and the World Arc compiler. The Dragonborn/Chorus-Weave bug was this failure mode; the prompt guard pairs with the hard anchor gate and the validator above.
+
+### Changed
+- **The world-threat tie-in is a private seed until a World Arc exists.** It was rendered in the HUD as locked canon the moment an origin committed, promising a campaign-scale thread nothing had committed to. `buildOriginMemoBlock` now withholds it; the review-step field is relabelled "Arc hook — seeds your World Arc, not yet canon"; and `commitCentralTension` publishes the compiled `epicConflict` back into `[ORIGIN]` as the real tie-in. The existing "🧬 From my origin" compiler mode is unchanged and still reads the seed — World Arc categories and blurbs needed no changes.
+
 ## [4.0.1] - 2026-07-28
 
 **The HUD can be reopened from settings.** Closing the HUD with the header ✕ left no way back from either settings surface — the only reopen path was a wand-menu item that was easy to miss, and easy to lose entirely.

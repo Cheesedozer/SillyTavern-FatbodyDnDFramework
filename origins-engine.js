@@ -21,6 +21,7 @@ import {
     VIBE_HARD_BLOCKS, VIBE_PAIR_GUIDANCE, GOVERNMENT_TYPES, ENVIRONMENTS,
     PURSUER_BLOCK, APPEARANCE_FIELDS, INTIMATE_FIELDS, OPENING_FRAMES,
     ORIGINS_SETTING, SILKBORN_SEVERANCE, VAMPIRE_ALLOWED_ORIGINS,
+    RACE_EXCLUSIVE_TERMS,
 } from './origins-data.js';
 
 // ── Wizard steps (spec §7.1) ─────────────────────────────────────────────────
@@ -215,28 +216,45 @@ export function validateVibes(vibeIds, vibeSub) {
 // ── Lever Guarantee (spec §0.2, per-origin substitutions in §5) ──────────────
 
 /**
+ * Origins whose guaranteed personal lever IS the pursuer's leverage. An empty
+ * leverage box is not a draft error for these — the generator proposes one and
+ * validateOriginProfile enforces that it actually did (see leverageMandatory).
+ */
+const LEVERAGE_IS_THE_LEVER = Object.freeze(['exiled_royal', 'defector_spy']);
+
+/**
+ * Whether this origin/race pairing requires a non-empty pursuer.leverage in the
+ * *generated profile*. Silkborn Exiled Royals are exempt: the residual
+ * hive-thread (Severance Block) substitutes as the personal lever.
+ * @param {object|null|undefined} originDef
+ * @param {string|null|undefined} raceId
+ * @returns {boolean}
+ */
+export function leverageMandatory(originDef, raceId) {
+    if (!originDef || !LEVERAGE_IS_THE_LEVER.includes(originDef.id)) return false;
+    // Severed Silkborn Exiled Royals substitute the residual hive-thread.
+    // Defector Spy has no such exemption (spec §5.8).
+    if (originDef.id === 'exiled_royal' && raceId === 'silkborn') return false;
+    return true;
+}
+
+/**
  * Every character must finish creation with an active personal lever.
  * Origin-specific: most origins carry a non-disableable lever; the exceptions
  * are encoded as hard incompatibility rules with escape hatches (Vampire Lord
  * substitute Thirst, Artifact "no claimants" agenda, Champion stable-power
- * substitutes) plus the two mandatory-leverage origins checked here.
+ * substitutes).
+ *
+ * Note this does NOT require the player to type a leverage. The two
+ * leverage-is-the-lever origins are enforced on the generated profile
+ * (validateOriginProfile) rather than on the draft, so an empty box means "the
+ * AI proposes one" exactly as the wizard promises.
  * @returns {string[]} errors (empty = guaranteed)
  */
 export function checkLeverGuarantee(originDef, selections, raceId) {
     const errors = [];
     if (!originDef) return ['No origin selected.'];
-    const leverage = (selections?.pursuer?.leverage || '').trim();
-
-    if (originDef.id === 'exiled_royal') {
-        // Non-Silkborn: pursuer Leverage is the guaranteed personal lever.
-        // Silkborn: the residual hive-thread (Severance Block) substitutes.
-        if (raceId !== 'silkborn' && !leverage) {
-            errors.push('Exiled Royal requires Pursuer Leverage — it is this origin\'s guaranteed personal lever (a hostage, blackmail, a person you still care about, a ruinous secret).');
-        }
-    }
-    if (originDef.id === 'defector_spy' && !leverage) {
-        errors.push('Defector Spy requires Pursuer Leverage — the organization must hold something concrete over you.');
-    }
+    void raceId;
     // Escapable hard rules (leverGuard) are enforced via evaluateIncompatibilities;
     // repeat them here so review-step validation reports everything in one list.
     for (const r of evaluateIncompatibilities(originDef, selections)) {
@@ -285,9 +303,10 @@ export function validateDraft(draft) {
         }
     }
 
-    // Core Nation Block.
+    // Core Nation Block. The name is deliberately NOT required — an empty box
+    // means "propose one" (selectionSummary emits the hint; the generator fills
+    // it). Only the structured selects, which the model cannot infer, are gated.
     errors.push(...validateVibes(sel.vibes, sel.vibeSub));
-    if (!(sel.nation?.name || '').trim()) errors.push('Nation name is empty.');
     if (!GOVERNMENT_TYPES.some(g => g.id === sel.nation?.governmentId)) errors.push('Government type not set.');
     if (!ENVIRONMENTS.some(e => e.id === sel.nation?.environmentId)) errors.push('Location/environment not set.');
     if (!RACES_BY_ID[sel.nation?.majorityRaceId]) errors.push('Majority population race not set.');
@@ -299,7 +318,8 @@ export function validateDraft(draft) {
         const p = sel.pursuer;
         if (!p) errors.push('Pursuer Block is required for this origin.');
         else {
-            if (!(p.identity || '').trim()) errors.push('Pursuer identity is empty.');
+            // identity and leverage are proposable — only the structured
+            // selects are gated here (same rule as the nation name above).
             if (!PURSUER_BLOCK.affiliations.some(x => x.id === p.affiliation)) errors.push('Pursuer affiliation not set.');
             if (!PURSUER_BLOCK.motives.some(x => x.id === p.motive)) errors.push('Pursuer motive not set.');
             if (!PURSUER_BLOCK.resources.some(x => x.id === p.resources)) errors.push('Pursuer resources/capability not set.');
@@ -405,6 +425,36 @@ export function randomizeSelections(originDef, raceId, nsfw, rng = Math.random) 
     return sel;
 }
 
+// ── Anti-generic directive (shared across every generation prompt) ───────────
+
+/**
+ * Guards against the dominant failure mode: pattern-matching to genre
+ * convention, or to the most vivid fixture already in context, instead of
+ * reasoning from what the player actually chose. Interpolated into all four
+ * generation prompts (profile, opening narration, stat sheet, World Arc).
+ * Callers append a per-prompt tail naming the concrete referent for "this
+ * fiction" — see ANTI_GENERIC_TAILS.
+ */
+export const ANTI_GENERIC_DIRECTIVE = `
+BEFORE WRITING ANY DETAIL, CHECK YOURSELF:
+Am I reasoning from THIS character's established specifics — their race, nation, modifiers, and filled blanks — or from genre convention, common tropes, and narrative defaults?
+If you catch yourself thinking "this kind of character usually…" or "this kind of story usually…" — stop. Go back and re-read what has actually been established. The most common failure mode is pattern-matching to a familiar trope instead of reasoning from the actual material, closely followed by borrowing the most vivid fixture already in your context and attaching it to whoever you are writing.
+Setting anchors and world canon are background the world contains — not a menu of features to hang on this character. A detail is only earned if it follows from a specific choice in front of you.`;
+
+/** Per-prompt tails appended to ANTI_GENERIC_DIRECTIVE. */
+export const ANTI_GENERIC_TAILS = Object.freeze({
+    profile: 'For this task: the player selections below are the established fiction. The setting anchors are not.',
+    opening: "For this task: open on this character's actual situation as the profile describes it — not on a scene this genre usually opens with.",
+    stats: "For this task: gear and abilities must trace to this character's history, nation, and origin — not to a default loadout for their class.",
+    worldArc: 'For this task: the milestone chain must follow from the seed material below. Do not fall back to an escalating-ancient-evil shape unless the seed material actually points there.',
+});
+
+/** ANTI_GENERIC_DIRECTIVE plus the named per-prompt tail. */
+export function antiGenericBlock(kind) {
+    const tail = ANTI_GENERIC_TAILS[kind];
+    return tail ? `${ANTI_GENERIC_DIRECTIVE}\n${tail}` : ANTI_GENERIC_DIRECTIVE;
+}
+
 // ── Origin profile JSON contract (spec §6) ───────────────────────────────────
 
 /**
@@ -444,13 +494,50 @@ The origin profile JSON object MUST have exactly this shape:
   "questSeeds": ["4 to 8 short private quest directions for the narrator — never shown to the player"]
 }
 
-Constraints: every string field non-empty unless explicitly allowed empty above. backstory must be consistent with EVERY selected modifier and blank — contradicting a selection is a validation failure. questSeeds are directions, not pre-written quests; they surface lazily in play.`;
+Constraints: every string field non-empty unless explicitly allowed empty above. backstory must be consistent with EVERY selected modifier and blank — contradicting a selection is a validation failure. questSeeds are directions, not pre-written quests; they surface lazily in play.
+
+VOICE — who reads which field. "socialLever.text", "personalLever.text", "currentGoal", and "personalityVoice" are displayed to the PLAYER in their character sheet. Write them in-fiction, naming the thing as the character themselves would experience and describe it. Do NOT use system vocabulary in them — no "social lever", no "personal lever", no "block", no "modifier", no rules-speak, and no naming of framework machinery. "A debt-mark burned under her palm-scales that any Caldian factor can read" is correct; "the Debt-Mark Block, a mechanic acting as her personal lever" is not. Mechanical and narrator-facing framing belongs in "questSeeds", which the player never sees.
+
+RACE FIDELITY. A character has ONLY the mechanics their own race grants. Never give a character another race's signature mechanic, and never invent a variant of one for them — no hive-links, weave-threads, or severance for non-Silkborn; no thirst or feeding clock for the non-undead. If this character needs a personal lever, build it from their own origin, nation, pursuer, and history.`;
+
+/**
+ * Race-exclusive mechanic terms found in the player-facing lever/goal/voice
+ * fields of a profile belonging to a different race.
+ * @returns {string[]} errors (empty = clean)
+ */
+export function checkRaceExclusivity(profile, raceId) {
+    if (!profile || !raceId) return [];
+    const haystack = [
+        profile.socialLever?.text, profile.personalLever?.text,
+        profile.currentGoal, profile.personalityVoice, profile.appearanceNotes,
+    ].filter(s => typeof s === 'string').join(' \n ').toLowerCase();
+    if (!haystack.trim()) return [];
+
+    const errors = [];
+    for (const [ownerRaceId, terms] of Object.entries(RACE_EXCLUSIVE_TERMS)) {
+        if (ownerRaceId === raceId) continue;
+        const hits = terms.filter(t => haystack.includes(t));
+        if (hits.length) {
+            const ownerName = RACES_BY_ID[ownerRaceId]?.name || ownerRaceId;
+            const thisName = RACES_BY_ID[raceId]?.name || raceId;
+            errors.push(
+                `${ownerName}-exclusive mechanics appear on a ${thisName} character (${hits.join(', ')}). `
+                + `A ${thisName} has none of these. Rewrite the lever, goal, voice, and appearance notes so every `
+                + `mechanic follows from this character's own race, origin, nation, and pursuer.`);
+        }
+    }
+    return errors;
+}
 
 /**
  * All-errors validator for the AI-generated origin profile.
+ * @param {object} profile
+ * @param {object} originDef
+ * @param {string} [raceId] - enables the race-exclusivity check and the
+ *   Silkborn exemption on the mandatory-leverage origins.
  * @returns {{ok: boolean, errors: string[]}}
  */
-export function validateOriginProfile(profile, originDef) {
+export function validateOriginProfile(profile, originDef, raceId) {
     const errors = [];
     const p = profile;
     if (!p || typeof p !== 'object' || Array.isArray(p)) return { ok: false, errors: ['Profile is not a JSON object.'] };
@@ -481,8 +568,15 @@ export function validateOriginProfile(profile, originDef) {
     if (p.pursuer) {
         for (const k of ['identity', 'affiliation', 'motive', 'resources', 'awareness']) reqStr(p.pursuer, k, `pursuer.${k}`);
         if (typeof p.pursuer.leverage !== 'string') errors.push('pursuer.leverage must be a string.');
-        if ((originDef?.id === 'exiled_royal' || originDef?.id === 'defector_spy') && !(p.pursuer.leverage || '').trim()) {
-            errors.push('pursuer.leverage is mandatory for this origin (Lever Guarantee).');
+        // This is where the Lever Guarantee is enforced — on the generated
+        // profile, not the draft, so an empty leverage box means "propose one".
+        // raceId is optional for back-compat; without it the Silkborn exemption
+        // cannot apply, so fall back to the origin-only rule.
+        const leverageRequired = raceId
+            ? leverageMandatory(originDef, raceId)
+            : (originDef?.id === 'exiled_royal' || originDef?.id === 'defector_spy');
+        if (leverageRequired && !(p.pursuer.leverage || '').trim()) {
+            errors.push('pursuer.leverage is mandatory for this origin (Lever Guarantee) — propose something concrete they hold beyond force.');
         }
     }
     reqStr(p, 'currentGoal'); reqStr(p, 'personalityVoice'); reqStr(p, 'worldThreatTieIn');
@@ -491,6 +585,7 @@ export function validateOriginProfile(profile, originDef) {
     } else if (p.questSeeds.some(q => typeof q !== 'string' || !q.trim())) {
         errors.push('questSeeds entries must be non-empty strings.');
     }
+    errors.push(...checkRaceExclusivity(p, raceId));
     return { ok: errors.length === 0, errors };
 }
 
@@ -502,20 +597,38 @@ function optionLabel(originDef, modId, optId) {
     return m?.options.find(o => o.id === optId)?.label || optId;
 }
 
+/** Compact "Skin: …; Height: …" summary of the base appearance descriptors. */
+export function formatAppearanceLine(appearance) {
+    const app = appearance || {};
+    return APPEARANCE_FIELDS.map(f => (app[f.id] || '').trim() ? `${f.label}: ${String(app[f.id]).trim()}` : null)
+        .filter(Boolean).join('; ');
+}
+
 /**
  * Serializes a committed profile into the compact [ORIGIN] memo block.
  * Deterministic — written by the framework at commit, never by the model.
  * Full canon (backstory, nation prose) lives in the lorebook, not here.
+ *
+ * The memo is BOTH the narrator's always-on context and the HUD card the
+ * player reads, so anything added here is visible to both.
+ *
+ * @param {object} profile - the committed profile; `profile.appearance` (present
+ *   on st.origin.committed) supplies the Appearance line when set.
+ * @param {object} [originDef]
  */
 export function buildOriginMemoBlock(profile, originDef) {
     const p = profile;
     const lines = [
         `Origin: ${p.origin}${p.title ? ` — ${p.title}` : ''} (${ORIGINS_SETTING.name})`,
         `Race: ${p.race}`,
+    ];
+    const appearanceLine = formatAppearanceLine(p.appearance);
+    if (appearanceLine) lines.push(`Appearance: ${appearanceLine}`);
+    lines.push(
         `Social Lever: ${p.socialLever.text} (legible to: ${p.socialLever.legibleTo})`,
         `Personal Lever: ${p.personalLever.text}`,
         `Nation: ${p.nation.name} — ${p.nation.government}; ${p.nation.cultureVibes}; ${p.nation.environment}; majority ${p.nation.majorityRace}`,
-    ];
+    );
     if (p.secondaryNation?.name) {
         lines.push(`Home Nation: ${p.secondaryNation.name} — ${p.secondaryNation.government}; majority ${p.secondaryNation.majorityRace}`);
     }
@@ -524,7 +637,12 @@ export function buildOriginMemoBlock(profile, originDef) {
         lines.push(`Pursuer: ${p.pursuer.identity} — motive: ${p.pursuer.motive}; awareness: ${p.pursuer.awareness}${lev ? `; leverage: ${lev}` : ''}`);
     }
     lines.push(`Current Goal: ${p.currentGoal}`);
-    lines.push(`World-Threat Tie-In: ${p.worldThreatTieIn}`);
+    // World-Threat Tie-In is deliberately absent until a World Arc is compiled.
+    // Pre-arc it is only a private seed for the tension compiler; publishing it
+    // here would show the player a campaign promise nothing has committed to.
+    // commitCentralTension sets `arcTieIn` and rewrites this block.
+    const arcTieIn = (p.arcTieIn || '').trim();
+    if (arcTieIn) lines.push(`World-Threat Tie-In: ${arcTieIn}`);
     lines.push(`Voice: ${p.personalityVoice}`);
     void originDef;
     return `[ORIGIN]\n${lines.join('\n')}\n[/ORIGIN]`;
@@ -557,10 +675,17 @@ function selectionSummary(draft, originDef) {
     const app = draft.appearance || {};
     const appLines = APPEARANCE_FIELDS.map(f => app[f.id] ? `${f.label}: ${app[f.id]}` : null).filter(Boolean);
     if (appLines.length) lines.push(`Appearance: ${appLines.join('; ')}`);
+    // Intimate descriptors are NSFW-gated at the source: an SFW draft must never
+    // carry them into the prompt, since the system message asserts SFW.
+    if (draft.nsfw) {
+        const intimate = app.intimate || {};
+        const intLines = INTIMATE_FIELDS.map(f => intimate[f.id] ? `${f.label}: ${intimate[f.id]}` : null).filter(Boolean);
+        if (intLines.length) lines.push(`Intimate details: ${intLines.join('; ')}`);
+    }
     lines.push(`Origin: ${originDef.name} — ${originDef.pitch}`);
     lines.push(`  Nation block represents: ${originDef.nationMeaning}`);
     lines.push(`  Social lever: ${originDef.leverSocial}`);
-    lines.push(`  Personal lever: ${originDef.leverPersonal}`);
+    lines.push(`  Personal lever: ${personalLeverFor(originDef, draft.raceId)}`);
     for (const [modId, optId] of Object.entries(sel.modifiers || {})) {
         const m = (originDef.modifiers || []).find(x => x.id === modId);
         if (m) lines.push(`${m.label}: ${optionLabel(originDef, modId, optId)}`);
@@ -583,7 +708,14 @@ function selectionSummary(draft, originDef) {
     lines.push(`  ${VIBE_PAIR_GUIDANCE}`);
     if (sel.pursuer) {
         const P = PURSUER_BLOCK;
-        lines.push(`Pursuer: identity "${(sel.pursuer.identity || '').trim() || '(unset — propose)'}"; affiliation ${P.affiliations.find(x => x.id === sel.pursuer.affiliation)?.label}; motive ${P.motives.find(x => x.id === sel.pursuer.motive)?.label}; capability ${P.resources.find(x => x.id === sel.pursuer.resources)?.label}; awareness ${P.awareness.find(x => x.id === sel.pursuer.awareness)?.label}; leverage: ${(sel.pursuer.leverage || '').trim() || '(unset — propose something concrete)'}`);
+        const typedLeverage = (sel.pursuer.leverage || '').trim();
+        // An empty leverage box on the two leverage-is-the-lever origins is not
+        // an error, but the profile validator will reject a blank one — so ask
+        // for it in the strongest terms rather than the soft "propose" hint.
+        const leverageHint = leverageMandatory(originDef, draft.raceId)
+            ? '(unset — MANDATORY for this origin: propose something concrete they hold beyond force. This IS the character\'s guaranteed personal lever; a blank here is a validation failure)'
+            : '(unset — propose something concrete)';
+        lines.push(`Pursuer: identity "${(sel.pursuer.identity || '').trim() || '(unset — propose)'}"; affiliation ${P.affiliations.find(x => x.id === sel.pursuer.affiliation)?.label}; motive ${P.motives.find(x => x.id === sel.pursuer.motive)?.label}; capability ${P.resources.find(x => x.id === sel.pursuer.resources)?.label}; awareness ${P.awareness.find(x => x.id === sel.pursuer.awareness)?.label}; leverage: ${typedLeverage || leverageHint}`);
     }
     for (const r of evaluateIncompatibilities(originDef, sel)) {
         if (r.level === 'narrative') lines.push(`Generation rule: ${r.message}`);
@@ -596,16 +728,52 @@ function selectionSummary(draft, originDef) {
 }
 
 /**
+ * An origin's personal-lever description for a specific race. Origins whose
+ * lever branches by race (Exiled Royal) keep the branches in
+ * `leverPersonalByRace` so only the applicable one is ever shown to the player
+ * or sent to the model — a combined string hands every race the others' canon.
+ * @returns {string}
+ */
+export function personalLeverFor(originDef, raceId) {
+    return originDef?.leverPersonalByRace?.[raceId] || originDef?.leverPersonal || '';
+}
+
+/**
+ * Setting anchors visible to this draft's generation call. Anchors carrying a
+ * race-exclusive mechanic (`raceLocked`) are withheld unless the character
+ * actually touches them — either by being that race, or by having deliberately
+ * chosen that race's government for their nation.
+ *
+ * Withholding matters: an unconditional anchor list is why a Dragonborn came
+ * back wearing the Chorus-Weave. The model does not treat vivid canon as
+ * background; it treats it as available material.
+ * @returns {Array<{name: string, description: string}>}
+ */
+export function anchorsForDraft(draft) {
+    const raceId = draft?.raceId;
+    const governmentId = draft?.selections?.nation?.governmentId;
+    return ORIGINS_SETTING.anchors.filter(a => {
+        if (!a.raceLocked) return true;
+        if (a.raceLocked === raceId) return true;
+        // A nation running Silkborn hive consensus needs the Chorus-Weave in
+        // context regardless of the player character's own race.
+        if (a.raceLocked === 'silkborn' && governmentId === 'hive_consensus') return true;
+        return false;
+    });
+}
+
+/**
  * Messages for the profile-generation retry loop (sendAgentTurn shape).
  * The model fills every unset blank and synthesizes the full profile JSON.
  */
 export function buildProfileGenerationPrompt(draft, originDef) {
     const system = `You are the character-origin compiler for a ${ORIGINS_SETTING.name} campaign. ${ORIGINS_SETTING.blurb}
 
-Setting anchors (fixed canon): ${ORIGINS_SETTING.anchors.map(a => `${a.name} — ${a.description}`).join(' | ')}
+Setting anchors (fixed canon): ${anchorsForDraft(draft).map(a => `${a.name} — ${a.description}`).join(' | ')}
 
 From the player's selections below, produce the complete origin profile. Honor EVERY selection exactly — modifiers are hard inputs you never override; blanks marked (unset) are yours to propose in keeping with everything else. Backstory without mechanical consequence is not sufficient: the social and personal levers must be concrete and active.
 ${draft.nsfw ? 'This campaign has mature content enabled.' : 'This campaign is SFW: no sexual content anywhere in the profile.'}
+${antiGenericBlock('profile')}
 ${ORIGIN_PROFILE_SCHEMA_SPEC}
 
 Output ONLY the profile JSON in one fenced \`\`\`json block.`;
@@ -627,6 +795,8 @@ Race: ${profile.race}
 Concept: ${profile.origin} — ${profile.currentGoal}
 Class leaning: ${originDef?.classLeaning || 'fitting the concept'} — pick the single best-fitting D&D class (and subclass flavor) for this concept.
 Origin-relevant physical traits: ${profile.appearanceNotes || 'none beyond the base appearance'}
+
+${antiGenericBlock('stats')}
 
 Output [CHARACTER], [INVENTORY], and [ABILITIES] blocks (and [SPELLS] if the class is a spellcaster, using 'Cantrips:' for level 0 spells). All attributes, gear, and features consistent with Level ${lvl}. The character sheet must reflect the concept above — e.g. retained skills, signature equipment, or marks the concept implies. Do NOT output an [ORIGIN] block; the framework writes it.`;
 }
@@ -653,6 +823,8 @@ Voice notes: ${profile.personalityVoice}
 
 FRAME
 ${frameText}
+
+${antiGenericBlock('opening')}
 
 RULES
 - 3 to 5 paragraphs of scene-setting prose, ending at a moment that invites the player to act. No dice, no mechanics, no questions to the player out of character.

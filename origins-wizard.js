@@ -34,6 +34,7 @@ import {
     optionBlockReason, validateDraft, randomizeSelections, pursuerNeeded,
     buildProfileGenerationPrompt, validateOriginProfile, buildOriginMemoBlock,
     writeOriginToMemo, buildStatGenPrompt, buildFirstMessagePrompt,
+    leverageMandatory, personalLeverFor,
 } from './origins-engine.js';
 import { getSettings, getEffectiveRouterCampaignPrefix } from './state-manager.js';
 import { sendAgentTurn, sendStateRequest } from './llm-client.js';
@@ -59,7 +60,7 @@ let _wizardOpen = false;
  * full-profile backup entry (prose + fenced JSON, recoverable — the
  * foundation-book pattern). Adds the book to the campaign stack.
  */
-async function writeOriginCanonBook(chatId, profile) {
+async function writeOriginCanonBook(chatId, profile, { appearance = {}, nsfw = false } = {}) {
     const prefix = getEffectiveRouterCampaignPrefix(chatId);
     if (!prefix) throw new Error('No campaign prefix — cannot write the origin lorebook.');
     const bookName = `${prefix}_Origin`;
@@ -97,6 +98,33 @@ async function writeOriginCanonBook(chatId, profile) {
             + `Capability: ${p.resources}. Awareness: ${p.awareness}.${p.leverage ? ` Leverage held: ${p.leverage}` : ''}\n`
             + `Persistent NPC/faction reference — instantiated once at character creation; never regenerate or merge.`, false);
     }
+    // Full physical description — active and keyword-triggered so the narrator
+    // has the detail when actually describing the character. The [ORIGIN] memo
+    // block only carries the compact one-line summary.
+    const appLines = APPEARANCE_FIELDS
+        .map(f => (appearance[f.id] || '').trim() ? `${f.label}: ${String(appearance[f.id]).trim()}` : null)
+        .filter(Boolean);
+    if (appLines.length || (profile.appearanceNotes || '').trim()) {
+        addEntry(`Appearance: ${profile.name}`, [profile.name],
+            `Physical description of ${profile.name} (${profile.race}) — canon, established at character creation.\n`
+            + `${appLines.join('\n')}`
+            + `${(profile.appearanceNotes || '').trim() ? `\nOrigin-relevant traits: ${profile.appearanceNotes.trim()}` : ''}\n`
+            + `(Describe consistently with these; never re-roll them.)`, false);
+    }
+
+    // Intimate descriptors — NSFW-gated, lorebook only. Deliberately kept out
+    // of the [ORIGIN] memo block, which is rendered in the player-facing HUD.
+    const intimate = appearance.intimate || {};
+    const intLines = INTIMATE_FIELDS
+        .map(f => (intimate[f.id] || '').trim() ? `${f.label}: ${String(intimate[f.id]).trim()}` : null)
+        .filter(Boolean);
+    if (nsfw && intLines.length) {
+        addEntry(`Intimate Details: ${profile.name}`, [profile.name],
+            `Intimate physical details for ${profile.name} — canon, established at character creation.\n`
+            + `${intLines.join('\n')}\n`
+            + `(Narrator reference for mature scenes; stated so anatomy is never improvised. Never recite this as a list in prose.)`, false);
+    }
+
     addEntry(`Origin Profile: ${profile.name}`, [profile.name, profile.origin],
         `${profile.origin} — ${profile.name}${profile.title ? `, ${profile.title}` : ''} (${profile.race}).\n\n${profile.backstory}\n\n`
         + `Social lever: ${profile.socialLever.text} (legible to: ${profile.socialLever.legibleTo})\n`
@@ -376,12 +404,17 @@ export function openOriginsWizard() {
         contentEl.querySelector('#rt-og-nsfw').addEventListener('change', e => {
             draft.nsfw = !!e.target.checked;
             // Turning NSFW off must drop any gated selections (spec §9).
-            if (!draft.nsfw && draft.selections) {
-                const origin = ORIGINS_BY_ID[draft.originId];
-                for (const m of origin?.modifiers || []) if (m.nsfw) delete draft.selections.modifiers[m.id];
-                const sfwIds = new Set(vibesForNsfw(false).map(v => v.id));
-                draft.selections.vibes = (draft.selections.vibes || []).filter(v => sfwIds.has(v));
+            if (!draft.nsfw) {
+                // Unconditional: intimate descriptors now reach the generation
+                // prompt, so they must be dropped even on a draft that predates
+                // (or somehow lacks) a selections object.
                 if (draft.appearance) delete draft.appearance.intimate;
+                if (draft.selections) {
+                    const origin = ORIGINS_BY_ID[draft.originId];
+                    for (const m of origin?.modifiers || []) if (m.nsfw) delete draft.selections.modifiers[m.id];
+                    const sfwIds = new Set(vibesForNsfw(false).map(v => v.id));
+                    draft.selections.vibes = (draft.selections.vibes || []).filter(v => sfwIds.has(v));
+                }
             }
             save();
         });
@@ -463,7 +496,7 @@ export function openOriginsWizard() {
                     <span style="font-size:1.4em;flex-shrink:0;">${o.emoji}</span>
                     <span><b>${esc(o.name)}</b><br>
                         <span style="font-size:0.78em;opacity:0.75;">${esc(o.pitch)}</span><br>
-                        <span style="font-size:0.72em;opacity:0.6;">👁 ${esc(o.leverSocial)}<br>⏳ ${esc(o.leverPersonal)}</span>
+                        <span style="font-size:0.72em;opacity:0.6;">👁 ${esc(o.leverSocial)}<br>⏳ ${esc(personalLeverFor(o, draft.raceId))}</span>
                     </span>
                 </button>`).join('')}
             </div>`;
@@ -530,7 +563,7 @@ export function openOriginsWizard() {
             `).join('')}
 
             <div style="margin-top:14px;font-weight:bold;font-size:0.85em;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:2px;">Nation — ${esc(origin.nationMeaning)}</div>
-            <div style="${FIELD_LABEL}">Nation name <span style="opacity:0.5;font-weight:normal;">(empty → AI proposes)</span></div>
+            <div style="${FIELD_LABEL}">Nation name <span style="opacity:0.5;font-weight:normal;">(optional — leave empty and the AI names it)</span></div>
             <input type="text" id="rt-og-nation-name" class="text_pole" value="${esc(sel.nation.name || '')}" style="width:100%;">
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
                 <div><div style="${FIELD_LABEL}">Majority race</div>
@@ -559,14 +592,14 @@ export function openOriginsWizard() {
 
             ${needsPursuer || sel.pursuer ? `
             <div style="margin-top:14px;font-weight:bold;font-size:0.85em;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:2px;">Pursuer — ${esc(origin.pursuerNote)}</div>
-            <div style="${FIELD_LABEL}">Identity <span style="opacity:0.5;font-weight:normal;">(empty → AI proposes)</span></div>
+            <div style="${FIELD_LABEL}">Identity <span style="opacity:0.5;font-weight:normal;">(optional — leave empty and the AI names them)</span></div>
             <input type="text" id="rt-og-pursuer-identity" class="text_pole" value="${esc(sel.pursuer?.identity || '')}" style="width:100%;">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                 ${[['affiliation', 'Affiliation', PURSUER_BLOCK.affiliations], ['motive', 'Motive', PURSUER_BLOCK.motives], ['resources', 'Capability vs you', PURSUER_BLOCK.resources], ['awareness', 'Current awareness', PURSUER_BLOCK.awareness]].map(([field, label, opts]) => `
                 <div><div style="${FIELD_LABEL}">${label}</div>
                 <select class="text_pole rt-og-pursuer" data-field="${field}" style="${SELECT_STYLE}"><option value="">— choose —</option>${opts.map(o => `<option value="${o.id}"${sel.pursuer?.[field] === o.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></div>`).join('')}
             </div>
-            <div style="${FIELD_LABEL}">Leverage — what they hold over you${origin.id === 'exiled_royal' || origin.id === 'defector_spy' ? ' <span style="color:#ffaa00;font-weight:normal;">(mandatory for this origin)</span>' : ' <span style="opacity:0.5;font-weight:normal;">(optional but preferred; empty → AI proposes)</span>'}</div>
+            <div style="${FIELD_LABEL}">Leverage — what they hold over you${leverageMandatory(origin, draft.raceId) ? ' <span style="color:#ffaa00;font-weight:normal;">(this origin requires one — leave empty and the AI proposes it)</span>' : ' <span style="opacity:0.5;font-weight:normal;">(optional — leave empty and the AI proposes one)</span>'}</div>
             <textarea id="rt-og-pursuer-leverage" class="text_pole" rows="2" style="width:100%;" placeholder="A hostage, blackmail material, a person you still care about, a secret that would ruin you…">${esc(sel.pursuer?.leverage || '')}</textarea>
             ` : ''}
 
@@ -649,7 +682,7 @@ export function openOriginsWizard() {
                 ['name', 'Name', 1], ['title', 'Title', 1], ['backstory', 'Backstory', 6],
                 ['appearanceNotes', 'Origin-relevant physical traits', 2],
                 ['currentGoal', 'Current goal', 2], ['personalityVoice', 'Personality & voice', 2],
-                ['worldThreatTieIn', 'World-threat tie-in', 2],
+                ['worldThreatTieIn', 'Arc hook — seeds your World Arc, not yet canon', 2],
             ].map(([key, label, rows]) => `
                 <div style="${FIELD_LABEL}">${label}</div>
                 <textarea class="text_pole rt-og-prof" data-key="${key}" rows="${rows}" style="width:100%;">${esc(p[key] || '')}</textarea>
@@ -712,7 +745,7 @@ export function openOriginsWizard() {
                     genMessages.push({ role: 'user', content: 'Your reply contained no parseable ```json block. Output ONLY the origin profile JSON in one fenced block.' });
                     continue;
                 }
-                const check = validateOriginProfile(parsed, origin);
+                const check = validateOriginProfile(parsed, origin, draft.raceId);
                 if (!check.ok) {
                     genMessages.push({ role: 'user', content: `The profile failed validation. Fix EVERY issue and output the corrected complete JSON again:\n- ${check.errors.join('\n- ')}` });
                     continue;
@@ -737,7 +770,7 @@ export function openOriginsWizard() {
         if (busy) return;
         const origin = ORIGINS_BY_ID[draft.originId];
         const draftCheck = validateDraft(draft);
-        const profCheck = validateOriginProfile(draft.profile, origin);
+        const profCheck = validateOriginProfile(draft.profile, origin, draft.raceId);
         if (!draftCheck.ok || !profCheck.ok) {
             setStatus(`Fix first: ${[...draftCheck.errors, ...profCheck.errors][0]}`);
             return;
@@ -753,17 +786,15 @@ export function openOriginsWizard() {
             const profile = draft.profile;
             const frameId = draft.frameId;
             const nsfw = !!draft.nsfw;
-            st.origin = {
-                committed: {
-                    ...profile,
-                    committedAt: new Date().toISOString(),
-                    raceId: draft.raceId, originId: draft.originId,
-                    level: draft.level, frameId: draft.frameId,
-                    appearance: JSON.parse(JSON.stringify(draft.appearance || {})),
-                    selections: JSON.parse(JSON.stringify(draft.selections)),
-                },
-                nsfw,
+            const committed = {
+                ...profile,
+                committedAt: new Date().toISOString(),
+                raceId: draft.raceId, originId: draft.originId,
+                level: draft.level, frameId: draft.frameId,
+                appearance: JSON.parse(JSON.stringify(draft.appearance || {})),
+                selections: JSON.parse(JSON.stringify(draft.selections)),
             };
+            st.origin = { committed, nsfw };
             delete st.onboarding; // the committed origin drives readiness from here
             SillyTavern.getContext().saveSettingsDebounced();
 
@@ -773,8 +804,10 @@ export function openOriginsWizard() {
             await sendDirectPrompt(buildStatGenPrompt(profile, origin, draft.level));
 
             // Deterministic [ORIGIN] block — engine-written, never model-emitted.
+            // Built from `committed` (not `profile`) so the Appearance line has
+            // the descriptor fields to work from.
             s.modules.origin = true;
-            s.currentMemo = writeOriginToMemo(s.currentMemo, buildOriginMemoBlock(profile, origin));
+            s.currentMemo = writeOriginToMemo(s.currentMemo, buildOriginMemoBlock(committed, origin));
             const idx = await import('./index.js');
             idx.saveSettings();
             idx.syncMemoView();
@@ -783,7 +816,7 @@ export function openOriginsWizard() {
             // faction seeding: a lorebook failure must not lose the commit.
             setBusy(true, 'Writing nation & pursuer canon to the lorebook…');
             try {
-                await writeOriginCanonBook(chatId, profile);
+                await writeOriginCanonBook(chatId, profile, { appearance: committed.appearance, nsfw });
             } catch (e) {
                 console.warn('[RPG Tracker] Origin lorebook write failed:', e);
                 toastr['warning'](`Origin canon lorebook could not be written (${e.message || e}) — the profile is still saved in the tracker.`, 'Origins');
