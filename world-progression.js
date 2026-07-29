@@ -804,9 +804,7 @@ export async function maybeRunWorldProgressionPass(combinedNarrative, chat) {
 
 /**
  * Resolves the Megumin Suite profile for the current chat, mirroring Megumin's
- * own getCharacterKey() (group_<id> / character avatar / 'default'). Shared by
- * detectMeguminOverlap() and detectMeguminFatbodyBlock() so their notion of
- * "current profile" can't drift apart.
+ * own getCharacterKey() (group_<id> / character avatar / 'default').
  */
 function resolveMeguminProfile(megumin, ctx) {
     if (!megumin?.profiles) return null;
@@ -838,29 +836,5 @@ export function detectMeguminOverlap() {
         return { installed: true, overlap: overlapFeatures.length > 0, overlapFeatures };
     } catch (_) {
         return { installed: false, overlap: false };
-    }
-}
-
-/**
- * Checks whether Megumin Suite's own "fatbody" block is enabled for the current
- * profile — meaning Megumin will substitute its [[FATBODY]] macro (live-pulled
- * from Fatbody, or its static fallback) into this generation's prompt. Used by
- * sysprompt.js to decide whether Fatbody should suppress its own additive
- * extension-prompt push to avoid injecting the same mechanics twice.
- * Read-only — never mutates Megumin's settings object.
- * @returns {{installed: boolean, active: boolean}}
- */
-export function detectMeguminFatbodyBlock() {
-    try {
-        const ctx = SillyTavern.getContext();
-        const megumin = ctx.extensionSettings?.['Megumin-Suite'];
-        if (!megumin?.profiles) return { installed: false, active: false };
-
-        const profile = resolveMeguminProfile(megumin, ctx);
-        if (!profile) return { installed: true, active: false };
-
-        return { installed: true, active: Array.isArray(profile.blocks) && profile.blocks.includes('fatbody') };
-    } catch (_) {
-        return { installed: false, active: false };
     }
 }

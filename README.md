@@ -101,16 +101,18 @@ https://www.youtube.com/watch?v=1n5x7VBJ0IU
 
 ## Running with Other Extensions
 
+### Any preset — the `[[ORIGINS]]` marker (v4.1+)
+
+Big narrative presets and this framework's default sysprompt both want to own the narrator persona. Rather than forking a preset and pasting in a frozen copy of the rules, enable **Preset Marker** in settings and paste `[[ORIGINS]]` wherever you want the mechanics to land. The framework substitutes its *live* rules there at generation time — respecting whatever module toggles and campaign mode (D&D or Modern) are currently active — and stops injecting them separately, so nothing is delivered twice. Works with any chat-completion preset.
+
+Full setup, a copy-pasteable prompt snippet, and the list of preset features you should turn off: **[presets/README.md](presets/README.md)**.
+
 ### Megumin Suite
 
-The Suite's narrative engines and this framework's default sysprompt both want to own the narrator persona. Recommended setup (v3.5.0+): turn on **both**.
+1. In this framework's settings, enable **Suite Mode**, set *Sysprompt Delivery → Additive (rules only)*, and enable **Preset Marker**. The framework never touches the Main prompt box.
+2. Paste `[[ORIGINS]]` into the Suite preset's **Output RULES** prompt.
 
-1. In this framework's settings, enable **Suite Mode** and set *Sysprompt Delivery → Additive (rules only)*. The framework never touches the Main prompt box.
-2. In the Suite, enable the **Fatbody D&D** block.
-
-With both on, the Suite's `[[FATBODY]]` block pulls the framework's *live* rules automatically — respecting whatever module toggles and campaign mode (D&D or Modern) are currently active — instead of a frozen snapshot, and the framework automatically skips its own duplicate injection. No manual coordination needed, and nothing gets injected twice.
-
-If you turn on Additive delivery and the Suite's block without also turning on Suite Mode, the framework warns you — that combination still injects mechanics twice, since the automatic suppression is gated on Suite Mode being explicitly enabled. And if you're running an older version of either extension, or only have one of them installed, the Suite's block quietly falls back to its bundled static ruleset instead.
+Then turn off the Suite features that contradict the framework's own rules — the `[[combat]]` and `[[death]]` addons in particular, plus one of `[[infoblock]]` / the framework's status footer. The [preset guide](presets/README.md) has the full collision table.
 
 Also recommended: disable the Suite's **NPC Bank** and **memory archiver** (they duplicate the Lorebook Agent / fight the tracker's chat reads), and set the framework's **External Token Reserve** (Advanced Options) to ~1000–2000 since the Suite injects after the framework's budget is computed.
 

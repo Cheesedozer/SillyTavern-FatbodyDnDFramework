@@ -160,3 +160,19 @@ test('estimateExternalPromptTokens: sums string and {value} registry entries', a
     const total = estimateExternalPromptTokens(ctx);
     assert.equal(total, estimateTokens('x'.repeat(262)) + estimateTokens('y'.repeat(262)));
 });
+
+test('drift guard: the interceptor charges the [[ORIGINS]] marker payload to the budget', async () => {
+    // With the preset marker on, the rules live in the preset rather than in
+    // ctx.extensionPrompts, so estimateExternalPromptTokens() cannot see them and the
+    // interceptor would over-promise the remaining context by the full ruleset size.
+    // There is no harness for invoking rpgTrackerInterceptor end-to-end, so pin the
+    // wiring at the source level the way the sysprompt drift guards do.
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(fileURLToPath(new URL('../narrative-hooks.js', import.meta.url)), 'utf8');
+    assert.match(
+        src,
+        /externalTokens\s*=\s*estimateExternalPromptTokens\(.*\)\s*\n\s*\+\s*\(settings\.presetMarkerEnabled\s*\?\s*markerPayloadTokens\(\)\s*:\s*0\)/,
+        'externalTokens must add markerPayloadTokens() when presetMarkerEnabled is set',
+    );
+});

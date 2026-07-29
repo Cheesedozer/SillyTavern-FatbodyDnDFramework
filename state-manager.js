@@ -100,6 +100,10 @@ function buildDefaultsTemplate() {
         agentFontSize: 13,
         customSysprompt: false,
         suiteMode: false,
+        // Substitute the framework's live rules wherever [[ORIGINS]] appears in the
+        // active chat-completion preset (see preset-marker.js). While on, the rules
+        // are NOT also pushed as an extension prompt — the marker is the sole path.
+        presetMarkerEnabled: false,
         // 'standalone' = Fatbody owns the Main prompt box (current behavior).
         // 'additive'   = rules-only variant delivered via setExtensionPrompt;
         //                the Main prompt box is never touched (Megumin/etc owns the role).

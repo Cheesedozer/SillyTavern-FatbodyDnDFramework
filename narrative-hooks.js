@@ -16,6 +16,7 @@ import { getSettings, getActivationMode, getCampaignMode } from './state-manager
 import { parseQuestsFromMemo, buildActiveLorebookContext, estimateTokens, estimateExternalPromptTokens, budgetInjections, OUTPUT_HEADROOM_FRAC } from './memo-processor.js';
 import { runRouterPass, saveSceneToLorebook, scanAssistantOutputForKeywords } from './router.js';
 import { maybeRunWorldProgressionPass } from './world-progression.js';
+import { markerPayloadTokens } from './preset-marker.js';
 import { logTransaction } from './debug-viewer.js';
 
 // ── Dice naming helpers ────────────────────────────────────────────────────────
@@ -414,8 +415,11 @@ export function installInterceptor() {
             // Other extensions' injections (VectFox memories, router lore, etc.) occupy
             // context too: registered extension prompts are measurable here; injectors
             // that run after the interceptor (Megumin Suite) are covered by the
-            // user-configured external reserve.
+            // user-configured external reserve. The [[ORIGINS]] marker payload is a
+            // third case — it's ours, but with the marker on it lives in the preset
+            // rather than the extension-prompt registry, so we measure it exactly.
             const externalTokens = estimateExternalPromptTokens(SillyTavern.getContext())
+                + (settings.presetMarkerEnabled ? markerPayloadTokens() : 0)
                 + (Number(settings.externalReserveTokens) > 0 ? Number(settings.externalReserveTokens) : 0);
 
             const { injections, dropped, trimmed } = budgetInjections({

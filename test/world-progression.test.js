@@ -26,7 +26,6 @@ import {
     replaceWorldState,
     replaceChatWorldProg,
     detectMeguminOverlap,
-    detectMeguminFatbodyBlock,
 } from '../world-progression.js';
 
 /**
@@ -250,30 +249,6 @@ test('detectMeguminOverlap: never mutates Megumin\'s settings object', () => {
     assert.deepEqual(rawStore()['Megumin-Suite'], meguminSettings, 'read-only — must not write into another extension\'s settings object');
 });
 
-test('detectMeguminFatbodyBlock: not installed when the Megumin-Suite settings key is absent', () => {
-    setSettings({});
-    assert.deepEqual(detectMeguminFatbodyBlock(), { installed: false, active: false });
-});
-
-test('detectMeguminFatbodyBlock: installed but inactive when the fatbody block is not in the resolved profile\'s blocks', () => {
-    setSettings({});
-    rawStore()['Megumin-Suite'] = { profiles: { default: { blocks: ['info', 'mvu'] } } };
-    assert.deepEqual(detectMeguminFatbodyBlock(), { installed: true, active: false });
-});
-
-test('detectMeguminFatbodyBlock: active when the resolved profile\'s blocks includes "fatbody"', () => {
-    setSettings({});
-    rawStore()['Megumin-Suite'] = { profiles: { default: { blocks: ['info', 'fatbody'] } } };
-    assert.deepEqual(detectMeguminFatbodyBlock(), { installed: true, active: true });
-});
-
-test('detectMeguminFatbodyBlock: never mutates Megumin\'s settings object', () => {
-    setSettings({});
-    const meguminSettings = { profiles: { default: { blocks: ['fatbody'] } } };
-    rawStore()['Megumin-Suite'] = meguminSettings;
-    detectMeguminFatbodyBlock();
-    assert.deepEqual(rawStore()['Megumin-Suite'], meguminSettings, 'read-only — must not write into another extension\'s settings object');
-});
 
 test('reconcileWorldProgRollbacks: rolls back a delta whose message was deleted (id no longer referenced anywhere in chat)', () => {
     seedChat('chat10');

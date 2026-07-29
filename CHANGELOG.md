@@ -4,6 +4,23 @@ All notable changes to the **Origins RPG Framework** (formerly the Fatbody D&D F
 
 ## [Unreleased]
 
+**Preset-agnostic rules delivery via `[[ORIGINS]]`.** Any chat-completion preset can now host the framework's mechanics at a position of your choosing: paste `[[ORIGINS]]` into it, turn on **Preset Marker**, and the framework substitutes its live rules-only sysprompt there at generation time. No forking a preset around a frozen snapshot, and no cooperation needed from whatever extension authored it.
+
+### Added
+- **`preset-marker.js`**: a `CHAT_COMPLETION_PROMPT_READY` handler that resolves `[[ORIGINS]]` (case-insensitive, line-anchored or inline, any number of occurrences across any number of messages) against the live additive-rules cache. The marker is stripped even when the feature is off or the cache is cold — it must never reach the model as literal text. Skips `dryRun` (token-count) passes.
+- **`presetMarkerEnabled` setting** plus a **Preset Marker** checkbox under Suite Mode. While on, `applyAdditiveSysprompt()` clears its own extension prompt so the mechanics ship exactly once.
+- **Missing-marker fallback**: if the setting is on but the preset never references the marker, the rules are appended to the first system message and a warning fires (once per session as a toast, every turn to the console). Without it, a forgotten paste would silently ship a campaign with no mechanics at all.
+- **Budget accounting**: the interceptor now charges `markerPayloadTokens()` to `externalTokens` when the marker is active. With the rules in the preset rather than in `ctx.extensionPrompts`, `estimateExternalPromptTokens()` cannot see them, and the injection budget would over-promise by the full size of the ruleset.
+- **`presets/README.md`**: setup, a copy-pasteable prompt-entry snippet, and — the genuinely new material — a collision table for the Megumin Suite features that contradict the framework's own rules (`[[combat]]`, `[[death]]`, `[[infoblock]]`), which the README had never documented.
+
+### Removed
+- **The `[[FATBODY]]` handshake, in full.** Verified against Megumin Suite `main`: `fatbody` appears nowhere in its `index.js` or `data/database.js`, neither shipped V9.1 preset references `[[FATBODY]]`, and its tag substitution is a closed registry that strips unknown tags against a hardcoded whitelist. The block no longer exists, so `detectMeguminFatbodyBlock()` always reported `active: false` and the Suite Mode auto-suppression it gated could never fire. Removed the detector (`world-progression.js`), the `globalThis._rpgGetAdditiveSysprompt` / `_rpgRefreshAdditiveSysprompt` globals, the `warnSuiteAdditiveOverlap()` toast, and the parameter threading through `sysprompt.js`.
+
+### Changed
+- `refreshAdditiveRulesCache()` now populates for `presetMarkerEnabled` where it previously keyed off the fatbody detection — without this the marker would resolve to an empty string on every turn.
+- Suite Mode no longer influences whether additive delivery suppresses itself; suppression is driven solely by `presetMarkerEnabled`, a setting the framework owns. **Suite Mode itself is unchanged** and still means "the Suite owns the Main prompt box, don't write to it."
+- Sysprompt Delivery / Suite Mode tooltips, the two Main-prompt overwrite confirmations, and the README's "Running with Other Extensions" section no longer describe a handshake that has no counterparty.
+
 **Origin creation keeps its promises.** Playtesting found the wizard blocking completion on three fields it explicitly labelled as AI-proposed, and the generator hanging Silkborn hivemind canon on a Dragonborn.
 
 ### Fixed
