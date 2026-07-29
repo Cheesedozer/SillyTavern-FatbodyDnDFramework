@@ -8,8 +8,8 @@ and the framework substitutes its *live* rules there at generation time — foll
 your current module toggles and campaign mode. Nothing is frozen, so nothing drifts
 out of date, and you never have to re-fork when either project updates.
 
-This works with **any** chat-completion preset. Megumin Suite is used as the worked
-example below because it's the most common pairing.
+This works with **any** chat-completion preset. [Megumin Suite](https://github.com/Arif-salah/Megumin-Suite)
+is used as the worked example below because it's the most common pairing.
 
 ---
 
@@ -18,8 +18,8 @@ example below because it's the most common pairing.
 Shipping a modified copy of someone else's preset just relocates the maintenance
 problem — the copy goes stale the moment upstream ships a new version, and now
 there are two things to keep in sync instead of one. Megumin Suite already
-distributes its own presets in its `Presets/` folder; download them from there,
-then apply the one-line edit below.
+distributes its own presets in its [`Presets/` folder](https://github.com/Arif-salah/Megumin-Suite);
+download them from there, then apply the one-line edit below.
 
 ---
 
@@ -123,3 +123,13 @@ Megumin has a built-in **Prompt Preview**. Open it and confirm:
 Then toggle any module off in the framework's Narrator Configuration and
 regenerate. The preview should change immediately. That's the proof it's a live
 pull rather than a snapshot.
+
+### "Marker not found", but the marker is right there
+
+The warning always refers to your **narration** turn. The framework's background
+passes (Router, World Progression, the state model) build their own prompts and
+never see your preset — they are skipped entirely and can't produce this warning.
+So if it fires, check the narration turn's Prompt Preview: the prompt holding the
+marker is most likely disabled in the active prompt order, or its content isn't
+plain text. Note the match is exact apart from casing — `[[ ORIGINS ]]` with inner
+spaces will not be recognized.

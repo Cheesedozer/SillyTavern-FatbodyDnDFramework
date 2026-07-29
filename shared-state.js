@@ -43,3 +43,39 @@ export const RT = {
      *  so the gate reappears on the next reload rather than being forgotten. */
     worldArcGateSkippedChats: new Set(),
 };
+
+// ── Framework-initiated LLM requests ───────────────────────────────────────────
+
+/**
+ * Depth of framework-initiated LLM requests currently in flight (router passes,
+ * world-progression agent turns, state-model passes...). A counter rather than a
+ * boolean so nested or overlapping internal calls can't clear the flag early.
+ *
+ * Lives here rather than in llm-client.js so prompt-side modules can consult it
+ * without importing the networking layer (and its DOM-bound dependencies).
+ */
+let _internalRequestDepth = 0;
+
+/** Marks the start of a framework-initiated request. Pair with endInternalRequest() in a finally. */
+export function beginInternalRequest() {
+    _internalRequestDepth++;
+}
+
+/** Marks the end of a framework-initiated request. Never goes negative. */
+export function endInternalRequest() {
+    if (_internalRequestDepth > 0) _internalRequestDepth--;
+}
+
+/**
+ * True while the framework is talking to the model on its own behalf. Those
+ * prompts are assembled by this extension via generateRaw and never contain the
+ * user's preset, so preset-facing logic must sit them out.
+ */
+export function isInternalRequestActive() {
+    return _internalRequestDepth > 0;
+}
+
+/** Test seam — drops the counter back to zero between cases. */
+export function _resetInternalRequestDepth() {
+    _internalRequestDepth = 0;
+}

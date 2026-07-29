@@ -12,6 +12,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applySysprompt, ADDITIVE_HEADER } from '../sysprompt.js';
 import { handlePresetMarker, markerPayloadTokens, ORIGINS_MARKER, _resetMarkerWarning } from '../preset-marker.js';
+import {
+    beginInternalRequest, endInternalRequest, isInternalRequestActive, _resetInternalRequestDepth,
+} from '../shared-state.js';
 
 /**
  * Seeds settings AND populates the additive cache the marker reads.
@@ -160,7 +163,7 @@ test('the missing-marker fallback does not fire while the feature is off', async
     assert.equal(chat[0].content, 'no marker anywhere', 'additive delivery already covers this case');
 });
 
-test('the missing-marker toast fires once per session, the console warning every time', async () => {
+test('the missing-marker warning — toast AND console — fires once per session', async () => {
     _resetMarkerWarning();
     await withMarkerOn();
     const realToastr = globalThis.toastr;
@@ -179,7 +182,82 @@ test('the missing-marker toast fires once per session, the console warning every
     }
 
     assert.equal(toasts, 1, 'the toast must not nag on every turn');
-    assert.equal(warns, 3, 'the console warning stays diagnosable');
+    assert.equal(warns, 1, 'nor should the console — one line says everything the user needs');
+});
+
+// ── Framework-initiated turns ─────────────────────────────────────────────────
+
+test('sits out the framework\'s own agent turns entirely', async () => {
+    _resetMarkerWarning();
+    await withMarkerOn();
+    const realToastr = globalThis.toastr;
+    const realWarn = console.warn;
+    let warns = 0;
+    globalThis.toastr = { warning: () => {} };
+    console.warn = () => { warns++; };
+
+    // A router / world-progression prompt: built by the framework via generateRaw,
+    // so the user's preset (and its marker) is nowhere in it.
+    const agentPrompt = [sys('Return JSON only.'), { role: 'user', content: 'classify this turn' }];
+    beginInternalRequest();
+    try {
+        handlePresetMarker({ chat: agentPrompt });
+    } finally {
+        endInternalRequest();
+        globalThis.toastr = realToastr;
+        console.warn = realWarn;
+    }
+
+    assert.ok(!agentPrompt[0].content.includes(ADDITIVE_HEADER), 'the ruleset must not bloat an agent prompt');
+    assert.equal(agentPrompt[0].content, 'Return JSON only.', 'agent prompts are left byte-identical');
+    assert.equal(warns, 0, 'a prompt that never carried the marker is not a missing marker');
+});
+
+test('still resolves a real marker while a background pass is in flight', async () => {
+    // World Progression runs after generation ends and isn't awaited, so it can still
+    // be open when the next user turn is assembled. The guard covers the fallback only,
+    // never the substitution — a literal marker must not leak on that overlap.
+    _resetMarkerWarning();
+    await withMarkerOn();
+    const chat = [sys(`BEFORE\n${ORIGINS_MARKER}\nAFTER`)];
+    beginInternalRequest();
+    try {
+        handlePresetMarker({ chat });
+    } finally {
+        endInternalRequest();
+    }
+
+    assert.ok(!chat[0].content.includes(ORIGINS_MARKER), 'never leaks as literal text');
+    assert.ok(chat[0].content.includes(ADDITIVE_HEADER), 'the user\'s turn still gets its rules');
+});
+
+test('resumes normally once the internal request finishes', async () => {
+    _resetMarkerWarning();
+    await withMarkerOn();
+    beginInternalRequest();
+    endInternalRequest();
+
+    const chat = [sys(`BEFORE\n${ORIGINS_MARKER}\nAFTER`)];
+    handlePresetMarker({ chat });
+    assert.ok(chat[0].content.includes(ADDITIVE_HEADER), 'the real turn still gets its rules');
+});
+
+test('the internal-request depth survives nesting and never goes negative', () => {
+    _resetInternalRequestDepth();
+    assert.equal(isInternalRequestActive(), false);
+
+    beginInternalRequest();
+    beginInternalRequest();
+    endInternalRequest();
+    assert.equal(isInternalRequestActive(), true, 'an inner call ending must not unflag the outer one');
+    endInternalRequest();
+    assert.equal(isInternalRequestActive(), false);
+
+    endInternalRequest();  // stray unbalanced end (a throw mid-teardown, say)
+    beginInternalRequest();
+    assert.equal(isInternalRequestActive(), true, 'the counter never sinks below zero');
+    endInternalRequest();
+    assert.equal(isInternalRequestActive(), false);
 });
 
 // ── Budget accounting ─────────────────────────────────────────────────────────

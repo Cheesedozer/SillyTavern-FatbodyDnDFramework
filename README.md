@@ -98,6 +98,7 @@ https://www.youtube.com/watch?v=1n5x7VBJ0IU
 ## Suggested Companions
 
 - 🧠 **[Summaryception](https://github.com/Lodactio/Extension-Summaryception):** A brilliant summarizer/context compression extension. Also handy for crunching all the combat mechanics of the context into summarized history.
+- 💥 **[Megumin Suite](https://github.com/Arif-salah/Megumin-Suite):** A large narrative preset suite. Pairs with this framework through the `[[ORIGINS]]` marker — setup in [Running with Other Extensions](#megumin-suite) below.
 
 ## Running with Other Extensions
 
@@ -107,7 +108,7 @@ Big narrative presets and this framework's default sysprompt both want to own th
 
 Full setup, a copy-pasteable prompt snippet, and the list of preset features you should turn off: **[presets/README.md](presets/README.md)**.
 
-### Megumin Suite
+### [Megumin Suite](https://github.com/Arif-salah/Megumin-Suite)
 
 1. In this framework's settings, enable **Suite Mode**, set *Sysprompt Delivery → Additive (rules only)*, and enable **Preset Marker**. The framework never touches the Main prompt box.
 2. Paste `[[ORIGINS]]` into the Suite preset's **Output RULES** prompt.

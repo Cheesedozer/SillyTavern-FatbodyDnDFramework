@@ -3,12 +3,18 @@
  * All external LLM networking. Stateless — reads state via parameter, no DOM.
  * Handles Ollama, OpenAI-compatible, and SillyTavern Profile/generateRaw modes.
  *
- * Imports: state-manager.js
+ * Every framework-initiated request goes through sendStateRequest() or
+ * sendAgentTurn(), both of which flag the in-flight window via shared-state.js so
+ * prompt-side modules can tell "the framework is asking the model something" apart
+ * from a real user turn.
+ *
+ * Imports: state-manager.js, debug-viewer.js, shared-state.js
  * Imported by: index.js, memo-processor.js
  */
 
 import { getSettings } from './state-manager.js';
 import { logTransaction } from './debug-viewer.js';
+import { beginInternalRequest, endInternalRequest } from './shared-state.js';
 
 // ── Connection Profile Helpers ─────────────────────────────────────────────────
 
@@ -305,6 +311,15 @@ export async function testOpenAIConnection(url, apiKey, model) {
  * @returns {Promise<string>}
  */
 export async function sendStateRequest(settings, systemPrompt, userPrompt, signal = null) {
+    beginInternalRequest();
+    try {
+        return await _sendStateRequest(settings, systemPrompt, userPrompt, signal);
+    } finally {
+        endInternalRequest();
+    }
+}
+
+async function _sendStateRequest(settings, systemPrompt, userPrompt, signal) {
     const context = SillyTavern.getContext();
 
     console.log(`[RPG Tracker] sendStateRequest — source: "${settings.connectionSource}", profileId: "${settings.connectionProfileId}", preset: "${settings.completionPresetId}"`);
@@ -498,6 +513,15 @@ export async function sendStateRequest(settings, systemPrompt, userPrompt, signa
  * @returns {Promise<{content: string, toolCall: {name: string, args: object, id: string} | null}>}
  */
 export async function sendAgentTurn(settings, messages, tools = null, signal = null) {
+    beginInternalRequest();
+    try {
+        return await _sendAgentTurn(settings, messages, tools, signal);
+    } finally {
+        endInternalRequest();
+    }
+}
+
+async function _sendAgentTurn(settings, messages, tools, signal) {
     const context = SillyTavern.getContext();
 
     // ── OpenAI compatible ────────────────────────────────────────────────────
