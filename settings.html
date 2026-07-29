@@ -41,7 +41,7 @@
 
             <div style="margin-top: 10px;">
                 <small style="display: block; margin-bottom: 4px; font-weight: bold; opacity: 0.9;">Sysprompt Delivery
-                    <i class="fa-solid fa-circle-question interactable" title="Standalone: the framework writes the full D&amp;D system prompt (role + rules) into the Main prompt box. Additive: the framework never touches the Main prompt box — a rules-only prompt (no persona) is injected alongside whatever system prompt you or another extension (e.g. Megumin Suite engines) provide. If Megumin's own [[FATBODY]] block is active and Suite Mode is also on, the framework automatically skips this injection so Megumin's live pull is the single source of mechanics — no manual coordination needed."></i>
+                    <i class="fa-solid fa-circle-question interactable" title="Standalone: the framework writes the full D&amp;D system prompt (role + rules) into the Main prompt box. Additive: the framework never touches the Main prompt box — a rules-only prompt (no persona) is injected alongside whatever system prompt you or another extension (e.g. Megumin Suite engines) provide. Turning on Preset Marker below moves that same rules-only text into your preset at the [[ORIGINS]] marker instead, so it is never delivered twice."></i>
                 </small>
                 <label class="checkbox_label">
                     <input type="radio" name="rpg_tracker_sysprompt_delivery" value="standalone" />
@@ -62,7 +62,13 @@
             <label class="checkbox_label" style="margin-top: 10px;">
                 <input id="rpg_tracker_suite_mode" type="checkbox" />
                 <span>Suite Mode (Megumin Suite)</span>
-                <i class="fa-solid fa-circle-question interactable" title="Enable when running alongside the Megumin Suite. The Suite owns the Main prompt and injects this framework's mechanics via its [[FATBODY]] block, which now pulls the framework's LIVE rules automatically (respecting your current module toggles and campaign mode) — no manual syncing, and the framework won't also inject them separately. Runtime state (RNG queue, state memo, quests) is still injected as normal."></i>
+                <i class="fa-solid fa-circle-question interactable" title="Enable when running alongside the Megumin Suite. The Suite owns the Main prompt box, so the framework never writes to it. Pair with Additive delivery (or Preset Marker below) to layer the mechanics on top of the Suite's narrator. Runtime state (RNG queue, state memo, quests) is still injected as normal."></i>
+            </label>
+
+            <label class="checkbox_label" style="margin-top: 10px;">
+                <input id="rpg_tracker_preset_marker" type="checkbox" />
+                <span>Preset Marker ([[ORIGINS]])</span>
+                <i class="fa-solid fa-circle-question interactable" title="Paste [[ORIGINS]] anywhere in your chat-completion preset and the framework substitutes its LIVE rules-only text there at generation time — respecting your current module toggles and campaign mode, so it never drifts out of date like a hand-pasted copy. While this is on, the rules are NOT also injected as a separate extension prompt, so nothing is delivered twice. If the marker is missing from your preset the rules are appended to the first system message instead and you get a warning. Works with any preset. See presets/README.md."></i>
             </label>
 
             <label class="checkbox_label" style="margin-top: 10px;">

@@ -41,8 +41,4 @@ test('index.js and its split modules link and evaluate without throwing', async 
     assert.equal(typeof globalThis._rpgRenderRouterUI, 'function');
     assert.equal(typeof globalThis._rpgRefreshAgentManifest, 'function');
     assert.equal(typeof globalThis._rpgRunStateModelPass, 'function');
-    // Megumin Suite's [[FATBODY]] block live-pull API (see sysprompt.js) — must exist
-    // at module-eval time regardless of whether the additive cache has populated yet.
-    assert.equal(typeof globalThis._rpgGetAdditiveSysprompt, 'function');
-    assert.equal(typeof globalThis._rpgRefreshAdditiveSysprompt, 'function');
 });

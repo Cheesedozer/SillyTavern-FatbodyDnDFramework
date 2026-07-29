@@ -6,8 +6,9 @@ import { getDiceToolName, getDiceCommandName, getDiceCommandAliases, doDiceRoll,
 import {
     resetWorldProgTick, refreshWorldProgPacingPrompt, reconcileWorldProgRollbacks, forkWorldState,
     getWorldState, getChatWorldProg, forceAdvanceTempo, forcePhaseGate, runWorldProgReconciliation,
-    detectMeguminOverlap, detectMeguminFatbodyBlock, replaceWorldState, replaceChatWorldProg,
+    detectMeguminOverlap, replaceWorldState, replaceChatWorldProg,
 } from './world-progression.js';
+import { handlePresetMarker } from './preset-marker.js';
 import { openCentralTensionWizard } from './central-tension-compiler.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
 import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderLorebookTerminal } from './renderer.js';
@@ -21,7 +22,7 @@ import { runStateModelPass, runChunkedStateAudit, handleLevelUp, sendDirectPromp
 import { buildAuditChunks } from './audit-chunker.js';
 import { buildRowTypeSelect, openCustomFieldEditor, openPromptEditor, exportModules, openShareModal, importModulesFromJson, refreshOrderList } from './custom-fields-ui.js';
 import { FOLDER_NAME } from './env.js';
-import { autoApplySysprompt, applyAdditiveSysprompt, applySysprompt, scheduleAutoApply, buildSysprompt, getAdditiveSyspromptCache } from './sysprompt.js';
+import { autoApplySysprompt, applyAdditiveSysprompt, applySysprompt, scheduleAutoApply, buildSysprompt } from './sysprompt.js';
 import { openFoundationWizard } from './foundation-wizard.js';
 import { commitFoundationAndInit, isModernCharacterPrompt } from './foundation.js';
 import { defaultFoundation } from './default-foundation.js';
@@ -1125,15 +1126,6 @@ import { savePanelGeometry, loadPanelGeometry, resetPanelGeometry, saveDeltaHeig
     // Rendered-view refresh hook for modules that mutate the memo outside the
     // normal state pass (skilltree-bridge after skill purchases).
     globalThis._rpgRefreshRenderedView = () => refreshRenderedView();
-    // Published for the Megumin Suite's [[FATBODY]] block: a synchronous, cached read
-    // of Fatbody's live additive-mode rules text (see sysprompt.js). Never throws;
-    // returns '' when Fatbody is disabled/customSysprompt/no chat yet — callers must
-    // feature-detect and fall back to their own bundled content on an empty string.
-    globalThis._rpgGetAdditiveSysprompt = () => { try { return getAdditiveSyspromptCache() || ''; } catch { return ''; } };
-    // Lets Megumin nudge a fresh pull right after its own [[FATBODY]] block toggle
-    // changes, instead of waiting for one of Fatbody's own triggers (chat switch,
-    // settings save) to eventually refresh the cache above.
-    globalThis._rpgRefreshAdditiveSysprompt = () => { try { scheduleAutoApply(); } catch { /* no-op */ } };
 
     // [runStateModelPass/handleLevelUp/sendDirectPrompt moved to state-pass.js]
 
@@ -5091,6 +5083,13 @@ ${resourceList}
             // prompt must follow the active chat. Each path no-ops/clears when inactive.
             void applySysprompt();
             eventSource.on(event_types.CHAT_CHANGED, () => void applySysprompt());
+            // [[ORIGINS]] preset marker: substitute the live rules into the assembled
+            // prompt. Registered unconditionally — the handler itself decides whether to
+            // substitute or merely strip, and a stale marker must never reach the model
+            // as literal text even when the feature is off.
+            if (event_types?.CHAT_COMPLETION_PROMPT_READY != null) {
+                eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, handlePresetMarker);
+            }
             // Re-anchor the Skill Tree bridge when the active chat changes.
             eventSource.on(event_types.CHAT_CHANGED, () => onSkillTreeChatChanged(ctx.getCurrentChatId?.() || null));
 
@@ -5718,7 +5717,7 @@ ${resourceList}
                     toastr['success']('Additive rules prompt refreshed (Main prompt box untouched).', 'RPG Tracker');
                     return;
                 }
-                if (getSettings().suiteMode && !confirm('Suite Mode is ON. The Megumin Suite owns the Main prompt and injects Fatbody mechanics via its [[FATBODY]] block. Overwriting the Main prompt will clobber the Suite. Continue anyway?')) return;
+                if (getSettings().suiteMode && !confirm('Suite Mode is ON. The Megumin Suite owns the Main prompt. Overwriting it will clobber the Suite. Continue anyway?')) return;
                 const fileName = getSettings().diceFunctionTool ? 'sysprompt.txt' : 'sysprompt_legacy.txt';
                 let content;
                 try {
@@ -5752,7 +5751,7 @@ ${resourceList}
             });
 
             $('#rpg_tracker_btn_reset_and_apply_sysprompt').on('click', async function () {
-                if (getSettings().suiteMode && !confirm('Suite Mode is ON. The Megumin Suite owns the Main prompt and injects Fatbody mechanics via its [[FATBODY]] block. This action will overwrite the Main prompt and clobber the Suite. Continue anyway?')) return;
+                if (getSettings().suiteMode && !confirm('Suite Mode is ON. The Megumin Suite owns the Main prompt. This action will overwrite it and clobber the Suite. Continue anyway?')) return;
                 if (!confirm('This will:\n\n1. Reset the Core State Model prompt to built-in default\n2. Reset all Stock Module prompts, Active Modules, and Module Order to factory defaults\n3. Fetch the latest sysprompt.txt and write it directly into your Quick Prompt "Main" box\n\nYour custom modules will NOT be affected. Proceed?')) return;
 
                 const { extensionSettings } = SillyTavern.getContext();
@@ -6483,38 +6482,30 @@ ${resourceList}
                 });
             }
 
-            // Suite Mode toggle (Megumin Suite). When on, autoApplySysprompt() leaves the Main
-            // prompt box alone — the Suite injects Fatbody mechanics via its [[FATBODY]] block.
+            // Suite Mode toggle (Megumin Suite). When on, autoApplySysprompt() leaves the
+            // Main prompt box alone — the Suite owns it, and mechanics reach the model via
+            // additive delivery or the [[ORIGINS]] preset marker instead.
             const suiteModeCb = /** @type {HTMLInputElement|null} */ (document.getElementById('rpg_tracker_suite_mode'));
-            // Real double-injection prevention lives in applyAdditiveSysprompt()
-            // (sysprompt.js), which auto-suppresses its own extension-prompt push
-            // whenever Suite Mode is on AND Megumin's [[FATBODY]] block is detected
-            // active. That suppression requires Suite Mode as an explicit precondition
-            // (narrows the blast radius of trusting Megumin's flag alone) — so additive
-            // delivery + Megumin's block active WITHOUT Suite Mode is still a real
-            // double-injection risk this toast needs to flag.
-            const warnSuiteAdditiveOverlap = () => {
-                const fresh = getSettings();
-                if (fresh.syspromptDelivery !== 'additive' || !detectMeguminFatbodyBlock().active) return;
-                if (fresh.suiteMode) {
-                    toastr['info'](
-                        'Megumin Suite\'s [[FATBODY]] block is active and pulling Fatbody\'s rules live — Fatbody is skipping its own duplicate injection automatically.',
-                        'RPG Tracker', { timeOut: 8000 },
-                    );
-                } else {
-                    toastr['warning'](
-                        'Additive delivery is on and Megumin Suite\'s [[FATBODY]] block is active, but Suite Mode is OFF — mechanics will be injected twice. Turn on Suite Mode so Fatbody suppresses its own copy automatically.',
-                        'RPG Tracker', { timeOut: 12000 },
-                    );
-                }
-            };
             if (suiteModeCb) {
                 suiteModeCb.checked = !!getSettings().suiteMode;
                 suiteModeCb.addEventListener('change', function () {
                     const fresh = getSettings();
                     fresh.suiteMode = !!this.checked;
                     saveSettings();
-                    warnSuiteAdditiveOverlap();
+                    scheduleAutoApply();
+                });
+            }
+
+            // Preset Marker toggle. Flipping this moves the rules between two delivery
+            // paths (extension prompt vs. in-preset substitution), so both the additive
+            // cache and the extension prompt have to be re-dispatched.
+            const presetMarkerCb = /** @type {HTMLInputElement|null} */ (document.getElementById('rpg_tracker_preset_marker'));
+            if (presetMarkerCb) {
+                presetMarkerCb.checked = !!getSettings().presetMarkerEnabled;
+                presetMarkerCb.addEventListener('change', function () {
+                    const fresh = getSettings();
+                    fresh.presetMarkerEnabled = !!this.checked;
+                    saveSettings();
                     scheduleAutoApply();
                 });
             }
@@ -6528,7 +6519,6 @@ ${resourceList}
                     const fresh = getSettings();
                     fresh.syspromptDelivery = this.value;
                     saveSettings();
-                    warnSuiteAdditiveOverlap();
                     // Re-dispatch both paths: the newly inactive one clears itself.
                     scheduleAutoApply();
                 });
