@@ -649,6 +649,46 @@ export function buildOriginMemoBlock(profile, originDef) {
 }
 
 /**
+ * Serializes a committed profile into the immutable-canon section handed to the
+ * Lorebook Agent on every pass.
+ *
+ * The agent otherwise sees only the labels of archived entries and a short
+ * narrative window, so when it records an NPC first named in the backstory it has
+ * nothing to check itself against and invents attributes. The backstory prose is
+ * included verbatim for exactly that reason — it is where those NPCs come from.
+ *
+ * @param {object|null|undefined} profile - `chatStates[chatId].origin.committed`
+ * @returns {string} the section, or '' when no origin is committed
+ */
+export function buildOriginCanonSection(profile) {
+    const p = profile;
+    if (!p || !p.name) return '';
+
+    const lines = [
+        `${p.origin || 'Unknown origin'} — ${p.name}${p.title ? `, ${p.title}` : ''} (${p.race || 'unknown race'})`,
+    ];
+    if (p.nation?.name) {
+        lines.push(`Origin nation: ${p.nation.name} — ${p.nation.government || ''}; ${p.nation.cultureVibes || ''}; majority ${p.nation.majorityRace || 'unknown'}`);
+    }
+    if (p.secondaryNation?.name) {
+        lines.push(`Home nation: ${p.secondaryNation.name} — ${p.secondaryNation.government || ''}; majority ${p.secondaryNation.majorityRace || 'unknown'}`);
+    }
+    if (p.socialLever?.text) lines.push(`Social lever: ${p.socialLever.text} (legible to: ${p.socialLever.legibleTo || ''})`);
+    if (p.personalLever?.text) lines.push(`Personal lever: ${p.personalLever.text}`);
+    if (p.pursuer?.identity) {
+        const lev = (p.pursuer.leverage || '').trim();
+        lines.push(`Pursuer: ${p.pursuer.identity} (${p.pursuer.affiliation || 'unaffiliated'}) — motive: ${p.pursuer.motive || ''}; awareness: ${p.pursuer.awareness || ''}${lev ? `; leverage: ${lev}` : ''}`);
+    }
+    if (p.backstory) lines.push(`\nBackstory:\n${p.backstory}`);
+
+    return `## ORIGIN CANON (IMMUTABLE)\n${lines.join('\n')}\n\n`
+        + `These facts were fixed at character creation. Never record, rewrite or consolidate an entry `
+        + `that contradicts them — including the attributes of any person, place or faction named above. `
+        + `If the narrative appears to contradict this canon, record the discrepancy as an explicit `
+        + `unresolved tension inside the entry; do not assert a replacement fact.`;
+}
+
+/**
  * Pure regex replace-or-append of the [ORIGIN] block in a memo string
  * (the writeXpLineToMemo shape from memo-processor.js).
  */

@@ -1,6 +1,7 @@
-import { getSettings, getEffectiveRouterCampaignPrefix, getActivationMode } from './state-manager.js';
+import { getSettings, getEffectiveRouterCampaignPrefix, getActivationMode, isInertLoreEntry, LORE_INERT_FLAG, LORE_PINNED_FLAG } from './state-manager.js';
 import { sendStateRequest, sendAgentTurn } from './llm-client.js';
 import { buildAuditChunks } from './audit-chunker.js';
+import { buildOriginCanonSection } from './origins-engine.js';
 import { getRequestHeaders } from '../../../../script.js';
 
 let _routerRunning = false;
@@ -250,6 +251,7 @@ export function buildKeyringText(allBooks, activeKeys = []) {
         if (!bookData || !bookData.entries) continue;
         for (const [uid, entry] of Object.entries(bookData.entries)) {
             if (activeSet.has(`${bookName}::${uid}`)) continue; // shown in ACTIVE MEMORY
+            if (isInertLoreEntry(entry)) continue;              // recoverable backup — not agent-addressable
             const keys = (entry.key || []).join(', ');
             lines.push(`[ARCHIVE] Label: ${entry.comment || entry.key?.[0] || 'Unnamed'} | Keys: [${keys}]`);
         }
@@ -272,6 +274,7 @@ export function buildLoreIndex(allBooks) {
     for (const [name, book] of Object.entries(allBooks)) {
         if (!book || !book.entries) continue;
         for (const [uid, entry] of Object.entries(book.entries)) {
+            if (isInertLoreEntry(entry)) continue; // grep_lore must not surface the JSON backup
             const hay = ((entry.content || '') + '\u0000' + (entry.comment || '')).toLowerCase();
             index.push({ name, uid, entry, hay });
         }
@@ -361,6 +364,14 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
         updateActiveEntries();
 
         let keyringText = buildKeyringText(archiveBooks, settings.activeRouterKeys);
+
+        // Origin canon — the one source the agent may never contradict. Prepended
+        // to both prompt shapes below so a pass can't record NPC attributes that
+        // clash with the facts the campaign was built from.
+        const canonChatId = (typeof globalThis._rpgCurrentChatId === 'function' ? globalThis._rpgCurrentChatId() : null) || ctx.chatId || null;
+        const originCanon = buildOriginCanonSection(canonChatId ? settings.chatStates?.[canonChatId]?.origin?.committed : null);
+        const canonSection = originCanon ? `${originCanon}\n\n` : '';
+
         const { chat } = ctx;
         
         const N = customLookback !== null ? customLookback : (settings.routerLookback || 4);
@@ -402,8 +413,12 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
             maxTokens: (settings.routerMaxTokens !== undefined && settings.routerMaxTokens !== null && settings.routerMaxTokens !== '') ? Number(settings.routerMaxTokens) : 1000,
         };
 
-        // Budget status — computed once and reused in both basic and agent context
-        const activeCount = settings.activeRouterKeys?.length || 0;
+        // Budget status — computed once and reused in both basic and agent context.
+        // Pinned origin canon is exempt: it is always-on by design, so counting it
+        // would spend the agent's whole allowance and provoke it into evicting
+        // ordinary lore (or trying, and failing, to evict the canon itself).
+        const pinnedKeys = new Set(settings.pinnedRouterKeys || []);
+        const activeCount = (settings.activeRouterKeys || []).filter(k => !pinnedKeys.has(k)).length;
         const maxActive = settings.routerMaxActivations || 8;
         const overflow = activeCount - maxActive;
         const budgetLine = `Active entries: ${activeCount} / ${maxActive}`;
@@ -417,6 +432,16 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
         let basePrompt = (settings.routerSystemPromptTemplate || 'You are the Lorebook Agent. Maintain narrative consistency and manage lorebooks.')
             .replace(/\{\{campaignRoot\}\}/g, prefix || 'World Chronicle')
             .replace(/\{\{user\}\}/g, ctx.name1 || 'User');
+
+        // The canon rule is appended rather than templated in so it survives a
+        // user-customized routerSystemPromptTemplate.
+        if (originCanon) {
+            basePrompt += `\n\nORIGIN CANON: the "## ORIGIN CANON (IMMUTABLE)" section of your context is `
+                + `engine-written fact from character creation. It outranks the narrative window and every `
+                + `existing entry. Never record, update or consolidate an entry that contradicts it. Where the `
+                + `narrative seems to contradict it, write the contradiction down as an open tension rather `
+                + `than replacing the canonical fact. Entries marked pinned cannot be deactivated.`;
+        }
 
         // ── Cleanup Mode ─────────────────────────────────────────────────────
         // Triggered by the UI broom button via runRouterPass(null, '__CLEANUP__', null, true).
@@ -810,7 +835,7 @@ Thought: I see a new NPC named Barnaby in Khelt's Rust-Lantern District. I will 
 
             const questMatchB = settings.currentMemo?.match(/\[QUESTS\]([\s\S]*?)\[\/QUESTS\]/i);
             const questBlockB = questMatchB ? `[QUESTS]${questMatchB[1].trim()}[/QUESTS]` : 'None';
-            const basicUserPrompt = `## BUDGET STATUS\n${budgetLine}${overflowInstruction}\n\n## NEWLY ACTIVATED THIS TURN\n${newlyTriggeredFull.join('\n\n') || 'None.'}\n\n## ACTIVE MEMORY (Lore)\n${activeEntriesFull.join('\n\n') || 'None.'}\n\n## ARCHIVE INDEX\n${keyringText || 'Empty.'}\n\n## CURRENT LOCATION\n${currentHierarchy || 'Unknown'}\n\n## ACTIVE QUESTS\n${questBlockB}\n\n## NARRATIVE\n${recentChat}\n\n${manualPrompt ? `## INSTRUCTION\n${manualPrompt}\n\n` : ''}`;
+            const basicUserPrompt = `${canonSection}## BUDGET STATUS\n${budgetLine}${overflowInstruction}\n\n## NEWLY ACTIVATED THIS TURN\n${newlyTriggeredFull.join('\n\n') || 'None.'}\n\n## ACTIVE MEMORY (Lore)\n${activeEntriesFull.join('\n\n') || 'None.'}\n\n## ARCHIVE INDEX\n${keyringText || 'Empty.'}\n\n## CURRENT LOCATION\n${currentHierarchy || 'Unknown'}\n\n## ACTIVE QUESTS\n${questBlockB}\n\n## NARRATIVE\n${recentChat}\n\n${manualPrompt ? `## INSTRUCTION\n${manualPrompt}\n\n` : ''}`;
 
             broadcastStep('thought', 'Thinking...');
             const basicResp = await sendStateRequest(routerSettings, basicSystemPrompt, basicUserPrompt);
@@ -1015,7 +1040,7 @@ ${sharedContext}`;
 
             const questMatchA = settings.currentMemo?.match(/\[QUESTS\]([\s\S]*?)\[\/QUESTS\]/i);
             const questBlockA = questMatchA ? `[QUESTS]${questMatchA[1].trim()}[/QUESTS]` : 'None';
-            const contextMessage = `## BUDGET STATUS\n${budgetLine}${overflowInstruction}\n\n## NEWLY ACTIVATED THIS TURN\n${newlyTriggeredFull.join('\n\n') || 'None.'}\n\n## ACTIVE MEMORY (Lore)\n${activeEntriesFull.join('\n\n') || 'None yet.'}\n\n## ARCHIVE INDEX\n${keyringText || 'Empty.'}\n\n## CURRENT LOCATION\n${currentHierarchy || 'Unknown'}\n\n## ACTIVE QUESTS\n${questBlockA}\n\n## NARRATIVE\n${recentChat}${manualPrompt ? `\n\n## INSTRUCTION\n${manualPrompt}` : ''}`;
+            const contextMessage = `${canonSection}## BUDGET STATUS\n${budgetLine}${overflowInstruction}\n\n## NEWLY ACTIVATED THIS TURN\n${newlyTriggeredFull.join('\n\n') || 'None.'}\n\n## ACTIVE MEMORY (Lore)\n${activeEntriesFull.join('\n\n') || 'None yet.'}\n\n## ARCHIVE INDEX\n${keyringText || 'Empty.'}\n\n## CURRENT LOCATION\n${currentHierarchy || 'Unknown'}\n\n## ACTIVE QUESTS\n${questBlockA}\n\n## NARRATIVE\n${recentChat}${manualPrompt ? `\n\n## INSTRUCTION\n${manualPrompt}` : ''}`;
 
             /** @type {Array<{role:string, content:string|null, tool_calls?:any[], tool_call_id?:string}>} */
             const messages = [
@@ -1276,12 +1301,25 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
 
     // 1. Activate/Deactivate
     const activate = action.activate || [];
-    const deactivate = action.deactivate || [];
+    let deactivate = action.deactivate || [];
     let newActive = [...(settings.activeRouterKeys || [])];
-    
+
+    // Pinned entries are engine-written canon (origin nation, pursuer, appearance,
+    // backstory). Evicting them is what lets later-recorded lore drift away from
+    // the facts established at character creation, so the agent cannot do it.
+    const pinnedSet = new Set(settings.pinnedRouterKeys || []);
+    if (pinnedSet.size > 0) {
+        const refused = deactivate.filter(k => pinnedSet.has(k));
+        if (refused.length > 0) {
+            deactivate = deactivate.filter(k => !pinnedSet.has(k));
+            errors.push(`Refused to deactivate pinned origin canon: ${refused.join(', ')}. `
+                + `These entries are established at character creation and stay active for the campaign.`);
+        }
+    }
+
     // Remove deactivations
     newActive = newActive.filter(k => !deactivate.includes(k));
-    
+
     // Add activations
     for (const k of activate) {
         if (typeof k !== 'string' || !k.includes('::')) {
@@ -1494,6 +1532,9 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
             const cleanLabel = (rec.label || '').replace(/^\[.*?\]\s*/i, '').toLowerCase().trim();
             let existingUid = null;
             for (const [uid, entry] of Object.entries(bookData.entries)) {
+                // Never merge a new record into an inert backup — appending chronicle
+                // text to the serialized profile would corrupt the recovery payload.
+                if (isInertLoreEntry(entry)) continue;
                 const entryLabel = (entry.comment || '').replace(/^\[.*?\]\s*/i, '').toLowerCase().trim();
                 if (entryLabel === cleanLabel) { existingUid = uid; break; }
             }
@@ -2203,6 +2244,7 @@ export async function scanAssistantOutputForKeywords(narrativeText, opts = {}) {
         for (const [uid, entry] of Object.entries(book.entries)) {
             const fullId = `${bookName}::${uid}`;
             if (currentActive.has(fullId)) continue; // already active — skip
+            if (isInertLoreEntry(entry)) continue;   // recoverable backup — never activates
 
             const keywords = Array.isArray(entry.key) ? entry.key : [];
             if (keywords.length === 0) continue;
@@ -2295,6 +2337,75 @@ export async function scanAssistantOutputForKeywords(narrativeText, opts = {}) {
 
 
 
+
+/**
+ * Upgrades campaigns created before origin canon and the JSON backup were split.
+ *
+ * Those campaigns hold one `Origin Profile: <name>` entry carrying the prose
+ * backstory AND a fenced JSON dump of the whole profile, marked `disable: true`
+ * as a "backup". Managed mode ignores `disable`, so it activated on the PC's name
+ * and shipped the serialization into every prompt. This rewrites it in place:
+ * the prose becomes `Origin Canon: <name>` (pinned active) and the JSON moves to
+ * a keyless, inert `Origin Profile Backup: <name>`.
+ *
+ * Idempotent — a book with no legacy entry is left untouched and unwritten.
+ * @returns {Promise<boolean>} whether a migration was written
+ */
+export async function migrateOriginCanonEntries() {
+    const settings = getSettings();
+    if (!settings.routerEnabled) return false;
+    const prefix = getLivePrefix();
+    if (!prefix) return false;
+
+    const bookName = `${prefix}_Origin`;
+    const ctx = SillyTavern.getContext();
+
+    let book;
+    try { book = await ctx.loadWorldInfo(bookName); } catch (_) { return false; }
+    if (!book?.entries) return false;
+
+    const legacy = Object.entries(book.entries)
+        .filter(([, e]) => /^Origin Profile:\s/i.test(e?.comment || '') && !isInertLoreEntry(e));
+    if (legacy.length === 0) return false;
+
+    const uids = Object.keys(book.entries).map(Number).filter(n => !isNaN(n));
+    let nextUid = uids.length > 0 ? Math.max(...uids) + 1 : 0;
+    const newlyPinned = [];
+
+    for (const [uid, entry] of legacy) {
+        const name = (entry.comment || '').replace(/^Origin Profile:\s*/i, '').trim();
+        const content = String(entry.content || '');
+        const fence = content.match(/```json[\s\S]*?```/i);
+
+        entry.comment = `Origin Canon: ${name}`;
+        entry.content = content.replace(/```json[\s\S]*?```/i, '').trimEnd();
+        entry.extensions = { ...(entry.extensions || {}), [LORE_PINNED_FLAG]: true };
+        newlyPinned.push(`${bookName}::${uid}`);
+
+        if (fence) {
+            book.entries[nextUid] = {
+                ...entry,
+                uid: nextUid,
+                comment: `Origin Profile Backup: ${name}`,
+                key: [],
+                disable: true,
+                content: `Recoverable serialization of ${name}'s committed origin profile. `
+                    + `Not narrator context — see "Origin Canon: ${name}" for the readable canon.\n\n${fence[0]}`,
+                extensions: { [LORE_INERT_FLAG]: true },
+            };
+            nextUid++;
+        }
+    }
+
+    await writeBookToDisk(bookName, book);
+
+    settings.activeRouterKeys = [...new Set([...(settings.activeRouterKeys || []), ...newlyPinned])];
+    settings.pinnedRouterKeys = [...new Set([...(settings.pinnedRouterKeys || []), ...newlyPinned])];
+    ctx.saveSettingsDebounced();
+
+    console.log(`[RPG Tracker] Migrated ${legacy.length} legacy origin profile entr${legacy.length === 1 ? 'y' : 'ies'} in ${bookName}.`);
+    return true;
+}
 
 /**
  * Sets disable: true on every entry in all scoped lorebooks so ST's native

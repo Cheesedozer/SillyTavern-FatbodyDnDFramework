@@ -125,6 +125,52 @@ export async function doDiceRoll(customDiceFormula, quiet = false) {
     }
 }
 
+/** Upper bounds for a model-supplied formula — enough for any plausible check. */
+const MAX_TOOL_DICE_COUNT = 100;
+const MAX_TOOL_DIE_SIDES = 1000;
+
+/**
+ * Validates a dice formula that arrived from the model via the function tool.
+ *
+ * The slash command is driven by a human and may legitimately open a prompt or
+ * warn via toastr; a tool call cannot. Anything unrollable has to come back as an
+ * error string the model can act on, because the alternative — `doDiceRoll`
+ * returning `{ total: '' }` and the action coercing it to `0` — hands the model a
+ * natural 0 it will narrate as a catastrophic failure.
+ *
+ * @param {unknown} raw
+ * @returns {{ok: true, value: string} | {ok: false, error: string}}
+ */
+export function validateToolDiceFormula(raw) {
+    const value = typeof raw === 'string' ? raw.trim() : '';
+    if (!value) {
+        return { ok: false, error: 'No dice formula was provided. Call the tool again with a formula such as "1d20".' };
+    }
+    if (value.toLowerCase() === 'custom') {
+        // 'custom' is the slash command's sentinel for "ask the human". Reaching
+        // Popup.show.input from a tool call would block generation on a dialog.
+        return { ok: false, error: '"custom" is not a dice formula — it is reserved for the player\'s own manual rolls. Call the tool again with an explicit formula such as "1d20".' };
+    }
+    for (const m of value.matchAll(/(\d*)d(\d+)/gi)) {
+        const count = m[1] === '' ? 1 : Number(m[1]);
+        const sides = Number(m[2]);
+        if (count > MAX_TOOL_DICE_COUNT || sides > MAX_TOOL_DIE_SIDES) {
+            return {
+                ok: false,
+                error: `Dice formula "${value}" is out of range (at most ${MAX_TOOL_DICE_COUNT} dice of at most ${MAX_TOOL_DIE_SIDES} sides). Call the tool again with a smaller formula.`,
+            };
+        }
+    }
+    const droll = SillyTavern.libs?.droll;
+    if (!droll) {
+        return { ok: false, error: 'The dice library is unavailable, so no roll could be made. Do not report a numeric result — resolve this check narratively instead.' };
+    }
+    if (!droll.validate(value)) {
+        return { ok: false, error: `"${value}" is not a valid dice formula. Call the tool again with a formula such as "1d20" or "2d6+3".` };
+    }
+    return { ok: true, value };
+}
+
 // ── Tool & slash command registration ─────────────────────────────────────────
 
 export function registerDiceFunctionTool() {
@@ -165,8 +211,14 @@ export function registerDiceFunctionTool() {
             description: 'Rolls the dice using the provided formula and returns the numeric result. Use when it is necessary to roll the dice to determine the outcome of an action or when the user requests it.',
             parameters: rollDiceSchema,
             action: async (args) => {
-                const formula = args?.formula || (isLegacy ? '1d6' : '1d20');
+                const check = validateToolDiceFormula(args?.formula || (isLegacy ? '1d6' : '1d20'));
+                if (!check.ok) return `ERROR: ${check.error}`;
+                const formula = check.value;
+
                 const roll = await doDiceRoll(formula, true);
+                if (!roll.rolls.length) {
+                    return `ERROR: rolling "${formula}" produced no result. Do not report a numeric outcome — resolve this check narratively instead.`;
+                }
                 const total = parseInt(roll.total) || 0;
 
                 if (isLegacy) {
@@ -310,7 +362,12 @@ export function installInterceptor() {
                 pending.delivered = true;   // cleared in onGenerationEnded after this generation lands
             }
 
-            // ── Tier 5: STATE MEMO (largest contributor — trimmed/dropped last) ──
+            // ── Tier 1: STATE MEMO (engine-written canon — outranks lore) ──
+            // The memo carries the [ORIGIN] block, which is authoritative over any
+            // lore entry. It used to sit at the bottom of the budget and be the
+            // first thing trimmed, which meant context pressure deleted the canon
+            // and kept the entries contradicting it. It is still the only trimmable
+            // item, but it is now trimmed only after lore has been dropped.
             let memoText = '';
             if (settings.currentMemo && !content.includes("### STATE MEMO (DO NOT REPEAT)")) {
                 // Strip the JSON [QUESTS] block from the narrative context to save tokens and avoid redundancy
@@ -318,7 +375,7 @@ export function installInterceptor() {
             }
             const memoBlock = memoText ? `### STATE MEMO (DO NOT REPEAT)\n${memoText}\n\n` : '';
 
-            // ── Tier 1: quest deadline check + active quests ──
+            // ── Tier 2: quest deadline check + active quests ──
             let questText = '';
             // Quest deadline check — fires before state model pass, deterministically
             if (settings.modules?.quests) {
@@ -343,9 +400,13 @@ export function installInterceptor() {
             // the same pattern as state memo and quests — guaranteeing same-turn presence.
             // Skipped in 'native' mode: keywords are handed to ST's WI scanner, which
             // doesn't want Fatbody's keyword scanner or manual lore injection.
-            let keywordLore = '';   // tier 2: newly activated this turn
-            let agentLore = '';     // tier 3: agent/direct-command owned
-            let persistentLore = '';// tier 4: previously keyword-activated, re-injected
+            let keywordLore = '';   // tier 3: newly activated this turn
+            let agentLore = '';     // tier 4: agent/direct-command owned
+            let persistentLore = '';// tier 5: previously keyword-activated, re-injected
+            // Lore is model-written and can drift from the engine-written canon in
+            // the state memo. Saying so explicitly gives the narrator a rule to
+            // apply instead of having to guess which source to believe.
+            const LORE_SUBORDINATION = ' — recorded lore; the STATE MEMO and origin canon override any conflict here';
             if (settings.routerEnabled && getActivationMode(settings) === 'managed' && content) {
                 const t0 = performance.now().toFixed(1);
                 console.group(`[RPG|INTERCEPT] rpgTrackerInterceptor keyword pre-scan @ ${t0}ms`);
@@ -359,7 +420,7 @@ export function installInterceptor() {
                     try {
                         const loreBlock = await buildActiveLorebookContext(triggered);
                         if (loreBlock) {
-                            keywordLore = `\n<font color="#d4a028">## NEWLY ACTIVATED LORE (KEYWORD MATCH)</font>\n${loreBlock}\n`;
+                            keywordLore = `\n<font color="#d4a028">## NEWLY ACTIVATED LORE (KEYWORD MATCH)${LORE_SUBORDINATION}</font>\n${loreBlock}\n`;
                             console.log(`[RPG|INTERCEPT] Same-turn lore injected for ${triggered.length} entries.`);
                         }
 
@@ -381,7 +442,7 @@ export function installInterceptor() {
                     try {
                         const persistBlock = await buildActiveLorebookContext(persistent);
                         if (persistBlock) {
-                            persistentLore = `\n<font color="#d4a028">## ACTIVE LORE (KEYWORD)</font>\n${persistBlock}\n`;
+                            persistentLore = `\n<font color="#d4a028">## ACTIVE LORE (KEYWORD)${LORE_SUBORDINATION}</font>\n${persistBlock}\n`;
                         }
                     } catch (e) {
                         console.warn('[RPG Tracker] Persistent keyword lore re-injection failed:', e);
@@ -398,7 +459,7 @@ export function installInterceptor() {
                     try {
                         const agentBlock = await buildActiveLorebookContext(agentOwned);
                         if (agentBlock) {
-                            agentLore = `\n## ACTIVE LORE (AGENT)\n${agentBlock}\n`;
+                            agentLore = `\n## ACTIVE LORE (AGENT)${LORE_SUBORDINATION}\n${agentBlock}\n`;
                         }
                     } catch (e) {
                         console.warn('[RPG Tracker] Agent-owned lore injection failed:', e);
@@ -429,11 +490,11 @@ export function installInterceptor() {
                 items: [
                     { name: 'RNG',             tier: 0, text: rngBlock },
                     { name: 'LEVEL UP',        tier: 0, text: levelUpDirective },
-                    { name: 'STATE MEMO',      tier: 5, text: memoBlock, trimmable: true },
-                    { name: 'quests',          tier: 1, text: questText },
-                    { name: 'keyword lore',    tier: 2, text: keywordLore },
-                    { name: 'persistent lore', tier: 4, text: persistentLore },
-                    { name: 'agent lore',      tier: 3, text: agentLore },
+                    { name: 'STATE MEMO',      tier: 1, text: memoBlock, trimmable: true },
+                    { name: 'quests',          tier: 2, text: questText },
+                    { name: 'keyword lore',    tier: 3, text: keywordLore },
+                    { name: 'persistent lore', tier: 5, text: persistentLore },
+                    { name: 'agent lore',      tier: 4, text: agentLore },
                 ],
             });
 

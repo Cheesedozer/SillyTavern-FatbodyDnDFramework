@@ -88,3 +88,58 @@ test('profileFromFoundation falls back to D&D on malformed input', async () => {
     const cleaned = profileFromFoundation({ primary: 'd100', subdice: ['d10', 'bogus', 'd100'], queueLen: 999 });
     assert.deepEqual(cleaned, { primary: 'd100', subdice: ['d10'], queueLen: 12 }, 'junk subdice/queueLen sanitized');
 });
+
+// ── Dice function-tool formula validation ─────────────────────────────────────
+//
+// The slash command is human-driven and may prompt or toast; a tool call cannot.
+// Anything unrollable has to come back as an error string, because the previous
+// behavior — doDiceRoll returning { total: '' } and the action coercing it with
+// `parseInt(...) || 0` — handed the model a 0 it narrates as a critical failure.
+
+test('validateToolDiceFormula rejects the "custom" sentinel instead of prompting', async () => {
+    const { validateToolDiceFormula } = await import('../narrative-hooks.js');
+    for (const v of ['custom', 'Custom', ' CUSTOM ']) {
+        const r = validateToolDiceFormula(v);
+        assert.equal(r.ok, false);
+        assert.match(r.error, /not a dice formula/);
+    }
+});
+
+test('validateToolDiceFormula rejects missing and non-string formulas', async () => {
+    const { validateToolDiceFormula } = await import('../narrative-hooks.js');
+    for (const v of ['', '   ', null, undefined, 42, {}]) {
+        assert.equal(validateToolDiceFormula(v).ok, false);
+    }
+    assert.match(validateToolDiceFormula('').error, /No dice formula was provided/);
+});
+
+test('validateToolDiceFormula rejects out-of-range dice before touching droll', async () => {
+    const { validateToolDiceFormula } = await import('../narrative-hooks.js');
+    // droll is absent from the test stub, so reaching it would give the library
+    // error instead — matching on the range message proves the order of checks.
+    assert.match(validateToolDiceFormula('101d6').error, /out of range/);
+    assert.match(validateToolDiceFormula('1d1001').error, /out of range/);
+});
+
+test('validateToolDiceFormula reports a missing dice library rather than rolling 0', async () => {
+    const { validateToolDiceFormula } = await import('../narrative-hooks.js');
+    const r = validateToolDiceFormula('1d20');
+    assert.equal(r.ok, false);
+    assert.match(r.error, /dice library is unavailable/);
+    assert.match(r.error, /Do not report a numeric result/);
+});
+
+test('validateToolDiceFormula accepts valid formulas and rejects junk via droll', async () => {
+    const { validateToolDiceFormula } = await import('../narrative-hooks.js');
+    const prevLibs = globalThis.SillyTavern.libs;
+    globalThis.SillyTavern.libs = { droll: { validate: (v) => /^\d*d\d+([+-]\d+)?$/.test(v) } };
+    try {
+        assert.deepEqual(validateToolDiceFormula(' 2d6+3 '), { ok: true, value: '2d6+3' });
+        assert.deepEqual(validateToolDiceFormula('1d20'), { ok: true, value: '1d20' });
+        const bad = validateToolDiceFormula('roll me a good one');
+        assert.equal(bad.ok, false);
+        assert.match(bad.error, /is not a valid dice formula/);
+    } finally {
+        globalThis.SillyTavern.libs = prevLibs;
+    }
+});

@@ -345,10 +345,12 @@ export function registerLogQuestTool() {
 
                 return `Quest "${newQuest.title}" successfully logged.`;
             },
+            // The tool-call message should never appear in chat, but the follow-up
+            // generation must still run. `stealth` suppressed both, so a turn where
+            // the model called LogQuest without also writing prose ended as an empty
+            // assistant message with nothing to regenerate it. An empty formatMessage
+            // hides the call; the follow-up generation supplies the narration.
             formatMessage: () => '',
-            // Fire-and-forget: staging a quest doesn't need a follow-up generation, and the
-            // tool-call message should never appear in chat. stealth suppresses both.
-            stealth: true,
         });
     } catch (error) {
         console.error('[RPG Tracker] Error registering LogQuest function tool', error);
