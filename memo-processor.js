@@ -9,7 +9,7 @@
  * Imported by: index.js, renderer.js, quests.js
  */
 
-import { getSettings } from './state-manager.js';
+import { getSettings, isInertLoreEntry } from './state-manager.js';
 import { DEFAULT_STOCK_PROMPTS } from './constants.js';
 import { MEMO_MODULES } from './module-registry.js';
 
@@ -1062,14 +1062,21 @@ export async function buildLorebookContext() {
                 }
             }
 
+            // Managed mode force-disables every scoped entry so ST's native scanner
+            // stays out (router.js disableManagedEntries), which would otherwise hide
+            // the engine-written origin canon from the state model. Entries the
+            // framework itself holds active are included regardless of `disable`.
+            const activeIds = new Set(settings.activeRouterKeys || []);
+
             const entries = [];
             for (const bookName of booksToLoad) {
                 try {
                     const bookData = await stCtx.loadWorldInfo(bookName);
                     if (!bookData?.entries) continue;
-                    for (const entry of Object.values(/** @type {any} */(bookData).entries)) {
+                    for (const [uid, entry] of Object.entries(/** @type {any} */(bookData).entries)) {
                         const e = /** @type {any} */ (entry);
-                        if (!e.disable && e.content) entries.push(e.content);
+                        if (!e.content || isInertLoreEntry(e)) continue;
+                        if (!e.disable || activeIds.has(`${bookName}::${uid}`)) entries.push(e.content);
                     }
                 } catch (bookErr) {
                     console.warn(`[RPG Tracker] Failed to load lorebook "${bookName}":`, bookErr);
@@ -1111,7 +1118,9 @@ export async function buildActiveLorebookContext(keys) {
     for (const k of keys) {
         const [bookName, uid] = k.split('::');
         const entry = books[bookName]?.entries?.[uid];
-        if (entry && entry.content) {
+        // Inert entries are recoverable backups, not context. They can still be
+        // referenced by a stale activeRouterKeys id, so filter here too.
+        if (entry && entry.content && !isInertLoreEntry(entry)) {
             out += `### [${entry.key?.[0] || entry.comment || uid}]\n${entry.content}\n\n`;
         }
     }

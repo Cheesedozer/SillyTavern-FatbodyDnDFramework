@@ -1,6 +1,7 @@
-import { getSettings, getEffectiveRouterCampaignPrefix, getActivationMode } from './state-manager.js';
+import { getSettings, getEffectiveRouterCampaignPrefix, getActivationMode, isInertLoreEntry, LORE_INERT_FLAG, LORE_PINNED_FLAG } from './state-manager.js';
 import { sendStateRequest, sendAgentTurn } from './llm-client.js';
 import { buildAuditChunks } from './audit-chunker.js';
+import { buildOriginCanonSection } from './origins-engine.js';
 import { getRequestHeaders } from '../../../../script.js';
 
 let _routerRunning = false;
@@ -250,11 +251,54 @@ export function buildKeyringText(allBooks, activeKeys = []) {
         if (!bookData || !bookData.entries) continue;
         for (const [uid, entry] of Object.entries(bookData.entries)) {
             if (activeSet.has(`${bookName}::${uid}`)) continue; // shown in ACTIVE MEMORY
+            if (isInertLoreEntry(entry)) continue;              // recoverable backup — not agent-addressable
             const keys = (entry.key || []).join(', ');
             lines.push(`[ARCHIVE] Label: ${entry.comment || entry.key?.[0] || 'Unnamed'} | Keys: [${keys}]`);
         }
     }
     return lines.join('\n');
+}
+
+/**
+ * Normalizes an entry label or keyword for identity comparison: strips a leading
+ * "[...]" timestamp stamp, lowercases, trims. Matches the record-dedup
+ * normalization in applyAction so both paths agree on what "same name" means.
+ * @param {unknown} raw
+ * @returns {string} normalized name, or '' when there is nothing to match on
+ */
+export function normalizeEntryName(raw) {
+    return String(raw || '').replace(/^\[.*?\]\s*/i, '').toLowerCase().trim();
+}
+
+/**
+ * Builds a campaign-wide name -> "bookName::uid" index over every archive entry.
+ *
+ * Indexes BOTH `comment` and every value in `key[]`, because the two can diverge
+ * on engine-written canon: the origin pursuer's comment is "Pursuer: <identity>"
+ * while its key is the bare "<identity>" the agent uses as a record label. A
+ * comment-only comparison misses that, which is how a second, model-invented
+ * record of the same pursuer gets created in a different book.
+ *
+ * Inert entries (recoverable backups) are skipped — they are not addressable.
+ * First writer wins, preserving the previous inline-index behavior.
+ *
+ * @param {object} allBooks - bookName -> ST world-info book
+ * @returns {Map<string, string>}
+ */
+export function buildEntryLookup(allBooks) {
+    const index = new Map();
+    for (const [bookName, book] of Object.entries(allBooks || {})) {
+        for (const [uid, entry] of Object.entries(book?.entries || {})) {
+            if (isInertLoreEntry(entry)) continue;
+            const id = `${bookName}::${uid}`;
+            const names = [entry.comment, ...(Array.isArray(entry.key) ? entry.key : [])];
+            for (const n of names) {
+                const norm = normalizeEntryName(n);
+                if (norm && !index.has(norm)) index.set(norm, id);
+            }
+        }
+    }
+    return index;
 }
 
 /**
@@ -272,6 +316,7 @@ export function buildLoreIndex(allBooks) {
     for (const [name, book] of Object.entries(allBooks)) {
         if (!book || !book.entries) continue;
         for (const [uid, entry] of Object.entries(book.entries)) {
+            if (isInertLoreEntry(entry)) continue; // grep_lore must not surface the JSON backup
             const hay = ((entry.content || '') + '\u0000' + (entry.comment || '')).toLowerCase();
             index.push({ name, uid, entry, hay });
         }
@@ -361,6 +406,14 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
         updateActiveEntries();
 
         let keyringText = buildKeyringText(archiveBooks, settings.activeRouterKeys);
+
+        // Origin canon — the one source the agent may never contradict. Prepended
+        // to both prompt shapes below so a pass can't record NPC attributes that
+        // clash with the facts the campaign was built from.
+        const canonChatId = (typeof globalThis._rpgCurrentChatId === 'function' ? globalThis._rpgCurrentChatId() : null) || ctx.chatId || null;
+        const originCanon = buildOriginCanonSection(canonChatId ? settings.chatStates?.[canonChatId]?.origin?.committed : null);
+        const canonSection = originCanon ? `${originCanon}\n\n` : '';
+
         const { chat } = ctx;
         
         const N = customLookback !== null ? customLookback : (settings.routerLookback || 4);
@@ -402,8 +455,12 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
             maxTokens: (settings.routerMaxTokens !== undefined && settings.routerMaxTokens !== null && settings.routerMaxTokens !== '') ? Number(settings.routerMaxTokens) : 1000,
         };
 
-        // Budget status — computed once and reused in both basic and agent context
-        const activeCount = settings.activeRouterKeys?.length || 0;
+        // Budget status — computed once and reused in both basic and agent context.
+        // Pinned origin canon is exempt: it is always-on by design, so counting it
+        // would spend the agent's whole allowance and provoke it into evicting
+        // ordinary lore (or trying, and failing, to evict the canon itself).
+        const pinnedKeys = new Set(settings.pinnedRouterKeys || []);
+        const activeCount = (settings.activeRouterKeys || []).filter(k => !pinnedKeys.has(k)).length;
         const maxActive = settings.routerMaxActivations || 8;
         const overflow = activeCount - maxActive;
         const budgetLine = `Active entries: ${activeCount} / ${maxActive}`;
@@ -417,6 +474,16 @@ export async function runRouterPass(narrativeOutput, manualPrompt = null, custom
         let basePrompt = (settings.routerSystemPromptTemplate || 'You are the Lorebook Agent. Maintain narrative consistency and manage lorebooks.')
             .replace(/\{\{campaignRoot\}\}/g, prefix || 'World Chronicle')
             .replace(/\{\{user\}\}/g, ctx.name1 || 'User');
+
+        // The canon rule is appended rather than templated in so it survives a
+        // user-customized routerSystemPromptTemplate.
+        if (originCanon) {
+            basePrompt += `\n\nORIGIN CANON: the "## ORIGIN CANON (IMMUTABLE)" section of your context is `
+                + `engine-written fact from character creation. It outranks the narrative window and every `
+                + `existing entry. Never record, update or consolidate an entry that contradicts it. Where the `
+                + `narrative seems to contradict it, write the contradiction down as an open tension rather `
+                + `than replacing the canonical fact. Entries marked pinned cannot be deactivated.`;
+        }
 
         // ── Cleanup Mode ─────────────────────────────────────────────────────
         // Triggered by the UI broom button via runRouterPass(null, '__CLEANUP__', null, true).
@@ -810,7 +877,7 @@ Thought: I see a new NPC named Barnaby in Khelt's Rust-Lantern District. I will 
 
             const questMatchB = settings.currentMemo?.match(/\[QUESTS\]([\s\S]*?)\[\/QUESTS\]/i);
             const questBlockB = questMatchB ? `[QUESTS]${questMatchB[1].trim()}[/QUESTS]` : 'None';
-            const basicUserPrompt = `## BUDGET STATUS\n${budgetLine}${overflowInstruction}\n\n## NEWLY ACTIVATED THIS TURN\n${newlyTriggeredFull.join('\n\n') || 'None.'}\n\n## ACTIVE MEMORY (Lore)\n${activeEntriesFull.join('\n\n') || 'None.'}\n\n## ARCHIVE INDEX\n${keyringText || 'Empty.'}\n\n## CURRENT LOCATION\n${currentHierarchy || 'Unknown'}\n\n## ACTIVE QUESTS\n${questBlockB}\n\n## NARRATIVE\n${recentChat}\n\n${manualPrompt ? `## INSTRUCTION\n${manualPrompt}\n\n` : ''}`;
+            const basicUserPrompt = `${canonSection}## BUDGET STATUS\n${budgetLine}${overflowInstruction}\n\n## NEWLY ACTIVATED THIS TURN\n${newlyTriggeredFull.join('\n\n') || 'None.'}\n\n## ACTIVE MEMORY (Lore)\n${activeEntriesFull.join('\n\n') || 'None.'}\n\n## ARCHIVE INDEX\n${keyringText || 'Empty.'}\n\n## CURRENT LOCATION\n${currentHierarchy || 'Unknown'}\n\n## ACTIVE QUESTS\n${questBlockB}\n\n## NARRATIVE\n${recentChat}\n\n${manualPrompt ? `## INSTRUCTION\n${manualPrompt}\n\n` : ''}`;
 
             broadcastStep('thought', 'Thinking...');
             const basicResp = await sendStateRequest(routerSettings, basicSystemPrompt, basicUserPrompt);
@@ -890,7 +957,7 @@ Thought: I see a new NPC named Barnaby in Khelt's Rust-Lantern District. I will 
                             properties: {
                                 record: {
                                     type: 'array',
-                                    description: 'New entries to create. Recording an entry with an existing label automatically updates it.',
+                                    description: 'New entries to create. Recording an entry whose label matches an existing entry\'s label or keywords automatically updates that entry instead, searching every lorebook in the campaign — so an entity already recorded under another category is never duplicated.',
                                     items: {
                                         type: 'object',
                                         properties: {
@@ -1006,6 +1073,7 @@ Available actions:
 - commit({"record": [...], "update": [...], "activate": [...], "deactivate": [...], "delete_ids": [...]}) ? write all changes and finish
 
 commit record items: {"label": "Name only (NO tag prefix)", "keys": ["kw1","kw2"], "content": "...", "category": "NPC|LOC|FAC|QUEST|EVENT"}
+  (A record whose label matches an existing entry's label or keywords in ANY campaign lorebook updates that entry instead of creating a duplicate.)
 commit update items: {"id": "Book::UID", "content": "new text to append"}
 
 ## EXAMPLE
@@ -1015,7 +1083,7 @@ ${sharedContext}`;
 
             const questMatchA = settings.currentMemo?.match(/\[QUESTS\]([\s\S]*?)\[\/QUESTS\]/i);
             const questBlockA = questMatchA ? `[QUESTS]${questMatchA[1].trim()}[/QUESTS]` : 'None';
-            const contextMessage = `## BUDGET STATUS\n${budgetLine}${overflowInstruction}\n\n## NEWLY ACTIVATED THIS TURN\n${newlyTriggeredFull.join('\n\n') || 'None.'}\n\n## ACTIVE MEMORY (Lore)\n${activeEntriesFull.join('\n\n') || 'None yet.'}\n\n## ARCHIVE INDEX\n${keyringText || 'Empty.'}\n\n## CURRENT LOCATION\n${currentHierarchy || 'Unknown'}\n\n## ACTIVE QUESTS\n${questBlockA}\n\n## NARRATIVE\n${recentChat}${manualPrompt ? `\n\n## INSTRUCTION\n${manualPrompt}` : ''}`;
+            const contextMessage = `${canonSection}## BUDGET STATUS\n${budgetLine}${overflowInstruction}\n\n## NEWLY ACTIVATED THIS TURN\n${newlyTriggeredFull.join('\n\n') || 'None.'}\n\n## ACTIVE MEMORY (Lore)\n${activeEntriesFull.join('\n\n') || 'None yet.'}\n\n## ARCHIVE INDEX\n${keyringText || 'Empty.'}\n\n## CURRENT LOCATION\n${currentHierarchy || 'Unknown'}\n\n## ACTIVE QUESTS\n${questBlockA}\n\n## NARRATIVE\n${recentChat}${manualPrompt ? `\n\n## INSTRUCTION\n${manualPrompt}` : ''}`;
 
             /** @type {Array<{role:string, content:string|null, tool_calls?:any[], tool_call_id?:string}>} */
             const messages = [
@@ -1276,12 +1344,25 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
 
     // 1. Activate/Deactivate
     const activate = action.activate || [];
-    const deactivate = action.deactivate || [];
+    let deactivate = action.deactivate || [];
     let newActive = [...(settings.activeRouterKeys || [])];
-    
+
+    // Pinned entries are engine-written canon (origin nation, pursuer, appearance,
+    // backstory). Evicting them is what lets later-recorded lore drift away from
+    // the facts established at character creation, so the agent cannot do it.
+    const pinnedSet = new Set(settings.pinnedRouterKeys || []);
+    if (pinnedSet.size > 0) {
+        const refused = deactivate.filter(k => pinnedSet.has(k));
+        if (refused.length > 0) {
+            deactivate = deactivate.filter(k => !pinnedSet.has(k));
+            errors.push(`Refused to deactivate pinned origin canon: ${refused.join(', ')}. `
+                + `These entries are established at character creation and stay active for the campaign.`);
+        }
+    }
+
     // Remove deactivations
     newActive = newActive.filter(k => !deactivate.includes(k));
-    
+
     // Add activations
     for (const k of activate) {
         if (typeof k !== 'string' || !k.includes('::')) {
@@ -1406,6 +1487,12 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
     const bookQueue = new Map();
 
     const knownBookNames = Object.keys(allBooks);
+    // Campaign-wide identity index, built once per commit. Basic mode has always
+    // deduped across books (parseBasicTags); agent mode only ever searched its own
+    // target book, so the tool schema's promise that recording an existing label
+    // updates it was false the moment the entity lived in another book — which is
+    // how the origin pursuer (in _Origin) got a second record in _NPCs.
+    const entryLookup = buildEntryLookup(allBooks);
     for (const rec of records) {
         const cat = (rec.category || rec.comment || '').toUpperCase();
         const catName = Object.keys(catMap).find(k => cat.includes(k));
@@ -1452,6 +1539,21 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
         }
         rec.keys = cleanKeys(rec.keys || []);
 
+        // Campaign-wide identity check. On a hit, re-target the record to the book
+        // that already holds the entity and remember its uid; because bookQueue is
+        // keyed by book, the existing per-book commit path then appends the delta
+        // with no extra load and no second write. Appending is safe for pinned
+        // canon: the update path preserves existing content and only adds to it.
+        const existingId = entryLookup.get(normalizeEntryName(rec.label));
+        if (existingId) {
+            const [foundBook, foundUid] = existingId.split('::');
+            if (foundBook !== targetBook && settings.debugMode) {
+                console.log(`[RPG Tracker] Record "${rec.label}" already exists as ${existingId} — updating it instead of creating a duplicate in ${targetBook}.`);
+            }
+            targetBook = foundBook;
+            rec._existingUid = foundUid;
+        }
+
         if (!bookQueue.has(targetBook)) bookQueue.set(targetBook, []);
         bookQueue.get(targetBook).push(rec);
     }
@@ -1490,12 +1592,21 @@ async function applyAction(action, allBooks = {}, currentTime = '', breadcrumb =
         }
 
         for (const rec of recs) {
-            // Deduplication: skip if an entry with this label already exists
-            const cleanLabel = (rec.label || '').replace(/^\[.*?\]\s*/i, '').toLowerCase().trim();
-            let existingUid = null;
-            for (const [uid, entry] of Object.entries(bookData.entries)) {
-                const entryLabel = (entry.comment || '').replace(/^\[.*?\]\s*/i, '').toLowerCase().trim();
-                if (entryLabel === cleanLabel) { existingUid = uid; break; }
+            // Deduplication: skip if an entry with this label already exists.
+            // A uid resolved campaign-wide in Phase A wins — it matched on the
+            // entry's keywords as well as its label, so it catches entities whose
+            // stored comment differs from the name the model used (e.g. the origin
+            // pursuer, filed as "Pursuer: <identity>" but keyed on "<identity>").
+            const cleanLabel = normalizeEntryName(rec.label);
+            let existingUid = rec._existingUid && bookData.entries[rec._existingUid] ? rec._existingUid : null;
+            if (!existingUid) {
+                for (const [uid, entry] of Object.entries(bookData.entries)) {
+                    // Never merge a new record into an inert backup — appending chronicle
+                    // text to the serialized profile would corrupt the recovery payload.
+                    if (isInertLoreEntry(entry)) continue;
+                    const entryLabel = normalizeEntryName(entry.comment);
+                    if (entryLabel === cleanLabel) { existingUid = uid; break; }
+                }
             }
 
             if (existingUid) {
@@ -1792,17 +1903,13 @@ function parseBasicTags(text, archiveBooks) {
     const action = { record: [], update: [], activate: [], deactivate: [], delete_ids: [], rewrite: [], consolidate: [] };
     const settings = getSettings();
 
-    // Build a single lowercased-comment -> "bookName::uid" index over all archive entries.
-    // Lets every ACTIVATE/DEACTIVATE/DELETE tag and processMatch() resolve a name with one
-    // Map lookup instead of rescanning every book×entry per tag (and avoids the old
-    // outer-loop bug where a break only exited the inner entries loop).
-    const entryIndex = new Map();
-    for (const [bookName, book] of Object.entries(archiveBooks)) {
-        for (const [uid, entry] of Object.entries(book.entries)) {
-            const key = (entry.comment || '').toLowerCase();
-            if (key && !entryIndex.has(key)) entryIndex.set(key, `${bookName}::${uid}`);
-        }
-    }
+    // Campaign-wide name -> "bookName::uid" index. Lets every ACTIVATE/DEACTIVATE/
+    // DELETE tag and processMatch() resolve a name with one Map lookup instead of
+    // rescanning every book×entry per tag (and avoids the old outer-loop bug where
+    // a break only exited the inner entries loop). Shared with applyAction so both
+    // parsers agree on entry identity; it also skips inert backups, which the
+    // previous inline index did not.
+    const entryIndex = buildEntryLookup(archiveBooks);
 
     // REWRITE tag parser
     const rewriteRegex = /\[\[REWRITE:\s*([^|]+)\|([\s\S]*?)\]\]/gi;
@@ -1829,7 +1936,7 @@ function parseBasicTags(text, archiveBooks) {
         const keys = (keywords || '').split(',').map(k => k.trim());
 
         // Check for existing by name (single Map lookup)
-        const existingId = entryIndex.get(name.toLowerCase()) || null;
+        const existingId = entryIndex.get(normalizeEntryName(name)) || null;
 
         if (existingId) {
             action.update.push({ id: existingId, content });
@@ -1850,7 +1957,7 @@ function parseBasicTags(text, archiveBooks) {
         const parts = inner.split('|').map(p => p.trim());
 
         if ((tagName === 'ACTIVATE' || tagName === 'DEACTIVATE' || tagName === 'DELETE') && parts.length >= 1) {
-            const name = inner.trim().toLowerCase();
+            const name = normalizeEntryName(inner);
             let targetList = [];
             if (tagName === 'ACTIVATE') targetList = action.activate;
             else if (tagName === 'DEACTIVATE') targetList = action.deactivate;
@@ -2203,6 +2310,7 @@ export async function scanAssistantOutputForKeywords(narrativeText, opts = {}) {
         for (const [uid, entry] of Object.entries(book.entries)) {
             const fullId = `${bookName}::${uid}`;
             if (currentActive.has(fullId)) continue; // already active — skip
+            if (isInertLoreEntry(entry)) continue;   // recoverable backup — never activates
 
             const keywords = Array.isArray(entry.key) ? entry.key : [];
             if (keywords.length === 0) continue;
@@ -2295,6 +2403,75 @@ export async function scanAssistantOutputForKeywords(narrativeText, opts = {}) {
 
 
 
+
+/**
+ * Upgrades campaigns created before origin canon and the JSON backup were split.
+ *
+ * Those campaigns hold one `Origin Profile: <name>` entry carrying the prose
+ * backstory AND a fenced JSON dump of the whole profile, marked `disable: true`
+ * as a "backup". Managed mode ignores `disable`, so it activated on the PC's name
+ * and shipped the serialization into every prompt. This rewrites it in place:
+ * the prose becomes `Origin Canon: <name>` (pinned active) and the JSON moves to
+ * a keyless, inert `Origin Profile Backup: <name>`.
+ *
+ * Idempotent — a book with no legacy entry is left untouched and unwritten.
+ * @returns {Promise<boolean>} whether a migration was written
+ */
+export async function migrateOriginCanonEntries() {
+    const settings = getSettings();
+    if (!settings.routerEnabled) return false;
+    const prefix = getLivePrefix();
+    if (!prefix) return false;
+
+    const bookName = `${prefix}_Origin`;
+    const ctx = SillyTavern.getContext();
+
+    let book;
+    try { book = await ctx.loadWorldInfo(bookName); } catch (_) { return false; }
+    if (!book?.entries) return false;
+
+    const legacy = Object.entries(book.entries)
+        .filter(([, e]) => /^Origin Profile:\s/i.test(e?.comment || '') && !isInertLoreEntry(e));
+    if (legacy.length === 0) return false;
+
+    const uids = Object.keys(book.entries).map(Number).filter(n => !isNaN(n));
+    let nextUid = uids.length > 0 ? Math.max(...uids) + 1 : 0;
+    const newlyPinned = [];
+
+    for (const [uid, entry] of legacy) {
+        const name = (entry.comment || '').replace(/^Origin Profile:\s*/i, '').trim();
+        const content = String(entry.content || '');
+        const fence = content.match(/```json[\s\S]*?```/i);
+
+        entry.comment = `Origin Canon: ${name}`;
+        entry.content = content.replace(/```json[\s\S]*?```/i, '').trimEnd();
+        entry.extensions = { ...(entry.extensions || {}), [LORE_PINNED_FLAG]: true };
+        newlyPinned.push(`${bookName}::${uid}`);
+
+        if (fence) {
+            book.entries[nextUid] = {
+                ...entry,
+                uid: nextUid,
+                comment: `Origin Profile Backup: ${name}`,
+                key: [],
+                disable: true,
+                content: `Recoverable serialization of ${name}'s committed origin profile. `
+                    + `Not narrator context — see "Origin Canon: ${name}" for the readable canon.\n\n${fence[0]}`,
+                extensions: { [LORE_INERT_FLAG]: true },
+            };
+            nextUid++;
+        }
+    }
+
+    await writeBookToDisk(bookName, book);
+
+    settings.activeRouterKeys = [...new Set([...(settings.activeRouterKeys || []), ...newlyPinned])];
+    settings.pinnedRouterKeys = [...new Set([...(settings.pinnedRouterKeys || []), ...newlyPinned])];
+    ctx.saveSettingsDebounced();
+
+    console.log(`[RPG Tracker] Migrated ${legacy.length} legacy origin profile entr${legacy.length === 1 ? 'y' : 'ies'} in ${bookName}.`);
+    return true;
+}
 
 /**
  * Sets disable: true on every entry in all scoped lorebooks so ST's native

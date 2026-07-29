@@ -213,6 +213,7 @@ You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These
         routerLog: [],
         activeRouterKeys: [],
         keywordActivatedKeys: [],  // entries activated by keyword scanner — auto-expire when keyword leaves scan window
+        pinnedRouterKeys: [],      // engine-written canon — always active, exempt from the budget, undeactivatable
         routerConnectionSource: "default",
         routerOpenaiUrl: "",
         routerOpenaiKey: "",
@@ -461,6 +462,37 @@ export function getActivationMode(s = getSettings()) {
     return s.routerActivationMode === 'native' ? 'native' : 'managed';
 }
 
+// ── Lorebook entry markers ─────────────────────────────────────────────────────
+//
+// In 'managed' mode every scoped entry carries disable:true so ST's native
+// scanner stays out of the way (see router.js disableManagedEntries), which means
+// `disable` cannot be used to mark an entry as "never surface this". These two
+// flags, stored under entry.extensions, carry that intent instead.
+
+/** Marks an entry as a recoverable backup: never scanned, indexed, or injected. */
+export const LORE_INERT_FLAG = 'fatbodyInert';
+
+/** Marks an entry as engine-written canon: always active, never budget-evicted. */
+export const LORE_PINNED_FLAG = 'fatbodyPinned';
+
+/**
+ * True when a lorebook entry is an inert backup. Inert entries exist only so a
+ * committed profile can be recovered from disk — they must never reach a prompt.
+ * @param {any} entry
+ */
+export function isInertLoreEntry(entry) {
+    return !!entry?.extensions?.[LORE_INERT_FLAG];
+}
+
+/**
+ * True when a lorebook entry is pinned engine canon. Pinned entries are exempt
+ * from the router's activation budget and cannot be deactivated by the agent.
+ * @param {any} entry
+ */
+export function isPinnedLoreEntry(entry) {
+    return !!entry?.extensions?.[LORE_PINNED_FLAG];
+}
+
 // ── Bar color resolver ─────────────────────────────────────────────────────────
 
 /**
@@ -659,6 +691,7 @@ export function saveChatState(chatId) {
         historyIndex: s.historyIndex ?? -1,
         activeRouterKeys: JSON.parse(JSON.stringify(s.activeRouterKeys || [])),
         keywordActivatedKeys: JSON.parse(JSON.stringify(s.keywordActivatedKeys || [])),
+        pinnedRouterKeys: JSON.parse(JSON.stringify(s.pinnedRouterKeys || [])),
         routerLog:    JSON.parse(JSON.stringify(s.routerLog || [])),
         routerCampaignPrefix: s.routerCampaignPrefix || '',
         routerLookback: s.routerLookback || 4,

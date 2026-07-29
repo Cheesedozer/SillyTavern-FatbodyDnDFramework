@@ -36,7 +36,7 @@ import {
     writeOriginToMemo, buildStatGenPrompt, buildFirstMessagePrompt,
     leverageMandatory, personalLeverFor,
 } from './origins-engine.js';
-import { getSettings, getEffectiveRouterCampaignPrefix } from './state-manager.js';
+import { getSettings, getEffectiveRouterCampaignPrefix, LORE_INERT_FLAG, LORE_PINNED_FLAG } from './state-manager.js';
 import { sendAgentTurn, sendStateRequest } from './llm-client.js';
 import { extractFoundationJson as extractJsonBlock } from './foundation.js';
 import { writeBookToDisk } from './router.js';
@@ -56,9 +56,19 @@ let _wizardOpen = false;
 /**
  * Writes the committed origin's canon into `${prefix}_Origin` in one
  * writeBookToDisk call: an active, keyword-triggered Nation entry (plus the
- * secondary home nation if present), an active Pursuer entry, and a disabled
- * full-profile backup entry (prose + fenced JSON, recoverable — the
- * foundation-book pattern). Adds the book to the campaign stack.
+ * secondary home nation if present), an active Pursuer entry, an active
+ * Origin Canon entry carrying the backstory prose, and a separate inert
+ * full-profile backup entry (fenced JSON, recoverable — the foundation-book
+ * pattern). Adds the book to the campaign stack.
+ *
+ * The canon entries and the JSON backup are deliberately two different entries.
+ * Managed mode ignores `disable` when scanning and injecting, so a single entry
+ * holding both prose and JSON put the raw serialized profile into every prompt —
+ * duplicating the prose it sat beside and giving the narrator two phrasings of
+ * the same facts to reconcile.
+ *
+ * @returns {Promise<string[]>} `bookName::uid` ids for the entries that should be
+ *          pinned active. Empty when the write produced no active entries.
  */
 async function writeOriginCanonBook(chatId, profile, { appearance = {}, nsfw = false } = {}) {
     const prefix = getEffectiveRouterCampaignPrefix(chatId);
@@ -78,8 +88,23 @@ async function writeOriginCanonBook(chatId, profile, { appearance = {}, nsfw = f
         addMemo: true, order: 100, position: 0, probability: 100,
         useProbability: false, depth: 4, group: '', groupOverride: false, groupWeight: 100,
     };
-    const addEntry = (comment, key, content, disable) => {
-        bookData.entries[nextUid] = { ...baseEntry, uid: nextUid, comment, key, content, disable };
+    /** `bookName::uid` for every entry written active — pinned by the caller. */
+    const pinnedIds = [];
+    /**
+     * @param {string} comment  entry label
+     * @param {string[]} key    activation keywords
+     * @param {string} content  entry body
+     * @param {boolean} inert   true for the recoverable JSON backup
+     */
+    const addEntry = (comment, key, content, inert = false) => {
+        bookData.entries[nextUid] = {
+            ...baseEntry, uid: nextUid, comment, key, content,
+            // Inert entries stay disabled AND keyless AND flagged: managed mode
+            // ignores `disable`, so the flag is what actually keeps them out.
+            disable: inert,
+            extensions: inert ? { [LORE_INERT_FLAG]: true } : { [LORE_PINNED_FLAG]: true },
+        };
+        if (!inert) pinnedIds.push(`${bookName}::${nextUid}`);
         nextUid++;
     };
 
@@ -125,11 +150,23 @@ async function writeOriginCanonBook(chatId, profile, { appearance = {}, nsfw = f
             + `(Narrator reference for mature scenes; stated so anatomy is never improvised. Never recite this as a list in prose.)`, false);
     }
 
-    addEntry(`Origin Profile: ${profile.name}`, [profile.name, profile.origin],
+    // Active canon: the prose the narrator is meant to read. Every NPC, place and
+    // relationship the campaign starts from is named in the backstory, so this is
+    // the entry that has to be present verbatim — inventing over it is exactly the
+    // drift this entry exists to prevent.
+    addEntry(`Origin Canon: ${profile.name}`, [profile.name, profile.origin],
         `${profile.origin} — ${profile.name}${profile.title ? `, ${profile.title}` : ''} (${profile.race}).\n\n${profile.backstory}\n\n`
         + `Social lever: ${profile.socialLever.text} (legible to: ${profile.socialLever.legibleTo})\n`
         + `Personal lever: ${profile.personalLever.text}\nWorld-threat tie-in: ${profile.worldThreatTieIn}\n`
         + `Narrator-private quest directions (surface lazily, never as a list):\n${profile.questSeeds.map(q => `- ${q}`).join('\n')}\n\n`
+        + `(Canon — established at character creation. Every person, place and relationship named above is fixed. `
+        + `Reuse these facts verbatim, never re-roll them, and never contradict them with later-recorded lore.)`, false);
+
+    // Recoverable backup: machine-readable only. Keyless, disabled and flagged
+    // inert so no scan, index or injection path can ever surface it.
+    addEntry(`Origin Profile Backup: ${profile.name}`, [],
+        `Recoverable serialization of ${profile.name}'s committed origin profile. `
+        + `Not narrator context — see "Origin Canon: ${profile.name}" for the readable canon.\n\n`
         + `\`\`\`json\n${JSON.stringify(profile, null, 2)}\n\`\`\``, true);
 
     await writeBookToDisk(bookName, bookData);
@@ -139,6 +176,8 @@ async function writeOriginCanonBook(chatId, profile, { appearance = {}, nsfw = f
     books.add(bookName);
     s.chatStates[chatId].campaignBooks = [...books];
     SillyTavern.getContext().saveSettingsDebounced();
+
+    return pinnedIds;
 }
 
 // ── Opening narration (spec §8) ──────────────────────────────────────────────
@@ -816,7 +855,15 @@ export function openOriginsWizard() {
             // faction seeding: a lorebook failure must not lose the commit.
             setBusy(true, 'Writing nation & pursuer canon to the lorebook…');
             try {
-                await writeOriginCanonBook(chatId, profile, { appearance: committed.appearance, nsfw });
+                const pinned = await writeOriginCanonBook(chatId, profile, { appearance: committed.appearance, nsfw });
+                // Register the canon entries as active immediately. Managed mode
+                // otherwise surfaces them only when a keyword happens to hit, and
+                // disableManagedEntries hides them from the state model entirely.
+                if (pinned.length) {
+                    s.activeRouterKeys = [...new Set([...(s.activeRouterKeys || []), ...pinned])];
+                    s.pinnedRouterKeys = [...new Set([...(s.pinnedRouterKeys || []), ...pinned])];
+                    idx.saveSettings();
+                }
             } catch (e) {
                 console.warn('[RPG Tracker] Origin lorebook write failed:', e);
                 toastr['warning'](`Origin canon lorebook could not be written (${e.message || e}) — the profile is still saved in the tracker.`, 'Origins');

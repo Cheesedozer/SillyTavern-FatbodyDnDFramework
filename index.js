@@ -14,7 +14,7 @@ import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, high
 import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderLorebookTerminal } from './renderer.js';
 import { registerLogQuestTool, checkQuestDeadlines, resetPendingQuests } from './quests.js';
 import { initializeDebugViewer, toggleDebugViewer } from './debug-viewer.js';
-import { runRouterPass, runRouterHistoryAudit, rollbackRouterPass, reapplyRouterPass, getLorebookManifest, deleteLorebookEntry, updateLorebookEntry, disableManagedEntries, isRouterRunning, isRouterAuditRunning, cancelRouterAudit } from './router.js';
+import { runRouterPass, runRouterHistoryAudit, rollbackRouterPass, reapplyRouterPass, getLorebookManifest, deleteLorebookEntry, updateLorebookEntry, disableManagedEntries, migrateOriginCanonEntries, isRouterRunning, isRouterAuditRunning, cancelRouterAudit } from './router.js';
 import { getRequestHeaders } from '../../../../script.js';
 import { RT } from './shared-state.js';
 import { openThemeWizard, refreshSavedThemesList, handleRecolor, handleCategorySettings, applyCustomTheme } from './theme.js';
@@ -728,6 +728,10 @@ import { savePanelGeometry, loadPanelGeometry, resetPanelGeometry, saveDeltaHeig
         
         s.activeRouterKeys    = JSON.parse(JSON.stringify(saved.activeRouterKeys    || []));
         s.keywordActivatedKeys = JSON.parse(JSON.stringify(saved.keywordActivatedKeys || []));
+        // Pinned origin canon is per-campaign, so it round-trips with the chat
+        // state like activeRouterKeys — otherwise one chat's canon would be
+        // treated as undeactivatable in the next.
+        s.pinnedRouterKeys    = JSON.parse(JSON.stringify(saved.pinnedRouterKeys    || []));
         s.routerLog           = JSON.parse(JSON.stringify(saved.routerLog || []));
         // These two are saved per chat (saveChatState) and must round-trip, or
         // the previous chat's values silently carry over on every switch. The
@@ -782,9 +786,14 @@ import { savePanelGeometry, loadPanelGeometry, resetPanelGeometry, saveDeltaHeig
         setTimeout(() => {
             _chatStateSideEffectsPending = false;
             void RT.refreshAgentManifest().catch(() => {});
-            // Patch any managed entries that don't yet have disable:true so ST's
-            // native keyword scanner cannot inject them on user-message send.
-            disableManagedEntries().catch(e => console.warn('[RPG Tracker] disableManagedEntries (deferred) failed:', e));
+            // Split any pre-split origin profile entry so the serialized JSON stops
+            // being injected alongside the prose it duplicates, then patch managed
+            // entries to disable:true so ST's native keyword scanner cannot inject
+            // them on user-message send.
+            migrateOriginCanonEntries()
+                .catch(e => console.warn('[RPG Tracker] migrateOriginCanonEntries (deferred) failed:', e))
+                .then(() => disableManagedEntries())
+                .catch(e => console.warn('[RPG Tracker] disableManagedEntries (deferred) failed:', e));
         }, 0);
     }
 
@@ -1563,6 +1572,9 @@ ${resourceList}
                 syncSettingsAndUI(settings => {
                     settings.diceFunctionTool = (input.value === 'hybrid');
                 });
+                // Same as the main settings panel: the registration has to follow
+                // the setting, or ST keeps offering a tool the user turned off.
+                registerDiceFunctionTool();
             });
         });
 
@@ -2624,6 +2636,12 @@ ${resourceList}
                         }
                         if (st.lastKeywordTriggeredKeys) {
                             st.lastKeywordTriggeredKeys = st.lastKeywordTriggeredKeys.filter(k => k !== key);
+                        }
+                        // The agent may not evict pinned origin canon, but the user may.
+                        // Unpin on manual kill so the entry doesn't linger as pinned-but-
+                        // inactive, silently exempt from the activation budget.
+                        if (st.pinnedRouterKeys) {
+                            st.pinnedRouterKeys = st.pinnedRouterKeys.filter(k => k !== key);
                         }
                         saveSettings();
                         RT.renderRouterUI();
@@ -5011,11 +5029,9 @@ ${resourceList}
                 toastr['info']("Dice logic updated.", "RPG Tracker");
             });
 
-            $('#rpg_tracker_dice_function_tool').prop('checked', settings.diceFunctionTool).on('change', function () {
-                settings.diceFunctionTool = !!$(this).prop('checked');
-                saveSettings();
-                registerDiceFunctionTool();
-            });
+            // (No #rpg_tracker_dice_function_tool handler: that checkbox does not
+            // exist in settings.html. diceFunctionTool is driven by the
+            // rpg_sysprompt_rng_mode radios and the onboarding RNG radios.)
 
             $('#rpg_tracker_chat_link_enabled').on('change', function () {
                 const s = getSettings();
@@ -5125,7 +5141,12 @@ ${resourceList}
             // Ensure managed lorebook entries have disable:true so ST's native keyword
             // scanner never injects them. Fire-and-forget — non-blocking on startup.
             const s = getSettings();
-            if (s.routerEnabled) disableManagedEntries().catch(e => console.warn('[RPG Tracker] disableManagedEntries on init failed:', e));
+            if (s.routerEnabled) {
+                migrateOriginCanonEntries()
+                    .catch(e => console.warn('[RPG Tracker] migrateOriginCanonEntries on init failed:', e))
+                    .then(() => disableManagedEntries())
+                    .catch(e => console.warn('[RPG Tracker] disableManagedEntries on init failed:', e));
+            }
 
             registerDiceFunctionTool();
             registerDiceSlashCommand();
@@ -5985,14 +6006,13 @@ ${resourceList}
                 $('input[name="rpg_sysprompt_rng_mode"]').on('change', function () {
                     const fresh = getSettings();
                     const val = $(this).val();
-                    if (val === 'hybrid') {
-                        fresh.rngEnabled = true;
-                        fresh.diceFunctionTool = true;
-                        registerDiceFunctionTool();
-                    } else {
-                        fresh.rngEnabled = true;
-                        fresh.diceFunctionTool = false;
-                    }
+                    fresh.rngEnabled = true;
+                    fresh.diceFunctionTool = (val === 'hybrid');
+                    // Re-register in BOTH directions. registerDiceFunctionTool
+                    // unregisters first and re-registers only when the setting is on,
+                    // so this is what actually removes the tool on the legacy path —
+                    // without it the tool stayed live in ST until a page reload.
+                    registerDiceFunctionTool();
                     saveSettings();
                     scheduleAutoApply();
                 });
