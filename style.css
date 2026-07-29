@@ -1125,6 +1125,22 @@
     font-size: 0.95em;
 }
 
+/* Prose paragraphs inside a card (origin appearance) — a kv row would squeeze
+   several sentences into one flex cell, so these get the full card width. */
+.rt-card-prose {
+    color: inherit;
+    font-size: 0.95em;
+    line-height: 1.45;
+    padding: 2px 0 6px 0;
+    white-space: normal;
+}
+
+.rt-card-prose-nsfw {
+    border-left: 2px solid var(--rt-accent);
+    padding-left: 8px;
+    opacity: 0.92;
+}
+
 .rt-card-line {
     color: inherit;
     font-size: 0.95em;

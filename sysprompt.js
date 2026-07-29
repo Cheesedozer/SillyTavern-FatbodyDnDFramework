@@ -196,6 +196,35 @@ export function scheduleAutoApply() {
 }
 
 /**
+ * Standing content-rating instruction for the current campaign, or '' when there
+ * is nothing to say.
+ *
+ * The per-campaign NSFW toggle gated character creation only — the wizard UI, the
+ * generation prompt, the intimate lorebook entry — and then nothing read it once
+ * play began. A campaign the player explicitly created as mature had no standing
+ * instruction anywhere saying so.
+ *
+ * Emitted for opted-in campaigns only. An SFW origin adds nothing, so campaigns
+ * that never touched the toggle (and every non-Origins campaign) are unchanged.
+ * @param {ReturnType<import('./state-manager.js').getSettings>} s
+ * @returns {string}
+ */
+function campaignRatingLine(s) {
+    try {
+        const ctx = SillyTavern.getContext();
+        const chatId = ctx.chatId || (typeof globalThis._rpgCurrentChatId === 'function' ? globalThis._rpgCurrentChatId() : '');
+        const origin = chatId ? s.chatStates?.[chatId]?.origin : null;
+        if (!origin?.committed || !origin.nsfw) return '';
+        return '<content_rating>\nThis campaign has mature content enabled. Sexual content is permitted '
+            + 'when the scene genuinely arrives there; write it at the same standard as the rest of the '
+            + 'prose. Never force it, and never let it override the mechanics, the pacing, or a refusal '
+            + 'in the fiction.\n</content_rating>';
+    } catch (_) {
+        return '';
+    }
+}
+
+/**
  * Rebuilds the system prompt by stripping out XML blocks that are
  * disabled in settings.syspromptModules.
  * @param {string} rawText
@@ -265,6 +294,9 @@ export function buildSysprompt(rawText, { variant = 'standalone' } = {}) {
     content = content
         .replace(/\n{3,}/g, "\n\n")
         .trim();
+
+    const rating = campaignRatingLine(s);
+    if (rating && content) content = `${content}\n\n${rating}`;
 
     if (additive && content) {
         content = `${ADDITIVE_HEADER}\n\n${content}`;
