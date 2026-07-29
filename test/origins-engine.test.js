@@ -10,6 +10,8 @@ import {
     writeOriginToMemo, buildProfileGenerationPrompt, buildStatGenPrompt,
     buildFirstMessagePrompt, ORIGIN_PROFILE_SCHEMA_SPEC,
     ORIGINS, ORIGINS_BY_ID,
+    leverageMandatory, checkRaceExclusivity, anchorsForDraft, personalLeverFor,
+    ANTI_GENERIC_DIRECTIVE, antiGenericBlock,
 } from '../origins-engine.js';
 
 /** Deterministic PRNG for reproducible randomization tests. */
@@ -150,14 +152,27 @@ test('pursuerNeeded follows each origin\'s pursuer mode', () => {
 
 // ── Lever Guarantee ──────────────────────────────────────────────────────────
 
-test('exiled royal requires pursuer leverage — except for severed Silkborn', () => {
+test('an empty leverage box is never a DRAFT error — the AI proposes one', () => {
     const er = ORIGINS_BY_ID['exiled_royal'];
     const sel = emptySelections();
-    sel.pursuer = { identity: 'X', affiliation: 'independent', motive: 'kill', resources: 'superior', awareness: 'searching_cold', leverage: '' };
-    assert.ok(checkLeverGuarantee(er, sel, 'human').length > 0);
-    assert.deepEqual(checkLeverGuarantee(er, sel, 'silkborn'), []);
-    sel.pursuer.leverage = 'They hold your sister.';
+    sel.pursuer = { identity: '', affiliation: 'independent', motive: 'kill', resources: 'superior', awareness: 'searching_cold', leverage: '' };
+    // The wizard promises "empty → the AI proposes"; the draft gate must honor
+    // that. The guarantee is enforced on the generated profile instead.
     assert.deepEqual(checkLeverGuarantee(er, sel, 'human'), []);
+    assert.deepEqual(checkLeverGuarantee(er, sel, 'silkborn'), []);
+});
+
+test('leverageMandatory: origin-gated, with the Silkborn Exiled Royal exemption', () => {
+    const er = ORIGINS_BY_ID['exiled_royal'];
+    const ds = ORIGINS_BY_ID['defector_spy'];
+    assert.equal(leverageMandatory(er, 'human'), true);
+    assert.equal(leverageMandatory(er, 'dragonborn'), true);
+    // Severed Silkborn: the residual hive-thread is the personal lever instead.
+    assert.equal(leverageMandatory(er, 'silkborn'), false);
+    // Defector Spy has no Silkborn exemption (spec §5.8).
+    assert.equal(leverageMandatory(ds, 'silkborn'), true);
+    assert.equal(leverageMandatory(ORIGINS_BY_ID['oathbreaker'], 'human'), false);
+    assert.equal(leverageMandatory(null, 'human'), false);
 });
 
 test('artifact nobody with no claimants requires the artifact agenda blank', () => {
@@ -184,17 +199,13 @@ test('abandoned champion with stable power needs a substitute pressure source', 
 
 // ── Full draft validation + randomization property test ─────────────────────
 
-/** Builds a complete draft for an origin: randomized selections + placeholder
- *  text for the fields the AI would normally propose. */
+/** Builds a complete draft for an origin from randomized selections.
+ *  Deliberately does NOT fill nation name / pursuer identity / leverage —
+ *  those are the AI-proposed fields, and a draft must validate without them. */
 function completeDraft(originId, raceId, seed) {
     const origin = ORIGINS_BY_ID[originId];
     const rng = mulberry32(seed);
     const sel = randomizeSelections(origin, raceId, false, rng);
-    sel.nation.name = 'Testholm';
-    if (sel.pursuer) {
-        sel.pursuer.identity = 'The Test Pursuer';
-        sel.pursuer.leverage = 'They hold something dear.';
-    }
     for (const b of origin.blanks) sel.blanks[b.id] = `Test ${b.id}.`;
     const draft = { step: 'review', nsfw: false, level: 1, raceId, originId, appearance: {}, selections: sel };
     // Satisfy any surfaced soft tensions and escapable hard rules.
@@ -236,7 +247,19 @@ test('validateDraft reports all errors at once, not just the first', () => {
     assert.ok(!ok);
     assert.ok(errors.length >= 5, `expected many errors, got: ${errors.join(' | ')}`);
     assert.ok(errors.some(e => e.includes('Pursuer Block')));
-    assert.ok(errors.some(e => e.includes('Nation name')));
+    assert.ok(errors.some(e => e.includes('Government type')));
+});
+
+test('validateDraft never blocks on the three AI-proposed fields', () => {
+    // The regression guard for "Forge me a character": randomizeSelections
+    // leaves nation.name / pursuer.identity / pursuer.leverage empty on purpose,
+    // and the forge button feeds that straight into generation.
+    const draft = completeDraft('exiled_royal', 'dragonborn', 7);
+    assert.equal(draft.selections.nation.name, '', 'fixture must exercise the empty case');
+    assert.equal(draft.selections.pursuer.identity, '');
+    assert.equal(draft.selections.pursuer.leverage, '');
+    const { ok, errors } = validateDraft(draft);
+    assert.ok(ok, errors.join(' | '));
 });
 
 test('validateDraft rejects NSFW selections when the toggle is off', () => {
@@ -308,7 +331,29 @@ test('buildOriginMemoBlock produces a compact, parseable [ORIGIN] block', () => 
     assert.ok(m && m[1] === 'ORIGIN');
     assert.ok(m[2].includes('Social Lever:'));
     assert.ok(m[2].includes('Personal Lever:'));
-    assert.ok(m[2].includes('World-Threat Tie-In:'));
+    // Pre-arc the tie-in is a private seed for the tension compiler, so it must
+    // NOT be published here even though the profile carries it.
+    assert.ok(!m[2].includes('World-Threat Tie-In:'));
+});
+
+test('buildOriginMemoBlock publishes the tie-in only once an arc has set arcTieIn', () => {
+    const committed = { ...sampleProfile(), arcTieIn: 'The looms are mobilizing along the southern roads.' };
+    const block = buildOriginMemoBlock(committed, ORIGINS_BY_ID['exiled_royal']);
+    assert.ok(block.includes('World-Threat Tie-In: The looms are mobilizing'));
+});
+
+test('buildOriginMemoBlock surfaces the base appearance so the HUD and narrator both see it', () => {
+    const bare = buildOriginMemoBlock(sampleProfile(), ORIGINS_BY_ID['exiled_royal']);
+    assert.ok(!bare.includes('Appearance:'), 'omitted entirely when nothing was filled in');
+
+    const committed = {
+        ...sampleProfile(),
+        appearance: { skin: 'Bronze scales', height: '2.0 m', eyes: 'Molten gold, slit pupils', intimate: { chest: 'should never appear' } },
+    };
+    const block = buildOriginMemoBlock(committed, ORIGINS_BY_ID['exiled_royal']);
+    assert.ok(block.includes('Appearance: Skin / Body Color: Bronze scales; Height: 2.0 m; Eyes: Molten gold, slit pupils'));
+    // Intimate descriptors are lorebook-only — the memo is rendered in the HUD.
+    assert.ok(!block.includes('should never appear'));
 });
 
 test('writeOriginToMemo appends once and replaces thereafter', () => {
@@ -364,4 +409,120 @@ test('the schema spec names every profile field the validator checks', () => {
     for (const field of ['"name"', '"nation"', '"backstory"', '"socialLever"', '"personalLever"', '"pursuer"', '"currentGoal"', '"personalityVoice"', '"worldThreatTieIn"', '"questSeeds"']) {
         assert.ok(ORIGIN_PROFILE_SCHEMA_SPEC.includes(field), field);
     }
+});
+
+// ── Cross-race canon containment ─────────────────────────────────────────────
+
+test('anchorsForDraft withholds race-locked canon from characters who cannot have it', () => {
+    const dragonborn = completeDraft('exiled_royal', 'dragonborn', 3);
+    const names = anchorsForDraft(dragonborn).map(a => a.name);
+    assert.ok(!names.includes('The Chorus-Weave'), 'the Silkborn hivemind must not be offered to a Dragonborn');
+    assert.ok(names.includes('The Argent Concord'), 'unlocked anchors still ride along');
+
+    const silkborn = completeDraft('exiled_royal', 'silkborn', 3);
+    assert.ok(anchorsForDraft(silkborn).map(a => a.name).includes('The Chorus-Weave'));
+
+    // A hive-consensus nation needs the anchor whatever the player's own race is.
+    const hiveNation = completeDraft('exiled_royal', 'dragonborn', 3);
+    hiveNation.selections.nation.governmentId = 'hive_consensus';
+    assert.ok(anchorsForDraft(hiveNation).map(a => a.name).includes('The Chorus-Weave'));
+});
+
+test('buildProfileGenerationPrompt keeps Silkborn canon out of a Dragonborn call', () => {
+    const dragonborn = buildProfileGenerationPrompt(completeDraft('exiled_royal', 'dragonborn', 5), ORIGINS_BY_ID['exiled_royal']);
+    const whole = dragonborn.map(m => m.content).join('\n');
+    // The RACE FIDELITY rule names Silkborn as a counter-example, so assert on
+    // the anchor description text rather than the bare word.
+    assert.ok(!whole.includes('The Silkborn hivemind network'), 'setting anchor must be withheld');
+    assert.ok(!whole.includes('Severance Block'), 'the origin\'s own lever text must not carry the Silkborn branch');
+    assert.ok(!whole.includes('Chorus-Weave'), 'no Chorus-Weave canon in a Dragonborn call');
+    assert.ok(!/hive-thread|hive-sense|hivemind|reachthread/i.test(whole), 'no Silkborn hive mechanics');
+    // "hive" alone is legitimate — the Collectivist vibe uses it generically —
+    // so this asserts on the Silkborn-specific vocabulary only.
+
+    const silkborn = buildProfileGenerationPrompt(completeDraft('exiled_royal', 'silkborn', 5), ORIGINS_BY_ID['exiled_royal']);
+    const silkWhole = silkborn.map(m => m.content).join('\n');
+    assert.ok(silkWhole.includes('The Silkborn hivemind network'));
+    assert.ok(silkWhole.includes('Severance Block'));
+});
+
+test('personalLeverFor resolves the race branch instead of concatenating them', () => {
+    const er = ORIGINS_BY_ID['exiled_royal'];
+    const dragonborn = personalLeverFor(er, 'dragonborn');
+    assert.ok(!/silkborn|severance|hive/i.test(dragonborn), dragonborn);
+    assert.ok(/leverage/i.test(dragonborn));
+    assert.ok(/hive-thread/i.test(personalLeverFor(er, 'silkborn')));
+    // Origins without a race branch fall through to the single string.
+    assert.equal(personalLeverFor(ORIGINS_BY_ID['oathbreaker'], 'silkborn'), ORIGINS_BY_ID['oathbreaker'].leverPersonal);
+    assert.equal(personalLeverFor(null, 'human'), '');
+});
+
+test('checkRaceExclusivity rejects another race\'s signature mechanic', () => {
+    const p = sampleProfile();
+    p.personalLever.text = 'The Silkborn Severance Block — a live hive-filament threaded into her nervous system, marking her as a node on the Chorus-Weave.';
+    const errors = checkRaceExclusivity(p, 'dragonborn');
+    assert.ok(errors.length > 0);
+    assert.ok(errors[0].includes('Silkborn'));
+    assert.ok(errors[0].includes('Dragonborn'));
+    // A real Silkborn keeps it.
+    assert.deepEqual(checkRaceExclusivity(p, 'silkborn'), []);
+    // Clean profiles are untouched, and a missing raceId disables the check.
+    assert.deepEqual(checkRaceExclusivity(sampleProfile(), 'dragonborn'), []);
+    assert.deepEqual(checkRaceExclusivity(p, null), []);
+});
+
+test('validateOriginProfile runs the race-exclusivity check when given a raceId', () => {
+    const er = ORIGINS_BY_ID['exiled_royal'];
+    const p = sampleProfile();
+    p.personalLever.text = 'A residual thread of the Chorus-Weave the hive can still trace.';
+    assert.ok(!validateOriginProfile(p, er, 'dragonborn').ok);
+    assert.ok(validateOriginProfile(p, er, 'silkborn').ok);
+    // Omitting raceId preserves the old, race-blind behavior.
+    assert.ok(validateOriginProfile(p, er).ok);
+});
+
+test('validateOriginProfile applies the Silkborn leverage exemption only with a raceId', () => {
+    const er = ORIGINS_BY_ID['exiled_royal'];
+    const blank = sampleProfile();
+    blank.pursuer.leverage = '';
+    assert.ok(!validateOriginProfile(blank, er, 'dragonborn').ok, 'still mandatory for a Dragonborn');
+    assert.ok(validateOriginProfile(blank, er, 'silkborn').ok, 'severed hive-thread substitutes');
+    const ds = ORIGINS_BY_ID['defector_spy'];
+    assert.ok(!validateOriginProfile(blank, ds, 'silkborn').ok, 'Defector Spy has no exemption');
+});
+
+// ── Intimate descriptors (NSFW-gated at the source) ─────────────────────────
+
+test('intimate descriptors reach the prompt only when NSFW is on', () => {
+    const draft = completeDraft('exiled_royal', 'human', 11);
+    draft.appearance = { skin: 'Pale', intimate: { chest: 'Small and high', parts: 'Vagina' } };
+
+    draft.nsfw = false;
+    const sfw = buildProfileGenerationPrompt(draft, ORIGINS_BY_ID['exiled_royal']).map(m => m.content).join('\n');
+    assert.ok(!sfw.includes('Intimate details:'));
+    assert.ok(!sfw.includes('Small and high'), 'stale intimate data must never leak into an SFW call');
+    assert.ok(sfw.includes('Pale'), 'base appearance still rides along');
+
+    draft.nsfw = true;
+    const nsfw = buildProfileGenerationPrompt(draft, ORIGINS_BY_ID['exiled_royal']).map(m => m.content).join('\n');
+    assert.ok(nsfw.includes('Intimate details:'));
+    assert.ok(nsfw.includes('Small and high'));
+});
+
+// ── Anti-generic guardrail ───────────────────────────────────────────────────
+
+test('every generation prompt carries the anti-generic directive', () => {
+    const marker = 'pattern-matching to a familiar trope';
+    assert.ok(ANTI_GENERIC_DIRECTIVE.includes(marker));
+
+    const profile = buildProfileGenerationPrompt(completeDraft('oathbreaker', 'human', 2), ORIGINS_BY_ID['oathbreaker']);
+    assert.ok(profile[0].content.includes(marker), 'profile generation');
+    assert.ok(buildStatGenPrompt(sampleProfile(), ORIGINS_BY_ID['exiled_royal'], 1).includes(marker), 'stat sheet');
+    assert.ok(buildFirstMessagePrompt(sampleProfile(), 'quiet_start', false).includes(marker), 'opening narration');
+});
+
+test('antiGenericBlock appends the per-prompt tail and tolerates an unknown kind', () => {
+    assert.ok(antiGenericBlock('profile').includes('The setting anchors are not.'));
+    assert.ok(antiGenericBlock('worldArc').includes('escalating-ancient-evil'));
+    assert.equal(antiGenericBlock('nope'), ANTI_GENERIC_DIRECTIVE);
 });

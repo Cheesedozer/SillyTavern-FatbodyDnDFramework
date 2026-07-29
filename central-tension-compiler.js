@@ -25,6 +25,7 @@ import { extractFoundationJson as extractJsonBlock } from './foundation.js';
 import { writeBookToDisk } from './router.js';
 import { getWorldProgKey, getWorldState, getChatWorldProg, saveWorldState, saveChatWorldProg, worldProgSettings } from './world-progression.js';
 import { CENTRAL_TENSION_CATEGORIES, validateCentralTension } from './world-progression-schema.js';
+import { antiGenericBlock, buildOriginMemoBlock, writeOriginToMemo, ORIGINS_BY_ID } from './origins-engine.js';
 import { RT } from './shared-state.js';
 
 const MAX_GENERATION_RETRIES = 3;
@@ -83,6 +84,8 @@ Rules for this mode: "intimateConflict" must grow out of the personal lever (and
 ${sourceInstruction}
 
 ${cardContext ? `## WORLD CONTEXT (character card / persona)\n${cardContext}\n` : ''}
+${antiGenericBlock('worldArc')}
+
 Output a single fenced \`\`\`json block matching the schema below, with no commentary after it.
 
 ${SCHEMA_SPEC}`;
@@ -188,9 +191,44 @@ export async function commitCentralTension(chatId, compiled, provenance) {
         console.warn('[RPG Tracker] World Progression: could not seed faction lorebook entries (state was still committed):', e);
     }
 
+    try {
+        await publishOriginArcTieIn(chatId, compiled.epicConflict);
+    } catch (e) {
+        console.warn('[RPG Tracker] World Progression: could not publish the origin arc tie-in (the arc was still committed):', e);
+    }
+
     saveWorldState(chatId);
     saveChatWorldProg(chatId);
     return worldState;
+}
+
+/**
+ * Promotes the compiled epic conflict into the committed origin's
+ * World-Threat Tie-In and rewrites the [ORIGIN] memo block so the line appears.
+ *
+ * Pre-arc, the origin's `worldThreatTieIn` is only a private seed for this
+ * compiler — buildOriginMemoBlock deliberately withholds it, because showing
+ * the player a campaign-scale promise nothing has committed to reads as canon
+ * that never arrives. Committing an arc is what makes it real.
+ * @param {string} chatId
+ * @param {string} epicConflict
+ */
+async function publishOriginArcTieIn(chatId, epicConflict) {
+    const tieIn = (epicConflict || '').trim();
+    if (!tieIn) return;
+    const s = getSettings();
+    const committed = s.chatStates?.[chatId]?.origin?.committed;
+    if (!committed) return; // non-Origins campaign — nothing to publish into
+
+    committed.arcTieIn = tieIn;
+    s.currentMemo = writeOriginToMemo(
+        s.currentMemo,
+        buildOriginMemoBlock(committed, ORIGINS_BY_ID[committed.originId]),
+    );
+    // Same persistence path the origin commit uses (origins-wizard.js).
+    const idx = await import('./index.js');
+    idx.saveSettings();
+    idx.syncMemoView();
 }
 
 // ── Modal UI ───────────────────────────────────────────────────────────────────

@@ -31,11 +31,15 @@ export const ORIGINS_SETTING = Object.freeze({
         'The dead do not always stay put: liches, revenants, and vampire courts are established (if feared) parts of the world.',
         'Wonder is salvage: the Concord chained great artifacts and great entities; both are still being dug up.',
     ]),
+    // `raceLocked` marks an anchor whose content is a race-exclusive mechanic.
+    // Those are filtered out of the generation prompt unless the character
+    // actually touches them — otherwise the model treats the most vivid fixture
+    // in its context as a menu and attaches it to whoever is being generated.
     anchors: Object.freeze([
-        Object.freeze({ name: 'The Argent Concord', description: 'The fallen empire. Source of ruins, relics, royal bloodline claims, and the legal fictions every successor state leans on.' }),
-        Object.freeze({ name: 'The Order of the Sealed Lamp', description: 'A cross-border order of hunters, inquisitors, and archivists that tracks escaped relics, unlicensed necromancy, and broken oaths. Default institutional pursuer when none is specified.' }),
-        Object.freeze({ name: 'The Six Houses', description: 'The pantheon sketch: the Lantern (light, guidance), the Forge-Mother (craft, endurance), the Veiled Judge (death, oaths), the Tidecaller (sea, change), the Thorned Lady (wild, harvest), and the Hollow King (ruin, forbidden knowledge). Gods beyond the Six exist and may be invented per campaign.' }),
-        Object.freeze({ name: 'The Chorus-Weave', description: 'The Silkborn hivemind network; its great hive-cities ("looms") sit along the continent\'s southern silk-roads.' }),
+        Object.freeze({ id: 'argent_concord', name: 'The Argent Concord', description: 'The fallen empire. Source of ruins, relics, royal bloodline claims, and the legal fictions every successor state leans on.' }),
+        Object.freeze({ id: 'sealed_lamp', name: 'The Order of the Sealed Lamp', description: 'A cross-border order of hunters, inquisitors, and archivists that tracks escaped relics, unlicensed necromancy, and broken oaths. Default institutional pursuer when none is specified.' }),
+        Object.freeze({ id: 'six_houses', name: 'The Six Houses', description: 'The pantheon sketch: the Lantern (light, guidance), the Forge-Mother (craft, endurance), the Veiled Judge (death, oaths), the Tidecaller (sea, change), the Thorned Lady (wild, harvest), and the Hollow King (ruin, forbidden knowledge). Gods beyond the Six exist and may be invented per campaign.' }),
+        Object.freeze({ id: 'chorus_weave', name: 'The Chorus-Weave', description: 'The Silkborn hivemind network; its great hive-cities ("looms") sit along the continent\'s southern silk-roads.', raceLocked: 'silkborn' }),
     ]),
 });
 
@@ -183,6 +187,32 @@ export const SILKBORN_SEVERANCE = Object.freeze({
         'Social bluntness: little native concept of deception, privacy, or subtext — played as manner, not stat penalty.',
         'The residual thread (Personal Lever): severance is not perfectly clean by default. A faint, unreliable filament remains — occasional fragmentary sensory input from nearby Weave-linked creatures (an uncommon warning sense) AND a liability: the hive may sense or trace the character through it.',
         'Reactions from linked Silkborn default to grief or hostility, never neutrality — a severed thread is a tragedy or a traitor to the Weave.',
+    ]),
+});
+
+// ── Race-exclusive mechanic vocabulary ───────────────────────────────────────
+
+/**
+ * Distinctive terms that belong to exactly one race's always-on mechanics.
+ * Used to reject a generated profile that hangs another race's signature
+ * mechanic on a character — the failure mode where a Dragonborn came back with
+ * a "Silkborn Severance Block" as its personal lever because the Chorus-Weave
+ * was the most mechanically concrete thing in the model's context.
+ *
+ * Terms must be distinctive enough not to fire on ordinary prose, since a hit
+ * costs a generation retry. Deliberately excluded: "loom" (weaving is common
+ * fantasy imagery) and bare "the Weave" (standard D&D vocabulary for magic
+ * itself — a mage's lever would trip it). "Chorus-Weave" is unambiguous.
+ * @type {Readonly<Record<string, ReadonlyArray<string>>>}
+ */
+export const RACE_EXCLUSIVE_TERMS = Object.freeze({
+    silkborn: Object.freeze([
+        'chorus-weave', 'chorus weave', 'severance block', 'hive-filament',
+        'hive filament', 'reachthread', 'hive-sense', 'hive-chorus',
+        'hive chorus', 'hive-mind', 'hivemind', 'hive mind',
+    ]),
+    vampire: Object.freeze([
+        'the thirst', 'feeding clock', 'vampiric strengths', 'turning ritual',
     ]),
 });
 
@@ -396,7 +426,12 @@ export const ORIGINS = Object.freeze([
         pursuer: 'required',
         pursuerNote: 'The rival/usurper. Leverage is MANDATORY for non-Silkborn characters — it is this origin\'s guaranteed personal lever.',
         leverSocial: 'The mark of royalty — recognizable to those familiar with the kingdom, or with Concord-era heraldry generally.',
-        leverPersonal: 'The pursuer\'s Leverage (mandatory). Silkborn: the residual hive-thread (Severance Block).',
+        // Race-conditional. Kept split so the Silkborn branch is never shown to
+        // (or generated for) another race — see personalLeverFor().
+        leverPersonal: 'The pursuer\'s Leverage (mandatory) — a hostage, blackmail, someone you still care about, or a secret that would ruin you.',
+        leverPersonalByRace: Object.freeze({
+            silkborn: 'The residual hive-thread left by severance from the Chorus-Weave — a faint filament the hive may sense or trace you through.',
+        }),
         classLeaning: 'Any; Fighter, Paladin, Bard, or Sorcerer fit the archetype well.',
         blanks: Object.freeze([
             { id: 'title', label: 'Player title', hint: 'Prince, Princess, Duke, Regent — consistent with the government type.' },
