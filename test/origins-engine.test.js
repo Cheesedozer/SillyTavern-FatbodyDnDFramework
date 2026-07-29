@@ -12,6 +12,7 @@ import {
     ORIGINS, ORIGINS_BY_ID,
     leverageMandatory, checkRaceExclusivity, anchorsForDraft, personalLeverFor,
     ANTI_GENERIC_DIRECTIVE, antiGenericBlock,
+    appearanceBlankIds, mergeAppearance, APPEARANCE_FIELDS, RACES_BY_ID,
 } from '../origins-engine.js';
 
 /** Deterministic PRNG for reproducible randomization tests. */
@@ -290,6 +291,7 @@ function sampleProfile() {
         },
         secondaryNation: null,
         backstory: 'Long ago...', appearanceNotes: 'A brand on the wrist.',
+        appearanceProse: 'She carries herself like the court she lost, all straight spine and level grey eyes.',
         socialLever: { text: 'The signet brand', legibleTo: 'Anyone versed in Concord heraldry' },
         personalLever: { text: 'Her brother is held hostage.' },
         pursuer: {
@@ -342,18 +344,33 @@ test('buildOriginMemoBlock publishes the tie-in only once an arc has set arcTieI
     assert.ok(block.includes('World-Threat Tie-In: The looms are mobilizing'));
 });
 
-test('buildOriginMemoBlock surfaces the base appearance so the HUD and narrator both see it', () => {
-    const bare = buildOriginMemoBlock(sampleProfile(), ORIGINS_BY_ID['exiled_royal']);
-    assert.ok(!bare.includes('Appearance:'), 'omitted entirely when nothing was filled in');
-
+test('buildOriginMemoBlock carries the appearance prose, never the intimate prose', () => {
     const committed = {
         ...sampleProfile(),
-        appearance: { skin: 'Bronze scales', height: '2.0 m', eyes: 'Molten gold, slit pupils', intimate: { chest: 'should never appear' } },
+        appearance: { skin: 'Bronze scales', intimate: { chest: 'should never appear' } },
+        intimateProse: 'explicit paragraph that must not ride every turn',
+    };
+    const block = buildOriginMemoBlock(committed, ORIGINS_BY_ID['exiled_royal']);
+    assert.ok(block.includes('Appearance: She carries herself like the court she lost'), 'prose, not a descriptor list');
+    assert.ok(!block.includes('Skin / Body Color:'), 'the raw list is superseded once prose exists');
+    // The memo is BOTH always-on narrator context and the on-screen HUD card.
+    assert.ok(!block.includes('should never appear'));
+    assert.ok(!block.includes('explicit paragraph'), 'intimate prose is lorebook + HUD only');
+});
+
+test('buildOriginMemoBlock falls back to the descriptor list for pre-prose campaigns', () => {
+    // Campaigns committed before appearanceProse existed must keep rendering.
+    const { appearanceProse, ...legacy } = sampleProfile();
+    void appearanceProse;
+    const committed = {
+        ...legacy,
+        appearance: { skin: 'Bronze scales', height: '2.0 m', eyes: 'Molten gold, slit pupils' },
     };
     const block = buildOriginMemoBlock(committed, ORIGINS_BY_ID['exiled_royal']);
     assert.ok(block.includes('Appearance: Skin / Body Color: Bronze scales; Height: 2.0 m; Eyes: Molten gold, slit pupils'));
-    // Intimate descriptors are lorebook-only — the memo is rendered in the HUD.
-    assert.ok(!block.includes('should never appear'));
+
+    const bare = buildOriginMemoBlock(legacy, ORIGINS_BY_ID['exiled_royal']);
+    assert.ok(!bare.includes('Appearance:'), 'omitted entirely with neither prose nor descriptors');
 });
 
 test('writeOriginToMemo appends once and replaces thereafter', () => {
@@ -507,6 +524,80 @@ test('intimate descriptors reach the prompt only when NSFW is on', () => {
     const nsfw = buildProfileGenerationPrompt(draft, ORIGINS_BY_ID['exiled_royal']).map(m => m.content).join('\n');
     assert.ok(nsfw.includes('Intimate details:'));
     assert.ok(nsfw.includes('Small and high'));
+    assert.ok(nsfw.includes('[hips]: (unset'), 'blank intimate fields are offered too when NSFW is on');
+});
+
+// ── AI-filled appearance blanks ──────────────────────────────────────────────
+
+test('every blank descriptor is offered to the generator, filled ones as-is', () => {
+    const draft = completeDraft('exiled_royal', 'human', 11);
+    draft.appearance = { skin: 'Pale grey skin', height: 'tall' };
+    const prompt = buildProfileGenerationPrompt(draft, ORIGINS_BY_ID['exiled_royal']).map(m => m.content).join('\n');
+
+    assert.ok(prompt.includes('[skin]: Pale grey skin'), 'the player\'s value verbatim');
+    assert.ok(prompt.includes('[height]: tall'));
+    for (const id of ['bodyType', 'hair', 'eyes', 'face', 'marks']) {
+        assert.ok(prompt.includes(`[${id}]: (unset — propose per the hint:`), `${id} offered to the model`);
+    }
+});
+
+test('the race appearance reference reaches the generator', () => {
+    // Player-facing UI text until now — without it, proposals ignore the race.
+    const draft = completeDraft('exiled_royal', 'dwarf', 11);
+    const prompt = buildProfileGenerationPrompt(draft, ORIGINS_BY_ID['exiled_royal']).map(m => m.content).join('\n');
+    assert.ok(prompt.includes('Race appearance reference'));
+    assert.ok(prompt.includes(RACES_BY_ID['dwarf'].appearance));
+});
+
+test('a forged (fully blank) character has every descriptor offered', () => {
+    // randomizeSelections never touches appearance, so the ⚒️ path arrives here
+    // with nothing set — and used to produce no description at all.
+    const draft = completeDraft('exiled_royal', 'human', 11);
+    draft.appearance = {};
+    const prompt = buildProfileGenerationPrompt(draft, ORIGINS_BY_ID['exiled_royal']).map(m => m.content).join('\n');
+    for (const f of APPEARANCE_FIELDS) assert.ok(prompt.includes(`[${f.id}]: (unset`), `${f.id} offered`);
+});
+
+test('mergeAppearance keeps the player authoritative and drops invented ids', () => {
+    const own = { skin: 'Pale grey skin', height: 'tall', intimate: { chest: 'Small and high' } };
+    const filled = { skin: 'MODEL OVERRIDE', hair: 'Ash-white, cropped', nonsense: 'not a field' };
+    const merged = mergeAppearance(own, filled, { hips: 'Narrow' }, true);
+
+    assert.equal(merged.skin, 'Pale grey skin', 'a typed value is never overwritten');
+    assert.equal(merged.height, 'tall');
+    assert.equal(merged.hair, 'Ash-white, cropped', 'blanks take the proposal');
+    assert.ok(!('nonsense' in merged), 'hallucinated field ids are dropped');
+    assert.equal(merged.intimate.chest, 'Small and high');
+    assert.equal(merged.intimate.hips, 'Narrow');
+});
+
+test('mergeAppearance discards intimate proposals on an SFW campaign', () => {
+    const merged = mergeAppearance({ skin: 'Pale' }, {}, { hips: 'should not land' }, false);
+    assert.ok(!merged.intimate, 'an SFW campaign never accrues intimate descriptors');
+});
+
+test('validateOriginProfile rejects missing prose and proposals for filled fields', () => {
+    const er = ORIGINS_BY_ID['exiled_royal'];
+    const blanks = appearanceBlankIds({ skin: 'Pale grey skin' });
+
+    const noProse = { ...sampleProfile(), appearanceProse: '' };
+    assert.ok(!validateOriginProfile(noProse, er, 'human', blanks).ok, 'prose is required');
+
+    const overrides = { ...sampleProfile(), appearanceFilled: { skin: 'MODEL OVERRIDE' } };
+    const check = validateOriginProfile(overrides, er, 'human', blanks);
+    assert.ok(!check.ok);
+    assert.ok(check.errors.some(e => e.includes('filled in by the player')), check.errors.join('; '));
+
+    const badId = { ...sampleProfile(), appearanceFilled: { nope: 'x' } };
+    assert.ok(!validateOriginProfile(badId, er, 'human', blanks).ok, 'unknown field ids fail the pass');
+
+    const good = { ...sampleProfile(), appearanceFilled: { hair: 'Ash-white, cropped' } };
+    assert.ok(validateOriginProfile(good, er, 'human', blanks).ok, 'a proposal for a genuine blank passes');
+});
+
+test('the opening narration is no longer written blind', () => {
+    const prompt = buildFirstMessagePrompt(sampleProfile(), 'quiet', false);
+    assert.ok(prompt.includes('Appearance: She carries herself like the court she lost'));
 });
 
 // ── Anti-generic guardrail ───────────────────────────────────────────────────

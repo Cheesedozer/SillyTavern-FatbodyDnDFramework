@@ -480,7 +480,11 @@ The origin profile JSON object MUST have exactly this shape:
   },
   "secondaryNation": null OR the same shape as nation (Willing Cultist outsiders only),
   "backstory": "3-6 paragraphs of narrative prose synthesized from the blanks and modifiers",
-  "appearanceNotes": "1 short paragraph: origin-relevant physical traits ONLY (decay state, curse marks, artifact fusion) — the base appearance fields are supplied separately",
+  "appearanceNotes": "1 short paragraph: origin-relevant physical traits ONLY (decay state, curse marks, artifact fusion) — distinct from the base descriptors below",
+  "appearanceFilled": { "<fieldId>": "proposed value" },
+  "appearanceProse": "2-4 sentences describing how this character looks, in third person",
+  "intimateFilled": { "<fieldId>": "proposed value" },
+  "intimateProse": "2-3 sentences",
   "socialLever": { "text": "the mark/tell/symbol/reputation", "legibleTo": "who can read it" },
   "personalLever": { "text": "the active clock, cost, curse, dependency, or leverage" },
   "pursuer": null OR {
@@ -495,6 +499,8 @@ The origin profile JSON object MUST have exactly this shape:
 }
 
 Constraints: every string field non-empty unless explicitly allowed empty above. backstory must be consistent with EVERY selected modifier and blank — contradicting a selection is a validation failure. questSeeds are directions, not pre-written quests; they surface lazily in play.
+
+APPEARANCE. The player's selections list every descriptor field with its [fieldId]. "appearanceFilled" holds one entry for EVERY field marked (unset) — keyed by that exact fieldId — and NOTHING else: never restate, revise, or "improve" a value the player typed, and never invent a fieldId that wasn't listed. Proposals must fit the race appearance reference and agree with the backstory. "appearanceProse" then describes the finished character — the player's values and yours together — as flowing prose: no labels, no lists, no field names, and non-explicit no matter the campaign rating. It is reference for describing the character in play, NOT a paragraph to quote back; write it so a narrator can draw on it without ever reciting it. "intimateFilled" and "intimateProse" follow the same rules and exist ONLY when intimate details were listed in the selections — omit both keys entirely otherwise.
 
 VOICE — who reads which field. "socialLever.text", "personalLever.text", "currentGoal", and "personalityVoice" are displayed to the PLAYER in their character sheet. Write them in-fiction, naming the thing as the character themselves would experience and describe it. Do NOT use system vocabulary in them — no "social lever", no "personal lever", no "block", no "modifier", no rules-speak, and no naming of framework machinery. "A debt-mark burned under her palm-scales that any Caldian factor can read" is correct; "the Debt-Mark Block, a mechanic acting as her personal lever" is not. Mechanical and narrator-facing framing belongs in "questSeeds", which the player never sees.
 
@@ -535,9 +541,12 @@ export function checkRaceExclusivity(profile, raceId) {
  * @param {object} originDef
  * @param {string} [raceId] - enables the race-exclusivity check and the
  *   Silkborn exemption on the mandatory-leverage origins.
+ * @param {{appearance: Set<string>, intimate: Set<string>}} [blankIds] - which
+ *   descriptor fields the player left unset, from appearanceBlankIds(). Omit to
+ *   skip the "proposed a field the player already filled" check.
  * @returns {{ok: boolean, errors: string[]}}
  */
-export function validateOriginProfile(profile, originDef, raceId) {
+export function validateOriginProfile(profile, originDef, raceId, blankIds) {
     const errors = [];
     const p = profile;
     if (!p || typeof p !== 'object' || Array.isArray(p)) return { ok: false, errors: ['Profile is not a JSON object.'] };
@@ -553,6 +562,22 @@ export function validateOriginProfile(profile, originDef, raceId) {
     }
     reqStr(p, 'backstory');
     if (typeof p.appearanceNotes !== 'string') errors.push('appearanceNotes must be a string.');
+    reqStr(p, 'appearanceProse');
+    // Proposals are only accepted for fields the player left blank. Anything else
+    // is the model editing a choice it was told to honor, and a wrong id would be
+    // dropped silently by mergeAppearance — so both fail the pass and get retried.
+    const checkFilled = (key, fields, blanks) => {
+        const filled = p[key];
+        if (filled === undefined || filled === null) return;
+        if (typeof filled !== 'object' || Array.isArray(filled)) { errors.push(`${key} must be an object.`); return; }
+        for (const [id, value] of Object.entries(filled)) {
+            if (!fields.some(f => f.id === id)) { errors.push(`${key}.${id} is not an appearance field id.`); continue; }
+            if (typeof value !== 'string' || !value.trim()) errors.push(`${key}.${id} must be a non-empty string.`);
+            if (blanks && !blanks.has(id)) errors.push(`${key}.${id} was filled in by the player — never restate or revise it.`);
+        }
+    };
+    checkFilled('appearanceFilled', APPEARANCE_FIELDS, blankIds?.appearance);
+    checkFilled('intimateFilled', INTIMATE_FIELDS, blankIds?.intimate);
     if (!p.socialLever || typeof p.socialLever !== 'object') errors.push('Missing socialLever object.');
     else { reqStr(p.socialLever, 'text', 'socialLever.text'); reqStr(p.socialLever, 'legibleTo', 'socialLever.legibleTo'); }
     if (!p.personalLever || typeof p.personalLever !== 'object') errors.push('Missing personalLever object.');
@@ -597,7 +622,56 @@ function optionLabel(originDef, modId, optId) {
     return m?.options.find(o => o.id === optId)?.label || optId;
 }
 
-/** Compact "Skin: …; Height: …" summary of the base appearance descriptors. */
+/**
+ * Which descriptor fields the player left blank — i.e. the exact set the model is
+ * allowed to propose. Shared by the prompt builder and the validator so the two
+ * can't drift apart on what counts as unset.
+ * @param {object} appearance - draft appearance
+ * @returns {{appearance: Set<string>, intimate: Set<string>}}
+ */
+export function appearanceBlankIds(appearance) {
+    const app = appearance || {};
+    const blanks = (fields, src) => new Set(fields.filter(f => !(src?.[f.id] || '').trim()).map(f => f.id));
+    return { appearance: blanks(APPEARANCE_FIELDS, app), intimate: blanks(INTIMATE_FIELDS, app.intimate) };
+}
+
+/**
+ * Folds the generator's proposals for blank descriptors into the player's own.
+ *
+ * The player always wins: a field they typed is never overwritten, however the
+ * model answered. Same contract applyOriginCanon enforces on the memo block —
+ * re-derive from what the player committed rather than trusting the model's copy.
+ * Unknown field ids are dropped, so a hallucinated key can't reach the profile.
+ *
+ * @param {object} appearance - draft appearance ({...fields, intimate:{...}})
+ * @param {object} [filled] - profile.appearanceFilled
+ * @param {object} [intimateFilled] - profile.intimateFilled
+ * @param {boolean} [nsfw] - when false, intimate proposals are discarded outright
+ * @returns {object} a new appearance object
+ */
+export function mergeAppearance(appearance, filled, intimateFilled, nsfw = false) {
+    const app = appearance || {};
+    const merge = (fields, own, proposed) => {
+        const out = {};
+        for (const f of fields) {
+            const mine = (own?.[f.id] || '').trim();
+            const theirs = typeof proposed?.[f.id] === 'string' ? proposed[f.id].trim() : '';
+            const value = mine || theirs;
+            if (value) out[f.id] = value;
+        }
+        return out;
+    };
+    const merged = merge(APPEARANCE_FIELDS, app, filled);
+    const intimate = merge(INTIMATE_FIELDS, app.intimate, nsfw ? intimateFilled : null);
+    if (Object.keys(intimate).length) merged.intimate = intimate;
+    return merged;
+}
+
+/**
+ * Compact "Skin: …; Height: …" summary of the base appearance descriptors.
+ * Superseded by `appearanceProse` for profiles generated since prose landed —
+ * retained as the fallback for campaigns committed before it.
+ */
 export function formatAppearanceLine(appearance) {
     const app = appearance || {};
     return APPEARANCE_FIELDS.map(f => (app[f.id] || '').trim() ? `${f.label}: ${String(app[f.id]).trim()}` : null)
@@ -622,7 +696,13 @@ export function buildOriginMemoBlock(profile, originDef) {
         `Origin: ${p.origin}${p.title ? ` — ${p.title}` : ''} (${ORIGINS_SETTING.name})`,
         `Race: ${p.race}`,
     ];
-    const appearanceLine = formatAppearanceLine(p.appearance);
+    // Prose when the generator wrote it; the old `;`-joined descriptor list for
+    // campaigns committed before prose existed, which must keep rendering rather
+    // than silently losing their description. `intimateProse` is deliberately NOT
+    // here: this block is the always-on narrator context as well as the HUD card,
+    // so explicit detail would ride every turn and sit permanently on screen. It
+    // lives in the keyword-triggered lorebook entry instead.
+    const appearanceLine = (p.appearanceProse || '').trim() || formatAppearanceLine(p.appearance);
     if (appearanceLine) lines.push(`Appearance: ${appearanceLine}`);
     lines.push(
         `Social Lever: ${p.socialLever.text} (legible to: ${p.socialLever.legibleTo})`,
@@ -761,14 +841,19 @@ function selectionSummary(draft, originDef) {
         lines.push(`  Silkborn Severance Block (apply if this character is severed from the Weave): ${SILKBORN_SEVERANCE.rules.join(' ')}`);
     }
     const app = draft.appearance || {};
-    const appLines = APPEARANCE_FIELDS.map(f => app[f.id] ? `${f.label}: ${app[f.id]}` : null).filter(Boolean);
-    if (appLines.length) lines.push(`Appearance: ${appLines.join('; ')}`);
+    // Every field is listed, blank or not. A dropped blank is a field the model
+    // doesn't know exists and therefore never proposes — which left forged and
+    // half-filled characters with no physical description at all. The (unset)
+    // marker is the same contract the origin blanks use further down.
+    if (race?.appearance) lines.push(`  Race appearance reference (proposals must fit this): ${race.appearance}`);
+    const fieldLine = (f, value) => `  ${f.label} [${f.id}]: ${(value || '').trim()
+        || `(unset — propose per the hint: ${f.hint})`}`;
+    lines.push(`Appearance:\n${APPEARANCE_FIELDS.map(f => fieldLine(f, app[f.id])).join('\n')}`);
     // Intimate descriptors are NSFW-gated at the source: an SFW draft must never
     // carry them into the prompt, since the system message asserts SFW.
     if (draft.nsfw) {
         const intimate = app.intimate || {};
-        const intLines = INTIMATE_FIELDS.map(f => intimate[f.id] ? `${f.label}: ${intimate[f.id]}` : null).filter(Boolean);
-        if (intLines.length) lines.push(`Intimate details: ${intLines.join('; ')}`);
+        lines.push(`Intimate details:\n${INTIMATE_FIELDS.map(f => fieldLine(f, intimate[f.id])).join('\n')}`);
     }
     lines.push(`Origin: ${originDef.name} — ${originDef.pitch}`);
     lines.push(`  Nation block represents: ${originDef.nationMeaning}`);
@@ -902,7 +987,7 @@ export function buildFirstMessagePrompt(profile, frameId, nsfw) {
 
 THE CHARACTER
 ${profile.name}${profile.title ? `, ${profile.title}` : ''} — ${profile.race}, ${profile.origin}.
-Backstory: ${profile.backstory}
+${(profile.appearanceProse || '').trim() ? `Appearance: ${profile.appearanceProse.trim()}\n` : ''}Backstory: ${profile.backstory}
 Social lever: ${profile.socialLever.text} (legible to: ${profile.socialLever.legibleTo})
 Personal lever: ${profile.personalLever.text}
 Current goal: ${profile.currentGoal}

@@ -34,7 +34,7 @@ import {
     optionBlockReason, validateDraft, randomizeSelections, pursuerNeeded,
     buildProfileGenerationPrompt, validateOriginProfile, buildOriginMemoBlock,
     writeOriginToMemo, buildStatGenPrompt, buildFirstMessagePrompt,
-    leverageMandatory, personalLeverFor,
+    leverageMandatory, personalLeverFor, appearanceBlankIds, mergeAppearance,
 } from './origins-engine.js';
 import { getSettings, getEffectiveRouterCampaignPrefix, LORE_INERT_FLAG, LORE_PINNED_FLAG } from './state-manager.js';
 import { sendAgentTurn, sendStateRequest } from './llm-client.js';
@@ -129,12 +129,14 @@ async function writeOriginCanonBook(chatId, profile, { appearance = {}, nsfw = f
     const appLines = APPEARANCE_FIELDS
         .map(f => (appearance[f.id] || '').trim() ? `${f.label}: ${String(appearance[f.id]).trim()}` : null)
         .filter(Boolean);
-    if (appLines.length || (profile.appearanceNotes || '').trim()) {
+    const appProse = (profile.appearanceProse || '').trim();
+    if (appLines.length || appProse || (profile.appearanceNotes || '').trim()) {
         addEntry(`Appearance: ${profile.name}`, [profile.name],
             `Physical description of ${profile.name} (${profile.race}) — canon, established at character creation.\n`
+            + `${appProse ? `${appProse}\n\nField detail:\n` : ''}`
             + `${appLines.join('\n')}`
             + `${(profile.appearanceNotes || '').trim() ? `\nOrigin-relevant traits: ${profile.appearanceNotes.trim()}` : ''}\n`
-            + `(Describe consistently with these; never re-roll them.)`, false);
+            + `(Describe consistently with these; never re-roll them, and never recite them as a list.)`, false);
     }
 
     // Intimate descriptors — NSFW-gated, lorebook only. Deliberately kept out
@@ -143,9 +145,11 @@ async function writeOriginCanonBook(chatId, profile, { appearance = {}, nsfw = f
     const intLines = INTIMATE_FIELDS
         .map(f => (intimate[f.id] || '').trim() ? `${f.label}: ${String(intimate[f.id]).trim()}` : null)
         .filter(Boolean);
-    if (nsfw && intLines.length) {
+    const intProse = nsfw ? (profile.intimateProse || '').trim() : '';
+    if (nsfw && (intLines.length || intProse)) {
         addEntry(`Intimate Details: ${profile.name}`, [profile.name],
             `Intimate physical details for ${profile.name} — canon, established at character creation.\n`
+            + `${intProse ? `${intProse}\n\nField detail:\n` : ''}`
             + `${intLines.join('\n')}\n`
             + `(Narrator reference for mature scenes; stated so anatomy is never improvised. Never recite this as a list in prose.)`, false);
     }
@@ -784,7 +788,7 @@ export function openOriginsWizard() {
                     genMessages.push({ role: 'user', content: 'Your reply contained no parseable ```json block. Output ONLY the origin profile JSON in one fenced block.' });
                     continue;
                 }
-                const check = validateOriginProfile(parsed, origin, draft.raceId);
+                const check = validateOriginProfile(parsed, origin, draft.raceId, appearanceBlankIds(draft.appearance));
                 if (!check.ok) {
                     genMessages.push({ role: 'user', content: `The profile failed validation. Fix EVERY issue and output the corrected complete JSON again:\n- ${check.errors.join('\n- ')}` });
                     continue;
@@ -830,7 +834,15 @@ export function openOriginsWizard() {
                 committedAt: new Date().toISOString(),
                 raceId: draft.raceId, originId: draft.originId,
                 level: draft.level, frameId: draft.frameId,
-                appearance: JSON.parse(JSON.stringify(draft.appearance || {})),
+                // The player's own descriptors, plus the generator's proposals for
+                // whatever they left blank. mergeAppearance keeps the player's
+                // values authoritative and drops any field id the model invented.
+                appearance: mergeAppearance(draft.appearance, profile.appearanceFilled, profile.intimateFilled, nsfw),
+                // Turning NSFW off purges draft.appearance.intimate, but a profile
+                // generated while it was on keeps its prose — and the HUD card reads
+                // intimateProse straight off the committed profile. Drop it with the
+                // rest rather than leaving a paragraph nothing else would clear.
+                intimateProse: nsfw ? (profile.intimateProse || '') : '',
                 selections: JSON.parse(JSON.stringify(draft.selections)),
             };
             st.origin = { committed, nsfw };

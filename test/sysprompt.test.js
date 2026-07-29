@@ -3,7 +3,7 @@
  * Locks the XML-block stripping + {{modulesText}} injection behaviour.
  */
 import './_bootstrap.js';
-import { setSettings, rawStore, extensionPrompts, resetExtensionPrompts } from './_bootstrap.js';
+import { setSettings, setChatId, rawStore, extensionPrompts, resetExtensionPrompts } from './_bootstrap.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -211,4 +211,40 @@ test('drift guard: every top-level tag in all sysprompt files is classified', ()
             );
         }
     }
+});
+
+// ── Campaign content rating (post-commit NSFW) ────────────────────────────────
+
+/** Seeds a committed origin on an open chat so campaignRatingLine() can see it. */
+function withOrigin(nsfw, committed = { name: 'Serane Vell' }) {
+    setChatId('chat-rating');
+    setSettings({ chatStates: { 'chat-rating': { origin: { committed, nsfw } } } });
+}
+
+test('an opted-in mature campaign gets a standing content-rating instruction', () => {
+    withOrigin(true);
+    const out = buildSysprompt('<combat>KEEP</combat>');
+    assert.ok(out.includes('<content_rating>'), 'the NSFW toggle finally means something after commit');
+    assert.ok(out.includes('mature content enabled'));
+});
+
+test('the rating rides the additive variant too — it is a rule, not persona', () => {
+    withOrigin(true);
+    const out = buildSysprompt('<combat>KEEP</combat>', { variant: 'additive' });
+    assert.ok(out.includes('<content_rating>'));
+    assert.ok(out.startsWith(ADDITIVE_HEADER), 'the additive header still leads');
+});
+
+test('SFW origins, uncommitted drafts and non-Origins chats add nothing', () => {
+    withOrigin(false);
+    assert.ok(!buildSysprompt('<combat>KEEP</combat>').includes('content_rating'), 'SFW campaign unchanged');
+
+    // NSFW flagged but never committed — the wizard was abandoned mid-flow.
+    setChatId('chat-rating');
+    setSettings({ chatStates: { 'chat-rating': { origin: { nsfw: true } } } });
+    assert.ok(!buildSysprompt('<combat>KEEP</combat>').includes('content_rating'), 'no committed profile, no rating');
+
+    setChatId('');
+    setSettings({});
+    assert.ok(!buildSysprompt('<combat>KEEP</combat>').includes('content_rating'), 'non-Origins campaigns unchanged');
 });
