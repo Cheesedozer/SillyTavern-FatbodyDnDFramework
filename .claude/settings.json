@@ -1,0 +1,8 @@
+{
+  "extraKnownMarketplaces": {
+    "pixellab-pip-plugins": {
+      "source": { "source": "github", "repo": "Shilo/pixellab-pip" }
+    }
+  },
+  "enabledPlugins": { "pixellab-pip@pixellab-pip-plugins": true }
+}
