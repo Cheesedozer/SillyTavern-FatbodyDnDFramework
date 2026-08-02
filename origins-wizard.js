@@ -13,6 +13,10 @@
  * .committed), runs the D&D stat generation through the existing
  * sendDirectPrompt channel, and writes the engine-built [ORIGIN] memo block.
  *
+ * All three LLM calls the flow makes — profile, character sheet, opening scene —
+ * go out on the Origins connection via originsSettings(), so creation can run on
+ * a strong creative model without moving the every-turn State Tracker onto it.
+ *
  * DOM module — all DOM work stays inside exported/instance functions so the
  * smoke test can import the graph with a stubbed document.
  *
@@ -35,6 +39,7 @@ import {
     buildProfileGenerationPrompt, validateOriginProfile, buildOriginMemoBlock,
     writeOriginToMemo, buildStatGenPrompt, buildFirstMessagePrompt,
     leverageMandatory, personalLeverFor, appearanceBlankIds, mergeAppearance,
+    resolveAppearanceSummary, originsSettings,
 } from './origins-engine.js';
 import { getSettings, getEffectiveRouterCampaignPrefix, LORE_INERT_FLAG, LORE_PINNED_FLAG } from './state-manager.js';
 import { sendAgentTurn, sendStateRequest } from './llm-client.js';
@@ -129,27 +134,28 @@ async function writeOriginCanonBook(chatId, profile, { appearance = {}, nsfw = f
     const appLines = APPEARANCE_FIELDS
         .map(f => (appearance[f.id] || '').trim() ? `${f.label}: ${String(appearance[f.id]).trim()}` : null)
         .filter(Boolean);
-    const appProse = (profile.appearanceProse || '').trim();
-    if (appLines.length || appProse || (profile.appearanceNotes || '').trim()) {
+    const appSummary = resolveAppearanceSummary(profile);
+    if (appLines.length || appSummary || (profile.appearanceNotes || '').trim()) {
         addEntry(`Appearance: ${profile.name}`, [profile.name],
             `Physical description of ${profile.name} (${profile.race}) — canon, established at character creation.\n`
-            + `${appProse ? `${appProse}\n\nField detail:\n` : ''}`
+            + `${appSummary ? `${appSummary}\n\nField detail:\n` : ''}`
             + `${appLines.join('\n')}`
             + `${(profile.appearanceNotes || '').trim() ? `\nOrigin-relevant traits: ${profile.appearanceNotes.trim()}` : ''}\n`
             + `(Describe consistently with these; never re-roll them, and never recite them as a list.)`, false);
     }
 
-    // Intimate descriptors — NSFW-gated, lorebook only. Deliberately kept out
-    // of the [ORIGIN] memo block, which is rendered in the player-facing HUD.
+    // Intimate descriptors — NSFW-gated, lorebook only, and field data only.
+    // Nothing weaves these into prose: the generator is told not to write any,
+    // and this entry is the single place the values are ever stated. It is kept
+    // out of the [ORIGIN] memo block, which is both always-on narrator context
+    // and the player-facing HUD card.
     const intimate = appearance.intimate || {};
     const intLines = INTIMATE_FIELDS
         .map(f => (intimate[f.id] || '').trim() ? `${f.label}: ${String(intimate[f.id]).trim()}` : null)
         .filter(Boolean);
-    const intProse = nsfw ? (profile.intimateProse || '').trim() : '';
-    if (nsfw && (intLines.length || intProse)) {
+    if (nsfw && intLines.length) {
         addEntry(`Intimate Details: ${profile.name}`, [profile.name],
             `Intimate physical details for ${profile.name} — canon, established at character creation.\n`
-            + `${intProse ? `${intProse}\n\nField detail:\n` : ''}`
             + `${intLines.join('\n')}\n`
             + `(Narrator reference for mature scenes; stated so anatomy is never improvised. Never recite this as a list in prose.)`, false);
     }
@@ -186,21 +192,13 @@ async function writeOriginCanonBook(chatId, profile, { appearance = {}, nsfw = f
 
 // ── Opening narration (spec §8) ──────────────────────────────────────────────
 
-/** Generates the opening narration — narrator connection first, state model
- *  as fallback (prose quality matters; the state model always works). */
+/** Generates the opening narration on the Origins connection — prose quality
+ *  matters here, so it rides the same connection as profile generation rather
+ *  than the State Tracker's. On the default source that is ST's active API,
+ *  which is what this call used before the Origins connection existed. */
 async function generateOpeningNarration(profile, frameId, nsfw) {
-    const ctx = SillyTavern.getContext();
     const prompt = buildFirstMessagePrompt(profile, frameId, nsfw);
-    if (typeof ctx.generateRaw === 'function') {
-        try {
-            const result = await ctx.generateRaw({ prompt, systemPrompt: '', bypassAll: true });
-            const text = typeof result === 'string' ? result : result?.choices?.[0]?.message?.content ?? '';
-            if (text.trim()) return text.trim();
-        } catch (e) {
-            console.warn('[RPG Tracker] Narrator opening generation failed, falling back to the state model:', e);
-        }
-    }
-    const text = await sendStateRequest(getSettings(), 'You are the narrator of a fantasy roleplay campaign. Follow the instructions exactly and output only prose.', prompt, null);
+    const text = await sendStateRequest(originsSettings(getSettings()), 'You are the narrator of a fantasy roleplay campaign. Follow the instructions exactly and output only prose.', prompt, null);
     return String(text || '').trim();
 }
 
@@ -723,6 +721,7 @@ export function openOriginsWizard() {
             </div>
             ${[
                 ['name', 'Name', 1], ['title', 'Title', 1], ['backstory', 'Backstory', 6],
+                ['appearanceSummary', 'Appearance — the one-or-two-sentence line shown on your HUD', 2],
                 ['appearanceNotes', 'Origin-relevant physical traits', 2],
                 ['currentGoal', 'Current goal', 2], ['personalityVoice', 'Personality & voice', 2],
                 ['worldThreatTieIn', 'Arc hook — seeds your World Arc, not yet canon', 2],
@@ -781,7 +780,7 @@ export function openOriginsWizard() {
             }
             for (let attempt = 1; attempt <= MAX_GENERATION_RETRIES; attempt++) {
                 setBusy(true, `Compiling origin profile (attempt ${attempt}/${MAX_GENERATION_RETRIES})…`);
-                const { content } = await sendAgentTurn(getSettings(), genMessages, null, null);
+                const { content } = await sendAgentTurn(originsSettings(getSettings()), genMessages, null, null);
                 genMessages.push({ role: 'assistant', content });
                 const parsed = extractJsonBlock(content);
                 if (!parsed) {
@@ -837,12 +836,11 @@ export function openOriginsWizard() {
                 // The player's own descriptors, plus the generator's proposals for
                 // whatever they left blank. mergeAppearance keeps the player's
                 // values authoritative and drops any field id the model invented.
+                // mergeAppearance is also the single NSFW purge point: with nsfw
+                // false it discards intimateFilled outright, so a profile generated
+                // while NSFW was on carries no intimate data forward. Nothing else
+                // holds any — there is no intimate prose field to clear.
                 appearance: mergeAppearance(draft.appearance, profile.appearanceFilled, profile.intimateFilled, nsfw),
-                // Turning NSFW off purges draft.appearance.intimate, but a profile
-                // generated while it was on keeps its prose — and the HUD card reads
-                // intimateProse straight off the committed profile. Drop it with the
-                // rest rather than leaving a paragraph nothing else would clear.
-                intimateProse: nsfw ? (profile.intimateProse || '') : '',
                 selections: JSON.parse(JSON.stringify(draft.selections)),
             };
             st.origin = { committed, nsfw };
@@ -852,7 +850,7 @@ export function openOriginsWizard() {
             // Character sheet via the existing direct-prompt channel.
             setBusy(true, 'Generating your character sheet (stats, gear, abilities)…');
             const { sendDirectPrompt } = await import('./state-pass.js');
-            await sendDirectPrompt(buildStatGenPrompt(profile, origin, draft.level));
+            await sendDirectPrompt(buildStatGenPrompt(profile, origin, draft.level), originsSettings(s));
 
             // Deterministic [ORIGIN] block — engine-written, never model-emitted.
             // Built from `committed` (not `profile`) so the Appearance line has

@@ -6,6 +6,10 @@
  * Also the level-up system message and the direct-instruction path (onboarding /
  * manual corrections). Extracted from index.js; behaviour unchanged.
  *
+ * sendDirectPrompt() takes an optional connection override so a caller with its
+ * own connection settings — origins-wizard.js, for the character sheet — can
+ * route just the request elsewhere while everything else stays on the tracker's.
+ *
  * index.js keeps the globalThis._rpgRunStateModelPass bridge (re-exported here),
  * so narrative-hooks.js's interceptor path is unaffected.
  */
@@ -459,8 +463,16 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
     /**
      * Send a direct instruction to the State Model bypassing the narrative pipeline.
      * Used for initial character setup and manual corrections.
+     *
+     * @param {string} message
+     * @param {object} [connectionOverride] - a remapped settings object (e.g.
+     *   origins-wizard.js's originsSettings()) used for the request only. Every
+     *   other read here — memo, modules, prompt template, context depth — stays
+     *   on the live settings, so this changes which model answers and nothing
+     *   else. Omit for the State Tracker connection, which is what manual
+     *   corrections and every other caller want.
      */
-    export async function sendDirectPrompt(message) {
+    export async function sendDirectPrompt(message, connectionOverride = null) {
         if (RT.stateModelRunning) {
             toastr['info']('State Model is already running. Please wait.', 'RPG Tracker');
             return;
@@ -516,7 +528,7 @@ import { saveSettings, syncMemoView, updateUIMemo, updateStatusIndicator, refres
                 `## USER INSTRUCTION\n${message}\n\n` +
                 `## OUTPUT ONLY CHANGED OR NEW SECTIONS:`;
 
-            const result = await sendStateRequest(settings, systemPrompt, userPrompt, signal);
+            const result = await sendStateRequest(connectionOverride || settings, systemPrompt, userPrompt, signal);
 
             if (result && typeof result === 'string') {
                 let cleanedOutput = result;

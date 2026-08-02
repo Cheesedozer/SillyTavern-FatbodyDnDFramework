@@ -157,6 +157,49 @@
                 </div>
                 <small style="display: block; margin-top: 8px; opacity: 0.6; font-style: italic; line-height: 1.35;">Character creation itself runs from the tracker panel of a new D&amp;D campaign (🧬 Origins). The bundled Vaelmarch narrator card lives in the repo's <code>setting-cards/</code> folder and can be installed with one click from the wizard's first step.</small>
             </div>
+
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <b>Origins Connection</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <div class="flex-container flexFlowColumn gap-1">
+                        <small style="opacity: 0.6; font-style: italic; line-height: 1.35;">Used for the whole creation flow — origin profile, character sheet, and opening scene. Leave on Main API to keep using SillyTavern's active connection; point it at a strong creative model to run creation there without moving the State Tracker, which runs every turn, off its own connection.</small>
+                        <label>Connection Source</label>
+                        <select id="rpg_tracker_origins_source" class="text_pole">
+                            <option value="default">Main API</option>
+                            <option value="profile">Profile</option>
+                            <option value="ollama">Ollama</option>
+                            <option value="openai">OpenAI</option>
+                        </select>
+                        <div id="rpg_tracker_origins_profile_group" style="display: none;">
+                            <select id="rpg_tracker_origins_connection_profile" class="text_pole"></select>
+                            <div style="font-size: 9px; opacity: 0.5;">OpenRouter: create a Connection Profile pointed at OpenRouter in SillyTavern's own connection manager, then pick it here.</div>
+                        </div>
+                        <div id="rpg_tracker_origins_ollama_group" style="display: none;">
+                            <input id="rpg_tracker_origins_ollama_url" type="text" class="text_pole" placeholder="URL" />
+                            <div class="flex-container gap-1">
+                                <select id="rpg_tracker_origins_ollama_model" class="text_pole" style="flex: 1;"></select>
+                                <button id="rpg_tracker_origins_ollama_refresh" class="menu_button interactable"><i class="fa-solid fa-arrows-rotate"></i></button>
+                            </div>
+                        </div>
+                        <div id="rpg_tracker_origins_openai_group" style="display: none;">
+                            <input id="rpg_tracker_origins_openai_url" type="text" class="text_pole" placeholder="URL" />
+                            <input id="rpg_tracker_origins_openai_key" type="password" class="text_pole" placeholder="Key" />
+                            <div class="flex-container gap-1">
+                                <select id="rpg_tracker_origins_openai_model" class="text_pole" style="flex: 1;"></select>
+                                <button id="rpg_tracker_origins_openai_refresh" class="menu_button interactable"><i class="fa-solid fa-arrows-rotate"></i></button>
+                            </div>
+                            <input id="rpg_tracker_origins_openai_model_manual" type="text" class="text_pole" placeholder="Manual Model Name" />
+                        </div>
+                        <label>Preset</label>
+                        <select id="rpg_tracker_origins_completion_preset" class="text_pole"></select>
+                        <label>Max Response Tokens (0 = connection default)</label>
+                        <input id="rpg_tracker_origins_max_tokens" type="text" inputmode="numeric" pattern="[0-9]*" class="text_pole" min="0" />
+                    </div>
+                </div>
+            </div>
         </div>
     </section>
 

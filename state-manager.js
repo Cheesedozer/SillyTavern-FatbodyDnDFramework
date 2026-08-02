@@ -343,6 +343,21 @@ Don't be afraid to hit the budget exactly. It's better to lean towards activatin
         worldProgOpenaiModel: "",
         worldProgMaxTokens: 0,
 
+        // ── Origins character creation ──
+        // Its own connection so the creation flow can run on a strong creative
+        // model without dragging the State Tracker (which runs every turn) onto
+        // it. "default" = ST's active API, i.e. what Origins used before this
+        // block existed, so an untouched install is unchanged.
+        originsConnectionSource: "default",
+        originsConnectionProfileId: "",
+        originsCompletionPresetId: "",
+        originsOllamaUrl: "http://localhost:11434",
+        originsOllamaModel: "",
+        originsOpenaiUrl: "",
+        originsOpenaiKey: "",
+        originsOpenaiModel: "",
+        originsMaxTokens: 0,
+
         worldArcSystemPromptTemplate: WORLD_ARC_DEFAULT_PROMPT,
         characterArcSystemPromptTemplate: CHARACTER_ARC_DEFAULT_PROMPT,
         regionalStateSystemPromptTemplate: REGIONAL_STATE_DEFAULT_PROMPT,
