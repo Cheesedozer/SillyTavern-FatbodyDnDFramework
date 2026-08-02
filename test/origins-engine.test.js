@@ -11,9 +11,12 @@ import {
     buildFirstMessagePrompt, ORIGIN_PROFILE_SCHEMA_SPEC,
     ORIGINS, ORIGINS_BY_ID,
     leverageMandatory, checkRaceExclusivity, anchorsForDraft, personalLeverFor,
-    ANTI_GENERIC_DIRECTIVE, antiGenericBlock,
+    ANTI_GENERIC_DIRECTIVE, antiGenericBlock, ANTI_GENERIC_TAILS,
     appearanceBlankIds, mergeAppearance, APPEARANCE_FIELDS, RACES_BY_ID,
-    originsSettings,
+    originsSettings, INTIMATE_FIELDS,
+    detailBlankPaths, buildDetailFillPrompt, validateDetailFill, applyDetailFill,
+    buildAppearanceFillPrompt, validateAppearanceFill, validateFieldProposals,
+    markAiFilled, claimField, isAiFilled, aiFilledPaths, clearAiValues, pathSection,
 } from '../origins-engine.js';
 
 /** Deterministic PRNG for reproducible randomization tests. */
@@ -34,9 +37,16 @@ test('deriveWizardStep clamps a persisted step to what the draft data supports',
     assert.equal(deriveWizardStep({ step: 'review' }), 'race');
     assert.equal(deriveWizardStep({ step: 'detail', raceId: 'human' }), 'origin');
     assert.equal(deriveWizardStep({ step: 'detail', raceId: 'human', originId: 'oathbreaker' }), 'detail');
-    assert.equal(deriveWizardStep({ step: 'appearance', raceId: 'human' }), 'appearance');
+    // Appearance now sits after Origin Details, so it is unreachable until an
+    // origin exists — its AI fill needs the origin, nation and blanks as context.
+    assert.equal(deriveWizardStep({ step: 'appearance', raceId: 'human' }), 'origin');
+    assert.equal(deriveWizardStep({ step: 'appearance', raceId: 'human', originId: 'oathbreaker' }), 'appearance');
     assert.equal(deriveWizardStep({ step: 'bogus', raceId: 'human', originId: 'oathbreaker' }), 'options');
     assert.equal(WIZARD_STEPS.length, 6);
+});
+
+test('WIZARD_STEPS puts appearance after origin details', () => {
+    assert.deepEqual([...WIZARD_STEPS], ['options', 'race', 'origin', 'detail', 'appearance', 'review']);
 });
 
 // ── Race–origin matrix ───────────────────────────────────────────────────────
@@ -312,6 +322,248 @@ test('originsSettings: defaults connectionSource to "default" and maxTokens to 0
     assert.equal(mapped.maxTokens, 0);
     assert.equal(originsSettings({ originsMaxTokens: '' }).maxTokens, 0);
     assert.equal(originsSettings(null).connectionSource, 'default');
+});
+
+// ── AI-fill provenance ───────────────────────────────────────────────────────
+
+test('markAiFilled / claimField / aiFilledPaths track who owns a value', () => {
+    const draft = {};
+    markAiFilled(draft, ['nation.name', 'appearance.hair', 'blanks.sworn_to']);
+    markAiFilled(draft, ['nation.name']);
+    assert.equal(draft.aiFilled.length, 3, 'idempotent');
+    assert.ok(isAiFilled(draft, 'nation.name'));
+    assert.deepEqual(aiFilledPaths(draft, 'appearance'), ['appearance.hair']);
+    assert.deepEqual(aiFilledPaths(draft, 'detail').sort(), ['blanks.sworn_to', 'nation.name']);
+
+    claimField(draft, 'nation.name');
+    assert.ok(!isAiFilled(draft, 'nation.name'), 'an edit makes it the player\'s');
+    assert.equal(pathSection('intimate.chest'), 'appearance');
+    assert.equal(pathSection('pursuer.leverage'), 'detail');
+});
+
+test('clearAiValues empties one step\'s AI picks and leaves the player\'s alone', () => {
+    const draft = {
+        nsfw: true,
+        selections: {
+            ...emptySelections(),
+            blanks: { sworn_to: 'AI text', how_broken: 'MY text' },
+            nation: { name: 'AI-named', majorityRaceId: 'human', governmentId: 'theocracy', environmentId: 'coast' },
+            vibes: ['strength'], vibeSub: null,
+            pursuer: { identity: 'AI pursuer', affiliation: 'origin_body', motive: 'kill', resources: 'superior', awareness: 'searching_cold', leverage: 'MY leverage' },
+        },
+        appearance: { hair: 'AI hair', skin: 'MY skin', intimate: { chest: 'AI chest' } },
+    };
+    markAiFilled(draft, [
+        'blanks.sworn_to', 'nation.name', 'nation.governmentId', 'vibes',
+        'pursuer.identity', 'appearance.hair', 'intimate.chest',
+    ]);
+
+    assert.equal(clearAiValues(draft, 'detail'), 5);
+    assert.equal(draft.selections.blanks.sworn_to, undefined, 'AI blank cleared');
+    assert.equal(draft.selections.blanks.how_broken, 'MY text', 'player blank untouched');
+    assert.equal(draft.selections.nation.name, '');
+    assert.equal(draft.selections.nation.governmentId, '');
+    assert.equal(draft.selections.nation.environmentId, 'coast', 'player select untouched');
+    assert.deepEqual(draft.selections.vibes, []);
+    assert.equal(draft.selections.pursuer.identity, '');
+    assert.equal(draft.selections.pursuer.leverage, 'MY leverage', 'player leverage untouched');
+    // The Appearance step is a separate bucket and must survive untouched.
+    assert.equal(draft.appearance.hair, 'AI hair');
+    assert.deepEqual(aiFilledPaths(draft, 'detail'), []);
+    assert.deepEqual(aiFilledPaths(draft, 'appearance').sort(), ['appearance.hair', 'intimate.chest']);
+
+    assert.equal(clearAiValues(draft, 'appearance'), 2);
+    assert.equal(draft.appearance.hair, undefined);
+    assert.equal(draft.appearance.skin, 'MY skin', 'player descriptor untouched');
+    assert.equal(draft.appearance.intimate.chest, undefined);
+    assert.deepEqual(draft.aiFilled, []);
+});
+
+// ── Step-level fill: Origin Details ──────────────────────────────────────────
+
+/** A half-filled Oathbreaker draft: some choices made, the rest left open. */
+function partialDetailDraft() {
+    const sel = emptySelections();
+    sel.modifiers = { oath_represented: 'justice' };
+    sel.blanks = { sworn_to: 'The Grey Chapter, who I still believe in' };
+    sel.nation.environmentId = 'coast';
+    return { raceId: 'human', originId: 'oathbreaker', nsfw: false, selections: sel, appearance: {} };
+}
+
+test('detailBlankPaths lists what is open and nothing the player has set', () => {
+    const ob = ORIGINS_BY_ID['oathbreaker'];
+    const paths = detailBlankPaths(partialDetailDraft(), ob);
+    assert.ok(!paths.has('modifiers.oath_represented'), 'a set modifier is not open');
+    assert.ok(paths.has('modifiers.party_status'), 'an unset required modifier is open');
+    assert.ok(!paths.has('blanks.sworn_to'), 'a written blank is not open');
+    assert.ok(paths.has('blanks.how_broken'));
+    assert.ok(paths.has('nation.name') && paths.has('nation.governmentId') && paths.has('nation.majorityRaceId'));
+    assert.ok(!paths.has('nation.environmentId'), 'a chosen select is not open');
+    assert.ok(paths.has('vibes') && paths.has('vibeSub'));
+    // Oathbreaker's pursuer is required, so the whole block is open.
+    assert.ok(paths.has('pursuer.identity') && paths.has('pursuer.leverage') && paths.has('pursuer.motive'));
+    assert.equal(detailBlankPaths(partialDetailDraft(), null).size, 0, 'no origin, nothing to fill');
+});
+
+test('buildDetailFillPrompt asks only for the open fields, with their catalogs', () => {
+    const ob = ORIGINS_BY_ID['oathbreaker'];
+    const [system, user] = buildDetailFillPrompt(partialDetailDraft(), ob);
+    assert.equal(system.role, 'system');
+    assert.ok(system.content.includes(ANTI_GENERIC_TAILS.detail));
+    assert.ok(user.content.includes('REQUESTED FIELDS'));
+    assert.ok(user.content.includes('modifiers.party_status'), 'open modifier requested');
+    assert.ok(!user.content.includes('modifiers.oath_represented —'), 'set modifier not requested');
+    assert.ok(user.content.includes('blanks.how_broken'));
+    assert.ok(!user.content.includes('blanks.sworn_to —'));
+    assert.ok(user.content.includes('nation.governmentId'), 'select catalogs are offered as ids');
+    assert.ok(!user.content.includes('nation.environmentId —'));
+    assert.ok(user.content.includes('pursuer.leverage'));
+});
+
+/** A complete, legal fill for the draft above. */
+function goodDetailFill() {
+    return {
+        modifiers: { party_status: 'standing', believed_dead: 'no', curse_type: 'armor_lock', curse_visibility: 'visible' },
+        blanks: { how_broken: 'I opened the gate.', why_broken: 'They had my sister.', curse_nature: 'The plate will not come off.' },
+        nation: { name: 'Aldermere', governmentId: 'theocracy', majorityRaceId: 'human' },
+        vibes: ['strength'],
+        pursuer: {
+            identity: 'Warden Halloway', affiliation: 'origin_body', motive: 'capture',
+            resources: 'superior', awareness: 'searching_cold', leverage: 'My sister is still in their keeping.',
+        },
+    };
+}
+
+test('validateDetailFill accepts a clean fill', () => {
+    const ob = ORIGINS_BY_ID['oathbreaker'];
+    const check = validateDetailFill(goodDetailFill(), ob, partialDetailDraft());
+    assert.ok(check.ok, check.errors.join(' | '));
+});
+
+test('validateDetailFill rejects each failure class, all at once', () => {
+    const ob = ORIGINS_BY_ID['oathbreaker'];
+    const draft = partialDetailDraft();
+
+    assert.ok(!validateDetailFill(null, ob, draft).ok);
+    assert.ok(!validateDetailFill('nope', ob, draft).ok);
+
+    // A proposal for something the player already decided.
+    const overrides = { ...goodDetailFill(), modifiers: { ...goodDetailFill().modifiers, oath_represented: 'tyranny' } };
+    const a = validateDetailFill(overrides, ob, draft);
+    assert.ok(!a.ok);
+    assert.ok(a.errors.some(e => e.includes('already set by the player')), a.errors.join(' | '));
+
+    // Ids that don't exist in their catalog.
+    const badIds = goodDetailFill();
+    badIds.nation.governmentId = 'republic_of_letters';
+    badIds.pursuer.motive = 'vibes';
+    badIds.modifiers.party_status = 'not_an_option';
+    const b = validateDetailFill(badIds, ob, draft);
+    assert.ok(!b.ok);
+    assert.ok(b.errors.some(e => e.includes('not a valid government id')));
+    assert.ok(b.errors.some(e => e.includes('not a valid motive id')));
+    assert.ok(b.errors.some(e => e.includes('is not one of its options')));
+
+    // Empty free text is a non-answer.
+    const blank = goodDetailFill();
+    blank.blanks.how_broken = '   ';
+    assert.ok(validateDetailFill(blank, ob, draft).errors.some(e => e.includes('non-empty string')));
+
+    // Vibe rules are the wizard's own and run on the merged result.
+    const tooMany = goodDetailFill();
+    tooMany.vibes = ['strength', 'wealth', 'death'];
+    assert.ok(!validateDetailFill(tooMany, ob, draft).ok);
+});
+
+test('validateDetailFill rejects an option the player\'s other choices block', () => {
+    // Oathbreaker: a split personality cannot also be a hidden curse.
+    const ob = ORIGINS_BY_ID['oathbreaker'];
+    const draft = partialDetailDraft();
+    draft.selections.modifiers.curse_type = 'split_personality';
+    const blocked = optionBlockReason(ob, draft.selections, 'curse_visibility', 'hidden');
+    assert.ok(blocked, 'precondition: the option really is blocked');
+
+    const check = validateDetailFill({ modifiers: { curse_visibility: 'hidden' } }, ob, draft);
+    assert.ok(!check.ok);
+    assert.ok(check.errors.some(e => e.includes('is blocked')), check.errors.join(' | '));
+});
+
+test('applyDetailFill writes only open paths and reports them for marking', () => {
+    const ob = ORIGINS_BY_ID['oathbreaker'];
+    const draft = partialDetailDraft();
+    const fill = goodDetailFill();
+    // Slip in a value for a field the player set — it must be ignored, not applied.
+    fill.modifiers.oath_represented = 'tyranny';
+    fill.blanks.sworn_to = 'something else entirely';
+
+    const { selections, paths } = applyDetailFill(draft, ob, fill);
+    assert.equal(selections.modifiers.oath_represented, 'justice', 'the player always wins');
+    assert.equal(selections.blanks.sworn_to, 'The Grey Chapter, who I still believe in');
+    assert.equal(selections.modifiers.party_status, 'standing');
+    assert.equal(selections.nation.name, 'Aldermere');
+    assert.equal(selections.nation.environmentId, 'coast', 'untouched, and not reported');
+    assert.deepEqual(selections.vibes, ['strength']);
+    assert.equal(selections.vibeSub, null, 'no sub-option without the death vibe');
+    assert.equal(selections.pursuer.identity, 'Warden Halloway');
+
+    assert.ok(!paths.includes('modifiers.oath_represented'));
+    assert.ok(!paths.includes('nation.environmentId'));
+    assert.ok(paths.includes('nation.name') && paths.includes('pursuer.leverage'));
+    // The draft itself is left alone — the caller assigns the returned object.
+    assert.equal(draft.selections.nation.name, '');
+});
+
+test('a filled draft passes validateDraft, which is what unblocks Next', () => {
+    const ob = ORIGINS_BY_ID['oathbreaker'];
+    const draft = partialDetailDraft();
+    const { selections } = applyDetailFill(draft, ob, goodDetailFill());
+    draft.selections = selections;
+    const { ok, errors } = validateDraft(draft);
+    assert.ok(ok, errors.join(' | '));
+    assert.equal(detailBlankPaths(draft, ob).size, 0, 'nothing left open');
+});
+
+// ── Step-level fill: Appearance ──────────────────────────────────────────────
+
+test('buildAppearanceFillPrompt requests the blank descriptors and gates intimate on NSFW', () => {
+    const ob = ORIGINS_BY_ID['oathbreaker'];
+    const draft = partialDetailDraft();
+    draft.appearance = { skin: 'Weathered brown' };
+
+    const sfw = buildAppearanceFillPrompt(draft, ob)[1].content;
+    assert.ok(sfw.includes('hair'), 'a blank descriptor is requested');
+    assert.ok(!sfw.includes('- skin —'), 'a typed descriptor is not');
+    assert.ok(!sfw.includes('Intimate descriptors'), 'SFW campaigns never see them');
+
+    draft.nsfw = true;
+    const nsfw = buildAppearanceFillPrompt(draft, ob)[1].content;
+    assert.ok(nsfw.includes('Intimate descriptors'));
+});
+
+test('validateAppearanceFill shares the profile validator\'s proposal rules', () => {
+    const blanks = appearanceBlankIds({ skin: 'Weathered brown' });
+
+    assert.ok(validateAppearanceFill({ appearanceFilled: { hair: 'Cropped grey' } }, blanks, false).ok);
+
+    const overrides = validateAppearanceFill({ appearanceFilled: { skin: 'MODEL OVERRIDE' } }, blanks, false);
+    assert.ok(!overrides.ok);
+    assert.ok(overrides.errors.some(e => e.includes('filled in by the player')));
+
+    assert.ok(!validateAppearanceFill({ appearanceFilled: { nope: 'x' } }, blanks, false).ok, 'unknown ids fail');
+    assert.ok(!validateAppearanceFill({}, blanks, false).ok, 'silence is a failure');
+    assert.ok(!validateAppearanceFill(null, blanks, false).ok);
+
+    const leaked = validateAppearanceFill(
+        { appearanceFilled: { hair: 'Cropped grey' }, intimateFilled: { chest: 'x' } }, blanks, false);
+    assert.ok(!leaked.ok, 'intimate proposals are rejected outright on an SFW campaign');
+});
+
+test('validateFieldProposals is the one definition both validators use', () => {
+    const blanks = new Set(['hair']);
+    assert.deepEqual(validateFieldProposals(undefined, APPEARANCE_FIELDS, blanks), [], 'absent is fine');
+    assert.deepEqual(validateFieldProposals({ hair: 'Cropped grey' }, APPEARANCE_FIELDS, blanks), []);
+    assert.equal(validateFieldProposals([], APPEARANCE_FIELDS, blanks).length, 1, 'an array is not an object');
+    assert.ok(validateFieldProposals({ hair: '' }, APPEARANCE_FIELDS, blanks)[0].includes('non-empty'));
 });
 
 // ── Profile validation ───────────────────────────────────────────────────────

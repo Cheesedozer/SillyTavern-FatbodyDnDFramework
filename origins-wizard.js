@@ -4,8 +4,8 @@
  * The full-screen character-creation overlay for D&D-mode Origins campaigns
  * (spec §7), modeled on central-tension-compiler.js's overlay recipe and the
  * foundation wizard's generate → validate → retry(≤3) → preview → commit
- * shape. Six steps: campaign options → race → appearance → origin → origin
- * details → review & commit.
+ * shape. Six steps: campaign options → race → origin → origin details →
+ * appearance → review & commit.
  *
  * Draft state persists in settings.chatStates[chatId].origin.draft on every
  * change (saveSettingsDebounced), so the wizard survives reloads and the HUD
@@ -13,9 +13,16 @@
  * .committed), runs the D&D stat generation through the existing
  * sendDirectPrompt channel, and writes the engine-built [ORIGIN] memo block.
  *
- * All three LLM calls the flow makes — profile, character sheet, opening scene —
- * go out on the Origins connection via originsSettings(), so creation can run on
- * a strong creative model without moving the every-turn State Tracker onto it.
+ * The Origin Details and Appearance steps each carry a ✨ Fill blanks with AI
+ * button and a ↺ Regenerate: proposals land in the real inputs where the player
+ * can edit them, and `draft.aiFilled` (see origins-engine.js) records which
+ * values are the AI's so Regenerate never touches the player's own. Skipping
+ * both leaves the review-stage profile pass to fill the gaps, as it always did.
+ *
+ * Every LLM call the flow makes — the two fills, the profile, the character
+ * sheet, the opening scene — goes out on the Origins connection via
+ * originsSettings(), so creation can run on a strong creative model without
+ * moving the every-turn State Tracker onto it.
  *
  * DOM module — all DOM work stays inside exported/instance functions so the
  * smoke test can import the graph with a stubbed document.
@@ -40,6 +47,9 @@ import {
     writeOriginToMemo, buildStatGenPrompt, buildFirstMessagePrompt,
     leverageMandatory, personalLeverFor, appearanceBlankIds, mergeAppearance,
     resolveAppearanceSummary, originsSettings,
+    detailBlankPaths, buildDetailFillPrompt, validateDetailFill, applyDetailFill,
+    buildAppearanceFillPrompt, validateAppearanceFill,
+    markAiFilled, claimField, aiFilledPaths, clearAiValues, isAiFilled,
 } from './origins-engine.js';
 import { getSettings, getEffectiveRouterCampaignPrefix, LORE_INERT_FLAG, LORE_PINNED_FLAG } from './state-manager.js';
 import { sendAgentTurn, sendStateRequest } from './llm-client.js';
@@ -399,6 +409,28 @@ export function openOriginsWizard() {
         });
     }
 
+    // ── AI-fill markers ──────────────────────────────────────────────────────
+
+    /** Label badge marking a value as the AI's proposal rather than the player's. */
+    const aiChip = (path) => isAiFilled(draft, path)
+        ? ' <span class="rt-og-ai-chip" title="Proposed by the AI — edit it and it becomes yours, and Regenerate will leave it alone.">✨ AI</span>'
+        : '';
+
+    /**
+     * Claims a field for the player on edit and drops its badge immediately.
+     *
+     * Done in place rather than via render(): re-rendering mid-keystroke would
+     * blow away the input the player is typing into.
+     */
+    function claimAndUnmark(inputEl, path) {
+        if (!isAiFilled(draft, path)) return;
+        claimField(draft, path);
+        inputEl.classList.remove('rt-og-ai');
+        inputEl.closest('div')?.previousElementSibling?.querySelector?.('.rt-og-ai-chip')?.remove();
+        // The label sits immediately before the control in every step layout.
+        inputEl.previousElementSibling?.querySelector?.('.rt-og-ai-chip')?.remove();
+    }
+
     // ── Step renderers ───────────────────────────────────────────────────────
 
     function renderOptionsStep() {
@@ -496,29 +528,40 @@ export function openOriginsWizard() {
         const race = RACES_BY_ID[draft.raceId];
         const app = draft.appearance || (draft.appearance = {});
         const intimate = app.intimate || {};
+        const hasAi = aiFilledPaths(draft, 'appearance').length > 0;
+        const field = (f, path, value) => `
+            <div style="${FIELD_LABEL}">${esc(f.label)}${aiChip(path)}</div>
+            <input type="text" class="text_pole ${path.startsWith('intimate.') ? 'rt-og-int-field' : 'rt-og-app-field'}${isAiFilled(draft, path) ? ' rt-og-ai' : ''}" data-field="${f.id}" value="${esc(value || '')}" placeholder="${esc(f.hint)}" style="width:100%;">`;
         contentEl.innerHTML = `
-            <div style="font-size:0.9em;opacity:0.85;">Describe your character. Every field is optional — anything left empty is the narrator's to improvise.</div>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                <div style="font-size:0.9em;opacity:0.85;">Describe your character. Every field is optional — fill in what matters to you and let the AI propose the rest.</div>
+                <div style="display:flex;gap:6px;flex-shrink:0;">
+                    <button id="rt-og-app-fill" class="menu_button interactable" title="Propose a value for every descriptor you left blank. Nothing you typed is touched.">✨ Fill blanks with AI</button>
+                    ${hasAi ? '<button id="rt-og-app-regen" class="menu_button interactable" title="Re-roll the AI\'s own proposals. Anything you typed or edited is kept.">↺ Regenerate</button>' : ''}
+                </div>
+            </div>
             <div style="margin-top:6px;padding:6px 8px;border-radius:6px;background:rgba(255,255,255,0.04);font-size:0.75em;opacity:0.7;">${esc(race?.name)} range: ${esc(race?.appearance)}</div>
-            ${APPEARANCE_FIELDS.map(f => `
-                <div style="${FIELD_LABEL}">${esc(f.label)}</div>
-                <input type="text" class="text_pole rt-og-app-field" data-field="${f.id}" value="${esc(app[f.id] || '')}" placeholder="${esc(f.hint)}" style="width:100%;">
-            `).join('')}
+            ${APPEARANCE_FIELDS.map(f => field(f, `appearance.${f.id}`, app[f.id])).join('')}
             ${draft.nsfw ? `
-            <details style="margin-top:14px;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:8px;">
+            <details style="margin-top:14px;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:8px;"${aiFilledPaths(draft, 'appearance').some(p => p.startsWith('intimate.')) ? ' open' : ''}>
                 <summary style="cursor:pointer;font-size:0.85em;font-weight:bold;opacity:0.85;">Intimate Physical Details (optional — NSFW)</summary>
-                <div style="${HINT}margin-top:4px;">Fill in only what's relevant to the scenarios you plan to run — stated details keep the narrator from improvising anatomy. Skip freely.</div>
-                ${INTIMATE_FIELDS.map(f => `
-                    <div style="${FIELD_LABEL}">${esc(f.label)}</div>
-                    <input type="text" class="text_pole rt-og-int-field" data-field="${f.id}" value="${esc(intimate[f.id] || '')}" placeholder="${esc(f.hint)}" style="width:100%;">
-                `).join('')}
+                <div style="${HINT}margin-top:4px;">Fill in only what's relevant to the scenarios you plan to run — stated details keep the narrator from improvising anatomy. Skip freely. These stay out of the HUD and the always-on context; they live in a keyword-triggered lorebook entry.</div>
+                ${INTIMATE_FIELDS.map(f => field(f, `intimate.${f.id}`, intimate[f.id])).join('')}
             </details>` : ''}`;
+        contentEl.querySelector('#rt-og-app-fill')?.addEventListener('click', () => fillAppearance(false));
+        contentEl.querySelector('#rt-og-app-regen')?.addEventListener('click', () => fillAppearance(true));
         contentEl.querySelectorAll('.rt-og-app-field').forEach(input => {
-            input.addEventListener('input', () => { app[input.dataset.field] = input.value; save(); });
+            input.addEventListener('input', () => {
+                app[input.dataset.field] = input.value;
+                claimAndUnmark(input, `appearance.${input.dataset.field}`);
+                save();
+            });
         });
         contentEl.querySelectorAll('.rt-og-int-field').forEach(input => {
             input.addEventListener('input', () => {
                 if (!app.intimate) app.intimate = {};
                 app.intimate[input.dataset.field] = input.value;
+                claimAndUnmark(input, `intimate.${input.dataset.field}`);
                 save();
             });
         });
@@ -577,18 +620,22 @@ export function openOriginsWizard() {
         const vibes = vibesForNsfw(draft.nsfw);
 
         contentEl.innerHTML = `
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-                <div style="font-size:0.9em;opacity:0.85;"><b>${origin.emoji} ${esc(origin.name)}</b> — set the shape; anything left blank, the AI proposes at review.</div>
-                <button id="rt-og-detail-random" class="menu_button interactable" style="flex-shrink:0;">🎲 Randomize</button>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                <div style="font-size:0.9em;opacity:0.85;"><b>${origin.emoji} ${esc(origin.name)}</b> — set the shape. Fill in what matters to you and let the AI propose the rest, right here where you can change it.</div>
+                <div style="display:flex;gap:6px;flex-shrink:0;">
+                    <button id="rt-og-detail-fill" class="menu_button interactable" title="Have the AI choose everything you've left open. Nothing you set is touched.">✨ Fill blanks with AI</button>
+                    ${aiFilledPaths(draft, 'detail').length ? '<button id="rt-og-detail-regen" class="menu_button interactable" title="Re-roll the AI\'s own picks. Anything you set or edited is kept.">↺ Regenerate</button>' : ''}
+                    <button id="rt-og-detail-random" class="menu_button interactable">🎲 Randomize</button>
+                </div>
             </div>
 
             <div style="margin-top:10px;font-weight:bold;font-size:0.85em;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:2px;">Origin choices</div>
             ${mods.map(m => {
                 const blockedNote = (optId) => optionBlockReason(origin, sel, m.id, optId);
                 return `
-                <div style="${FIELD_LABEL}">${esc(m.label)}${m.optional ? ' <span style="opacity:0.5;font-weight:normal;">(optional)</span>' : ''}${m.nsfw ? ' <span style="opacity:0.6;">🔞</span>' : ''}</div>
+                <div style="${FIELD_LABEL}">${esc(m.label)}${m.optional ? ' <span style="opacity:0.5;font-weight:normal;">(optional)</span>' : ''}${m.nsfw ? ' <span style="opacity:0.6;">🔞</span>' : ''}${aiChip(`modifiers.${m.id}`)}</div>
                 ${m.note ? `<div style="${HINT}">${esc(m.note)}</div>` : ''}
-                <select class="text_pole rt-og-mod" data-mod="${m.id}" style="${SELECT_STYLE}">
+                <select class="text_pole rt-og-mod${isAiFilled(draft, `modifiers.${m.id}`) ? ' rt-og-ai' : ''}" data-mod="${m.id}" style="${SELECT_STYLE}">
                     <option value="">${m.optional ? '— off —' : '— choose —'}</option>
                     ${m.options.map(o => {
                         const reason = sel.modifiers[m.id] === o.id ? null : blockedNote(o.id);
@@ -599,22 +646,22 @@ export function openOriginsWizard() {
 
             <div style="margin-top:8px;font-weight:bold;font-size:0.85em;">Story blanks <span style="opacity:0.5;font-weight:normal;">(leave empty → the AI proposes)</span></div>
             ${origin.blanks.map(b => `
-                <div style="${FIELD_LABEL}">${esc(b.label)}</div>
-                <textarea class="text_pole rt-og-blank" data-blank="${b.id}" rows="2" placeholder="${esc(b.hint)}" style="width:100%;">${esc(sel.blanks[b.id] || '')}</textarea>
+                <div style="${FIELD_LABEL}">${esc(b.label)}${aiChip(`blanks.${b.id}`)}</div>
+                <textarea class="text_pole rt-og-blank${isAiFilled(draft, `blanks.${b.id}`) ? ' rt-og-ai' : ''}" data-blank="${b.id}" rows="2" placeholder="${esc(b.hint)}" style="width:100%;">${esc(sel.blanks[b.id] || '')}</textarea>
             `).join('')}
 
             <div style="margin-top:14px;font-weight:bold;font-size:0.85em;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:2px;">Nation — ${esc(origin.nationMeaning)}</div>
-            <div style="${FIELD_LABEL}">Nation name <span style="opacity:0.5;font-weight:normal;">(optional — leave empty and the AI names it)</span></div>
-            <input type="text" id="rt-og-nation-name" class="text_pole" value="${esc(sel.nation.name || '')}" style="width:100%;">
+            <div style="${FIELD_LABEL}">Nation name <span style="opacity:0.5;font-weight:normal;">(optional — leave empty and the AI names it)</span>${aiChip('nation.name')}</div>
+            <input type="text" id="rt-og-nation-name" class="text_pole${isAiFilled(draft, 'nation.name') ? ' rt-og-ai' : ''}" value="${esc(sel.nation.name || '')}" style="width:100%;">
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
-                <div><div style="${FIELD_LABEL}">Majority race</div>
-                <select id="rt-og-nation-race" class="text_pole" style="${SELECT_STYLE}">${RACES.map(r => `<option value="${r.id}"${sel.nation.majorityRaceId === r.id ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select></div>
-                <div><div style="${FIELD_LABEL}">Government</div>
-                <select id="rt-og-nation-gov" class="text_pole" style="${SELECT_STYLE}"><option value="">— choose —</option>${GOVERNMENT_TYPES.map(g => `<option value="${g.id}"${sel.nation.governmentId === g.id ? ' selected' : ''}>${esc(g.label)}</option>`).join('')}</select></div>
-                <div><div style="${FIELD_LABEL}">Environment</div>
-                <select id="rt-og-nation-env" class="text_pole" style="${SELECT_STYLE}"><option value="">— choose —</option>${ENVIRONMENTS.map(e => `<option value="${e.id}"${sel.nation.environmentId === e.id ? ' selected' : ''}>${esc(e.label)}</option>`).join('')}</select></div>
+                <div><div style="${FIELD_LABEL}">Majority race${aiChip('nation.majorityRaceId')}</div>
+                <select id="rt-og-nation-race" class="text_pole${isAiFilled(draft, 'nation.majorityRaceId') ? ' rt-og-ai' : ''}" style="${SELECT_STYLE}">${RACES.map(r => `<option value="${r.id}"${sel.nation.majorityRaceId === r.id ? ' selected' : ''}>${esc(r.name)}</option>`).join('')}</select></div>
+                <div><div style="${FIELD_LABEL}">Government${aiChip('nation.governmentId')}</div>
+                <select id="rt-og-nation-gov" class="text_pole${isAiFilled(draft, 'nation.governmentId') ? ' rt-og-ai' : ''}" style="${SELECT_STYLE}"><option value="">— choose —</option>${GOVERNMENT_TYPES.map(g => `<option value="${g.id}"${sel.nation.governmentId === g.id ? ' selected' : ''}>${esc(g.label)}</option>`).join('')}</select></div>
+                <div><div style="${FIELD_LABEL}">Environment${aiChip('nation.environmentId')}</div>
+                <select id="rt-og-nation-env" class="text_pole${isAiFilled(draft, 'nation.environmentId') ? ' rt-og-ai' : ''}" style="${SELECT_STYLE}"><option value="">— choose —</option>${ENVIRONMENTS.map(e => `<option value="${e.id}"${sel.nation.environmentId === e.id ? ' selected' : ''}>${esc(e.label)}</option>`).join('')}</select></div>
             </div>
-            <div style="${FIELD_LABEL}">Culture vibes (pick 1–2)</div>
+            <div style="${FIELD_LABEL}">Culture vibes (pick 1–2)${aiChip('vibes')}</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
                 ${vibes.map(v => `
                 <label style="display:flex;gap:6px;align-items:flex-start;font-size:0.8em;padding:3px 5px;border-radius:4px;background:rgba(255,255,255,0.04);cursor:pointer;">
@@ -623,7 +670,7 @@ export function openOriginsWizard() {
                 </label>`).join('')}
             </div>
             <div id="rt-og-vibe-sub-wrap" style="display:${sel.vibes.includes('death') ? 'block' : 'none'};">
-                <div style="${FIELD_LABEL}">Death-focused sub-option (required)</div>
+                <div style="${FIELD_LABEL}">Death-focused sub-option (required)${aiChip('vibeSub')}</div>
                 <select id="rt-og-vibe-sub" class="text_pole" style="${SELECT_STYLE}max-width:340px;">
                     <option value="">— choose —</option>
                     <option value="reverence"${sel.vibeSub === 'reverence' ? ' selected' : ''}>Reverence for the dead</option>
@@ -633,15 +680,15 @@ export function openOriginsWizard() {
 
             ${needsPursuer || sel.pursuer ? `
             <div style="margin-top:14px;font-weight:bold;font-size:0.85em;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:2px;">Pursuer — ${esc(origin.pursuerNote)}</div>
-            <div style="${FIELD_LABEL}">Identity <span style="opacity:0.5;font-weight:normal;">(optional — leave empty and the AI names them)</span></div>
-            <input type="text" id="rt-og-pursuer-identity" class="text_pole" value="${esc(sel.pursuer?.identity || '')}" style="width:100%;">
+            <div style="${FIELD_LABEL}">Identity <span style="opacity:0.5;font-weight:normal;">(optional — leave empty and the AI names them)</span>${aiChip('pursuer.identity')}</div>
+            <input type="text" id="rt-og-pursuer-identity" class="text_pole${isAiFilled(draft, 'pursuer.identity') ? ' rt-og-ai' : ''}" value="${esc(sel.pursuer?.identity || '')}" style="width:100%;">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
                 ${[['affiliation', 'Affiliation', PURSUER_BLOCK.affiliations], ['motive', 'Motive', PURSUER_BLOCK.motives], ['resources', 'Capability vs you', PURSUER_BLOCK.resources], ['awareness', 'Current awareness', PURSUER_BLOCK.awareness]].map(([field, label, opts]) => `
-                <div><div style="${FIELD_LABEL}">${label}</div>
-                <select class="text_pole rt-og-pursuer" data-field="${field}" style="${SELECT_STYLE}"><option value="">— choose —</option>${opts.map(o => `<option value="${o.id}"${sel.pursuer?.[field] === o.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></div>`).join('')}
+                <div><div style="${FIELD_LABEL}">${label}${aiChip(`pursuer.${field}`)}</div>
+                <select class="text_pole rt-og-pursuer${isAiFilled(draft, `pursuer.${field}`) ? ' rt-og-ai' : ''}" data-field="${field}" style="${SELECT_STYLE}"><option value="">— choose —</option>${opts.map(o => `<option value="${o.id}"${sel.pursuer?.[field] === o.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></div>`).join('')}
             </div>
-            <div style="${FIELD_LABEL}">Leverage — what they hold over you${leverageMandatory(origin, draft.raceId) ? ' <span style="color:#ffaa00;font-weight:normal;">(this origin requires one — leave empty and the AI proposes it)</span>' : ' <span style="opacity:0.5;font-weight:normal;">(optional — leave empty and the AI proposes one)</span>'}</div>
-            <textarea id="rt-og-pursuer-leverage" class="text_pole" rows="2" style="width:100%;" placeholder="A hostage, blackmail material, a person you still care about, a secret that would ruin you…">${esc(sel.pursuer?.leverage || '')}</textarea>
+            <div style="${FIELD_LABEL}">Leverage — what they hold over you${leverageMandatory(origin, draft.raceId) ? ' <span style="color:#ffaa00;font-weight:normal;">(this origin requires one — leave empty and the AI proposes it)</span>' : ' <span style="opacity:0.5;font-weight:normal;">(optional — leave empty and the AI proposes one)</span>'}${aiChip('pursuer.leverage')}</div>
+            <textarea id="rt-og-pursuer-leverage" class="text_pole${isAiFilled(draft, 'pursuer.leverage') ? ' rt-og-ai' : ''}" rows="2" style="width:100%;" placeholder="A hostage, blackmail material, a person you still care about, a secret that would ruin you…">${esc(sel.pursuer?.leverage || '')}</textarea>
             ` : ''}
 
             ${hardSub.length ? hardSub.map(rule => `
@@ -658,47 +705,88 @@ export function openOriginsWizard() {
             ${softOpen.map(r => `
                 <div style="margin-top:6px;padding:8px;border:1px solid rgba(255,170,0,0.5);border-radius:6px;font-size:0.82em;">
                     ${esc(r.message)}
-                    <textarea class="text_pole rt-og-explain" data-rule="${r.id}" rows="2" style="width:100%;margin-top:4px;" placeholder="Explain how both are true…">${esc(sel.explanations[r.id] || '')}</textarea>
+                    ${aiChip(`explanations.${r.id}`).trim()}
+                    <textarea class="text_pole rt-og-explain${isAiFilled(draft, `explanations.${r.id}`) ? ' rt-og-ai' : ''}" data-rule="${r.id}" rows="2" style="width:100%;margin-top:4px;" placeholder="Explain how both are true…">${esc(sel.explanations[r.id] || '')}</textarea>
                 </div>`).join('')}` : ''}
 
             <div id="rt-og-detail-errors" style="margin-top:12px;"></div>`;
 
         const rerender = () => { save(); render(); };
+        // Editing a value claims it: the path leaves draft.aiFilled, the ✨ AI
+        // badge goes, and Regenerate will never overwrite it. Handlers that
+        // rerender only need claimField — render() redraws the badge from state.
         contentEl.querySelectorAll('.rt-og-mod').forEach(el => el.addEventListener('change', () => {
             if (el.value) sel.modifiers[el.dataset.mod] = el.value; else delete sel.modifiers[el.dataset.mod];
+            claimField(draft, `modifiers.${el.dataset.mod}`);
             // Pursuer need may flip (claimants / slumber_reason / replacement).
             if (pursuerNeeded(origin, sel) && !sel.pursuer) sel.pursuer = { identity: '', affiliation: '', motive: '', resources: '', awareness: '', leverage: '' };
             if (!pursuerNeeded(origin, sel) && origin.pursuer !== 'required') sel.pursuer = null;
             draft.profile = null;
             rerender();
         }));
-        contentEl.querySelectorAll('.rt-og-blank').forEach(el => el.addEventListener('input', () => { sel.blanks[el.dataset.blank] = el.value; save(); }));
-        contentEl.querySelector('#rt-og-nation-name')?.addEventListener('input', e => { sel.nation.name = e.target.value; save(); });
-        contentEl.querySelector('#rt-og-nation-race')?.addEventListener('change', e => { sel.nation.majorityRaceId = e.target.value; save(); });
-        contentEl.querySelector('#rt-og-nation-gov')?.addEventListener('change', e => { sel.nation.governmentId = e.target.value; save(); });
-        contentEl.querySelector('#rt-og-nation-env')?.addEventListener('change', e => { sel.nation.environmentId = e.target.value; save(); });
+        contentEl.querySelectorAll('.rt-og-blank').forEach(el => el.addEventListener('input', () => {
+            sel.blanks[el.dataset.blank] = el.value;
+            claimAndUnmark(el, `blanks.${el.dataset.blank}`);
+            save();
+        }));
+        contentEl.querySelector('#rt-og-nation-name')?.addEventListener('input', e => {
+            sel.nation.name = e.target.value; claimAndUnmark(e.target, 'nation.name'); save();
+        });
+        contentEl.querySelector('#rt-og-nation-race')?.addEventListener('change', e => {
+            sel.nation.majorityRaceId = e.target.value; claimAndUnmark(e.target, 'nation.majorityRaceId'); save();
+        });
+        contentEl.querySelector('#rt-og-nation-gov')?.addEventListener('change', e => {
+            sel.nation.governmentId = e.target.value; claimAndUnmark(e.target, 'nation.governmentId'); save();
+        });
+        contentEl.querySelector('#rt-og-nation-env')?.addEventListener('change', e => {
+            sel.nation.environmentId = e.target.value; claimAndUnmark(e.target, 'nation.environmentId'); save();
+        });
         contentEl.querySelectorAll('.rt-og-vibe').forEach(el => el.addEventListener('change', () => {
             const checked = [...contentEl.querySelectorAll('.rt-og-vibe:checked')].map(x => x.value);
             if (checked.length > 2) { el.checked = false; setStatus('Pick at most 2 culture vibes.'); return; }
             sel.vibes = checked;
+            claimField(draft, 'vibes');
             if (!sel.vibes.includes('death')) sel.vibeSub = null;
             draft.profile = null;
             rerender();
         }));
-        contentEl.querySelector('#rt-og-vibe-sub')?.addEventListener('change', e => { sel.vibeSub = e.target.value || null; save(); });
-        contentEl.querySelector('#rt-og-pursuer-identity')?.addEventListener('input', e => { if (sel.pursuer) { sel.pursuer.identity = e.target.value; save(); } });
-        contentEl.querySelectorAll('.rt-og-pursuer').forEach(el => el.addEventListener('change', () => { if (sel.pursuer) { sel.pursuer[el.dataset.field] = el.value; draft.profile = null; rerender(); } }));
-        contentEl.querySelector('#rt-og-pursuer-leverage')?.addEventListener('input', e => { if (sel.pursuer) { sel.pursuer.leverage = e.target.value; save(); } });
+        contentEl.querySelector('#rt-og-vibe-sub')?.addEventListener('change', e => {
+            sel.vibeSub = e.target.value || null; claimAndUnmark(e.target, 'vibeSub'); save();
+        });
+        contentEl.querySelector('#rt-og-pursuer-identity')?.addEventListener('input', e => {
+            if (!sel.pursuer) return;
+            sel.pursuer.identity = e.target.value; claimAndUnmark(e.target, 'pursuer.identity'); save();
+        });
+        contentEl.querySelectorAll('.rt-og-pursuer').forEach(el => el.addEventListener('change', () => {
+            if (!sel.pursuer) return;
+            sel.pursuer[el.dataset.field] = el.value;
+            claimField(draft, `pursuer.${el.dataset.field}`);
+            draft.profile = null;
+            rerender();
+        }));
+        contentEl.querySelector('#rt-og-pursuer-leverage')?.addEventListener('input', e => {
+            if (!sel.pursuer) return;
+            sel.pursuer.leverage = e.target.value; claimAndUnmark(e.target, 'pursuer.leverage'); save();
+        });
         contentEl.querySelectorAll('.rt-og-sub-lever').forEach(el => el.addEventListener('change', () => {
             sel.substituteLever = el.checked ? el.dataset.lever : null;
             rerender();
         }));
-        contentEl.querySelectorAll('.rt-og-explain').forEach(el => el.addEventListener('input', () => { sel.explanations[el.dataset.rule] = el.value; save(); }));
+        contentEl.querySelectorAll('.rt-og-explain').forEach(el => el.addEventListener('input', () => {
+            sel.explanations[el.dataset.rule] = el.value;
+            claimAndUnmark(el, `explanations.${el.dataset.rule}`);
+            save();
+        }));
+        contentEl.querySelector('#rt-og-detail-fill')?.addEventListener('click', () => fillDetails(false));
+        contentEl.querySelector('#rt-og-detail-regen')?.addEventListener('click', () => fillDetails(true));
         contentEl.querySelector('#rt-og-detail-random')?.addEventListener('click', () => {
             const keepBlanks = sel.blanks, keepName = sel.nation.name;
             draft.selections = randomizeSelections(origin, draft.raceId, draft.nsfw);
             draft.selections.blanks = keepBlanks;
             draft.selections.nation.name = keepName;
+            // These are dice, not the AI — drop the badges without disturbing
+            // the Appearance step's, which this button never touches.
+            draft.aiFilled = aiFilledPaths(draft, 'appearance');
             draft.profile = null;
             rerender();
         });
@@ -763,6 +851,40 @@ export function openOriginsWizard() {
 
     // ── Generation & commit ──────────────────────────────────────────────────
 
+    /**
+     * The generate → parse → validate → feed-errors-back → retry loop, shared by
+     * all three JSON passes (profile, Origin Details fill, Appearance fill).
+     *
+     * `messages` is mutated as the conversation grows, so a caller that keeps
+     * the array can push a "regenerate" turn onto it and call again with the
+     * model's own prior attempts still in context.
+     *
+     * @param {Array<{role: string, content: string}>} messages
+     * @param {(parsed: object) => {ok: boolean, errors: string[]}} validate
+     * @param {string} label - progress text, e.g. "Compiling origin profile"
+     * @returns {Promise<object|null>} the validated JSON, or null when every
+     *   attempt failed (the status line explains which)
+     */
+    async function runJsonPass(messages, validate, label) {
+        for (let attempt = 1; attempt <= MAX_GENERATION_RETRIES; attempt++) {
+            setBusy(true, `${label} (attempt ${attempt}/${MAX_GENERATION_RETRIES})…`);
+            const { content } = await sendAgentTurn(originsSettings(getSettings()), messages, null, null);
+            messages.push({ role: 'assistant', content });
+            const parsed = extractJsonBlock(content);
+            if (!parsed) {
+                messages.push({ role: 'user', content: 'Your reply contained no parseable ```json block. Output ONLY the JSON in one fenced block.' });
+                continue;
+            }
+            const check = validate(parsed);
+            if (!check.ok) {
+                messages.push({ role: 'user', content: `That failed validation. Fix EVERY issue and output the corrected complete JSON again:\n- ${check.errors.join('\n- ')}` });
+                continue;
+            }
+            return parsed;
+        }
+        return null;
+    }
+
     /** @type {Array<{role: string, content: string}>} */
     let genMessages = [];
 
@@ -778,27 +900,98 @@ export function openOriginsWizard() {
             } else {
                 genMessages.push({ role: 'user', content: 'Regenerate the profile with fresh ideas where the player left blanks, keeping every explicit player selection identical. Output the corrected complete JSON again, one fenced block.' });
             }
-            for (let attempt = 1; attempt <= MAX_GENERATION_RETRIES; attempt++) {
-                setBusy(true, `Compiling origin profile (attempt ${attempt}/${MAX_GENERATION_RETRIES})…`);
-                const { content } = await sendAgentTurn(originsSettings(getSettings()), genMessages, null, null);
-                genMessages.push({ role: 'assistant', content });
-                const parsed = extractJsonBlock(content);
-                if (!parsed) {
-                    genMessages.push({ role: 'user', content: 'Your reply contained no parseable ```json block. Output ONLY the origin profile JSON in one fenced block.' });
-                    continue;
-                }
-                const check = validateOriginProfile(parsed, origin, draft.raceId, appearanceBlankIds(draft.appearance));
-                if (!check.ok) {
-                    genMessages.push({ role: 'user', content: `The profile failed validation. Fix EVERY issue and output the corrected complete JSON again:\n- ${check.errors.join('\n- ')}` });
-                    continue;
-                }
-                draft.profile = parsed;
-                save();
-                setBusy(false, 'Profile ready — review, edit anything, then commit.');
-                render();
+            const blanks = appearanceBlankIds(draft.appearance);
+            const parsed = await runJsonPass(
+                genMessages,
+                p => validateOriginProfile(p, origin, draft.raceId, blanks),
+                'Compiling origin profile');
+            if (!parsed) {
+                setBusy(false, `Could not produce a valid profile in ${MAX_GENERATION_RETRIES} attempts — try again.`);
                 return;
             }
-            setBusy(false, `Could not produce a valid profile in ${MAX_GENERATION_RETRIES} attempts — try again.`);
+            draft.profile = parsed;
+            save();
+            setBusy(false, 'Profile ready — review, edit anything, then commit.');
+            render();
+        } catch (e) {
+            setBusy(false, `⚠️ ${e.message || e}`);
+        }
+    }
+
+    // ── Step-level fills (see the AI-fill provenance block in origins-engine) ──
+
+    /**
+     * Fills the Origin Details fields the player left open, in place, where they
+     * can see and edit them. Regenerate first returns the AI's previous picks to
+     * "unset" so the pass proposes fresh ones; anything the player typed or
+     * edited was dropped from `aiFilled` and is therefore never touched.
+     */
+    async function fillDetails(isRegenerate) {
+        if (busy) return;
+        const origin = ORIGINS_BY_ID[draft.originId];
+        if (!origin) { setStatus('Pick an origin first.'); return; }
+        if (isRegenerate) clearAiValues(draft, 'detail');
+        if (!detailBlankPaths(draft, origin).size) {
+            setStatus('Nothing left open on this step — every field is set.');
+            return;
+        }
+        setBusy(true, 'Filling the open choices…');
+        try {
+            const messages = buildDetailFillPrompt(draft, origin);
+            const fill = await runJsonPass(
+                messages,
+                f => validateDetailFill(f, origin, draft),
+                'Filling the open choices');
+            if (!fill) {
+                setBusy(false, `Could not fill these in ${MAX_GENERATION_RETRIES} attempts — try again, or set them yourself.`);
+                return;
+            }
+            const { selections, paths } = applyDetailFill(draft, origin, fill);
+            draft.selections = selections;
+            markAiFilled(draft, paths);
+            save();
+            setBusy(false, `Filled ${paths.length} field${paths.length === 1 ? '' : 's'} — edit anything you'd rather change, then continue.`);
+            render();
+        } catch (e) {
+            setBusy(false, `⚠️ ${e.message || e}`);
+        }
+    }
+
+    /** The same, for the Appearance step's descriptors. */
+    async function fillAppearance(isRegenerate) {
+        if (busy) return;
+        const origin = ORIGINS_BY_ID[draft.originId];
+        if (!origin) { setStatus('Pick an origin first.'); return; }
+        if (isRegenerate) clearAiValues(draft, 'appearance');
+        const blanks = appearanceBlankIds(draft.appearance);
+        const asked = blanks.appearance.size + (draft.nsfw ? blanks.intimate.size : 0);
+        if (!asked) {
+            setStatus('Nothing left blank here — every descriptor is set.');
+            return;
+        }
+        setBusy(true, 'Proposing the blank descriptors…');
+        try {
+            const messages = buildAppearanceFillPrompt(draft, origin);
+            const fill = await runJsonPass(
+                messages,
+                f => validateAppearanceFill(f, blanks, !!draft.nsfw),
+                'Proposing the blank descriptors');
+            if (!fill) {
+                setBusy(false, `Could not fill these in ${MAX_GENERATION_RETRIES} attempts — try again, or write them yourself.`);
+                return;
+            }
+            // mergeAppearance is the same merge the commit path uses: the
+            // player's values win, unknown field ids are dropped, and intimate
+            // proposals are discarded outright on an SFW campaign.
+            draft.appearance = mergeAppearance(draft.appearance, fill.appearanceFilled, fill.intimateFilled, !!draft.nsfw);
+            const paths = [
+                ...Object.keys(fill.appearanceFilled || {}).filter(id => blanks.appearance.has(id)).map(id => `appearance.${id}`),
+                ...(draft.nsfw ? Object.keys(fill.intimateFilled || {}).filter(id => blanks.intimate.has(id)).map(id => `intimate.${id}`) : []),
+            ];
+            markAiFilled(draft, paths);
+            save();
+            setBusy(false, `Proposed ${paths.length} descriptor${paths.length === 1 ? '' : 's'} — edit anything you'd rather change, then continue.`);
+            render();
         } catch (e) {
             setBusy(false, `⚠️ ${e.message || e}`);
         }

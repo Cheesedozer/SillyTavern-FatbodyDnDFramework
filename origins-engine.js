@@ -27,8 +27,15 @@ import {
 
 // ── Wizard steps (spec §7.1) ─────────────────────────────────────────────────
 
-/** Ordered wizard step ids. 'options' also hosts the master NSFW toggle. */
-export const WIZARD_STEPS = Object.freeze(['options', 'race', 'appearance', 'origin', 'detail', 'review']);
+/**
+ * Ordered wizard step ids. 'options' also hosts the master NSFW toggle.
+ *
+ * Appearance sits after Origin Details on purpose: its AI fill button proposes
+ * values for the descriptors the player left blank, and those proposals have to
+ * agree with the origin, nation and story blanks. Run earlier — where this step
+ * used to be — the pass would know the race and nothing else.
+ */
+export const WIZARD_STEPS = Object.freeze(['options', 'race', 'origin', 'detail', 'appearance', 'review']);
 
 export const WIZARD_STEP_LABELS = Object.freeze({
     options: 'Campaign Options',
@@ -105,6 +112,88 @@ export function emptySelections() {
         nation: { name: '', majorityRaceId: '', governmentId: '', environmentId: '' },
         pursuer: null, explanations: {},
     };
+}
+
+// ── AI-fill provenance (spec §7.1 "leave empty → the AI proposes") ───────────
+
+/**
+ * `draft.aiFilled` is a flat list of dotted paths recording which values came
+ * from a fill pass rather than from the player — e.g. `modifiers.claimants`,
+ * `nation.name`, `pursuer.leverage`, `appearance.hair`, `intimate.chest`.
+ *
+ * It exists so Regenerate can re-roll the AI's own picks and nothing else. The
+ * moment the player edits an AI value the path is dropped (`claimField`), which
+ * is what makes "yours is never overwritten" hold across repeated regenerations
+ * — the same guarantee mergeAppearance gives descriptors at commit.
+ */
+
+/** The wizard step a path belongs to: 'appearance' or 'detail'. */
+export function pathSection(path) {
+    return /^(appearance|intimate)\./.test(String(path || '')) ? 'appearance' : 'detail';
+}
+
+/** Records paths as AI-proposed. Idempotent; returns the new list. */
+export function markAiFilled(draft, paths) {
+    const d = draft || {};
+    d.aiFilled = [...new Set([...(d.aiFilled || []), ...(paths || [])])];
+    return d.aiFilled;
+}
+
+/** True when this value is currently the AI's rather than the player's. */
+export function isAiFilled(draft, path) {
+    return (draft?.aiFilled || []).includes(path);
+}
+
+/**
+ * Marks a path as the player's. Called from every input handler on the fill
+ * steps, so touching an AI value claims it and future regenerations leave it be.
+ */
+export function claimField(draft, path) {
+    const d = draft || {};
+    if (!d.aiFilled?.length) return;
+    d.aiFilled = d.aiFilled.filter(p => p !== path);
+}
+
+/** The AI-filled paths belonging to one step. */
+export function aiFilledPaths(draft, section) {
+    return (draft?.aiFilled || []).filter(p => pathSection(p) === section);
+}
+
+/** Empties one path back to its unset form, per the container it lives in. */
+function resetDraftPath(draft, path) {
+    const sel = draft.selections || (draft.selections = emptySelections());
+    const app = draft.appearance || (draft.appearance = {});
+    const dot = String(path).indexOf('.');
+    const head = dot === -1 ? String(path) : String(path).slice(0, dot);
+    const tail = dot === -1 ? '' : String(path).slice(dot + 1);
+    switch (head) {
+        case 'modifiers': case 'blanks': case 'explanations':
+            if (sel[head]) delete sel[head][tail];
+            break;
+        // Cleared to '' rather than deleted: the wizard's selects read these keys
+        // directly and validateDraft reports them as unset either way.
+        case 'nation': if (sel.nation) sel.nation[tail] = ''; break;
+        case 'pursuer': if (sel.pursuer) sel.pursuer[tail] = ''; break;
+        case 'vibes': sel.vibes = []; break;
+        case 'vibeSub': sel.vibeSub = null; break;
+        case 'appearance': delete app[tail]; break;
+        case 'intimate': if (app.intimate) delete app.intimate[tail]; break;
+        default: break;
+    }
+}
+
+/**
+ * Returns one step's AI-proposed values to "unset" and forgets them, so the
+ * next fill pass sees genuine blanks. The player's own values are untouched —
+ * they were never in `aiFilled` to begin with.
+ * @returns {number} how many paths were cleared
+ */
+export function clearAiValues(draft, section) {
+    const d = draft || {};
+    const paths = aiFilledPaths(d, section);
+    for (const p of paths) resetDraftPath(d, p);
+    d.aiFilled = (d.aiFilled || []).filter(p => !paths.includes(p));
+    return paths.length;
 }
 
 /**
@@ -445,6 +534,8 @@ Setting anchors and world canon are background the world contains — not a menu
 /** Per-prompt tails appended to ANTI_GENERIC_DIRECTIVE. */
 export const ANTI_GENERIC_TAILS = Object.freeze({
     profile: 'For this task: the player selections below are the established fiction. The setting anchors are not.',
+    detail: 'For this task: fill the gaps this particular character leaves, not the gaps this origin usually leaves. Every choice you make has to follow from what the player already set.',
+    appearance: "For this task: this character's history, nation and origin are already fixed below — the descriptors you propose have to look like they belong to that person, not to a default member of their race.",
     opening: "For this task: open on this character's actual situation as the profile describes it — not on a scene this genre usually opens with.",
     stats: "For this task: gear and abilities must trace to this character's history, nation, and origin — not to a default loadout for their class.",
     worldArc: 'For this task: the milestone chain must follow from the seed material below. Do not fall back to an escalating-ancient-evil shape unless the seed material actually points there.',
@@ -569,6 +660,33 @@ export function checkRaceExclusivity(profile, raceId) {
 }
 
 /**
+ * Descriptor proposals are only accepted for fields the player left blank.
+ * Anything else is the model editing a choice it was told to honor, and a wrong
+ * id would be dropped silently by mergeAppearance — so both fail the pass and
+ * get retried.
+ *
+ * Shared by the full-profile validator and the Appearance step's fill pass so
+ * the two can't drift on what a legal proposal is.
+ *
+ * @param {object|null|undefined} filled - {fieldId: proposed value}; absent is fine
+ * @param {Array<{id: string}>} fields - APPEARANCE_FIELDS or INTIMATE_FIELDS
+ * @param {Set<string>} [blanks] - ids the player left unset; omit to skip the check
+ * @param {string} [label] - key name used in the error text
+ * @returns {string[]} errors (empty = clean)
+ */
+export function validateFieldProposals(filled, fields, blanks, label = 'filled') {
+    if (filled === undefined || filled === null) return [];
+    if (typeof filled !== 'object' || Array.isArray(filled)) return [`${label} must be an object.`];
+    const errors = [];
+    for (const [id, value] of Object.entries(filled)) {
+        if (!fields.some(f => f.id === id)) { errors.push(`${label}.${id} is not an appearance field id.`); continue; }
+        if (typeof value !== 'string' || !value.trim()) errors.push(`${label}.${id} must be a non-empty string.`);
+        if (blanks && !blanks.has(id)) errors.push(`${label}.${id} was filled in by the player — never restate or revise it.`);
+    }
+    return errors;
+}
+
+/**
  * All-errors validator for the AI-generated origin profile.
  * @param {object} profile
  * @param {object} originDef
@@ -596,21 +714,8 @@ export function validateOriginProfile(profile, originDef, raceId, blankIds) {
     reqStr(p, 'backstory');
     if (typeof p.appearanceNotes !== 'string') errors.push('appearanceNotes must be a string.');
     reqStr(p, 'appearanceSummary');
-    // Proposals are only accepted for fields the player left blank. Anything else
-    // is the model editing a choice it was told to honor, and a wrong id would be
-    // dropped silently by mergeAppearance — so both fail the pass and get retried.
-    const checkFilled = (key, fields, blanks) => {
-        const filled = p[key];
-        if (filled === undefined || filled === null) return;
-        if (typeof filled !== 'object' || Array.isArray(filled)) { errors.push(`${key} must be an object.`); return; }
-        for (const [id, value] of Object.entries(filled)) {
-            if (!fields.some(f => f.id === id)) { errors.push(`${key}.${id} is not an appearance field id.`); continue; }
-            if (typeof value !== 'string' || !value.trim()) errors.push(`${key}.${id} must be a non-empty string.`);
-            if (blanks && !blanks.has(id)) errors.push(`${key}.${id} was filled in by the player — never restate or revise it.`);
-        }
-    };
-    checkFilled('appearanceFilled', APPEARANCE_FIELDS, blankIds?.appearance);
-    checkFilled('intimateFilled', INTIMATE_FIELDS, blankIds?.intimate);
+    errors.push(...validateFieldProposals(p.appearanceFilled, APPEARANCE_FIELDS, blankIds?.appearance, 'appearanceFilled'));
+    errors.push(...validateFieldProposals(p.intimateFilled, INTIMATE_FIELDS, blankIds?.intimate, 'intimateFilled'));
     if (!p.socialLever || typeof p.socialLever !== 'object') errors.push('Missing socialLever object.');
     else { reqStr(p.socialLever, 'text', 'socialLever.text'); reqStr(p.socialLever, 'legibleTo', 'socialLever.legibleTo'); }
     if (!p.personalLever || typeof p.personalLever !== 'object') errors.push('Missing personalLever object.');
@@ -882,7 +987,15 @@ export function writeOriginToMemo(memoText, originBlock) {
 
 // ── Prompt builders ──────────────────────────────────────────────────────────
 
-function selectionSummary(draft, originDef) {
+/**
+ * The complete draft rendered for a generation prompt, with every unset field
+ * carrying an explicit `(unset — propose …)` marker.
+ *
+ * Exported because the two step-level fill passes need exactly this and nothing
+ * else: the marked-up summary already names every field they are allowed to
+ * touch, so they cannot drift from what the profile pass would have filled.
+ */
+export function selectionSummary(draft, originDef) {
     const sel = draft.selections || emptySelections();
     const race = RACES_BY_ID[draft.raceId];
     const lines = [];
@@ -1004,6 +1117,336 @@ ${ORIGIN_PROFILE_SCHEMA_SPEC}
 Output ONLY the profile JSON in one fenced \`\`\`json block.`;
     const user = `PLAYER SELECTIONS\n\n${selectionSummary(draft, originDef)}`;
     return [{ role: 'system', content: system }, { role: 'user', content: user }];
+}
+
+// ── Step-level AI fill (Origin Details) ──────────────────────────────────────
+
+/**
+ * Every Origin Details field the player has left unset, as dotted paths.
+ *
+ * One definition serving three callers — the prompt (what to ask for), the
+ * validator (what a proposal may touch) and the wizard (whether to offer the
+ * button at all) — so none of them can disagree about what counts as blank.
+ *
+ * Optional modifiers are deliberately excluded: unset there means "off", which
+ * is a choice, not a gap.
+ *
+ * @returns {Set<string>}
+ */
+export function detailBlankPaths(draft, originDef) {
+    const d = draft || {};
+    const sel = d.selections || emptySelections();
+    const paths = new Set();
+    if (!originDef) return paths;
+
+    for (const m of modifiersForContext(originDef, { raceId: d.raceId, nsfw: !!d.nsfw })) {
+        if (!m.optional && !sel.modifiers?.[m.id]) paths.add(`modifiers.${m.id}`);
+    }
+    for (const b of originDef.blanks || []) {
+        if (!(sel.blanks?.[b.id] || '').trim()) paths.add(`blanks.${b.id}`);
+    }
+    if (!(sel.nation?.name || '').trim()) paths.add('nation.name');
+    if (!GOVERNMENT_TYPES.some(g => g.id === sel.nation?.governmentId)) paths.add('nation.governmentId');
+    if (!ENVIRONMENTS.some(e => e.id === sel.nation?.environmentId)) paths.add('nation.environmentId');
+    if (!RACES_BY_ID[sel.nation?.majorityRaceId]) paths.add('nation.majorityRaceId');
+    if (!(sel.vibes || []).length) {
+        paths.add('vibes');
+        // The sub-option is only meaningful once Death-focused is among the
+        // vibes, which the same pass may be about to choose.
+        paths.add('vibeSub');
+    } else if (sel.vibes.includes('death') && !sel.vibeSub) {
+        paths.add('vibeSub');
+    }
+    if (pursuerNeeded(originDef, sel)) {
+        const p = sel.pursuer || {};
+        if (!(p.identity || '').trim()) paths.add('pursuer.identity');
+        if (!(p.leverage || '').trim()) paths.add('pursuer.leverage');
+        if (!PURSUER_BLOCK.affiliations.some(x => x.id === p.affiliation)) paths.add('pursuer.affiliation');
+        if (!PURSUER_BLOCK.motives.some(x => x.id === p.motive)) paths.add('pursuer.motive');
+        if (!PURSUER_BLOCK.resources.some(x => x.id === p.resources)) paths.add('pursuer.resources');
+        if (!PURSUER_BLOCK.awareness.some(x => x.id === p.awareness)) paths.add('pursuer.awareness');
+    }
+    for (const r of evaluateIncompatibilities(originDef, sel)) {
+        if (r.level === 'soft' && !r.satisfied) paths.add(`explanations.${r.id}`);
+    }
+    return paths;
+}
+
+/** Prose schema for the Origin Details fill, in the examples-not-JSONSchema style. */
+const DETAIL_FILL_SCHEMA_SPEC = `Return a JSON object containing ONLY the fields listed as REQUESTED below — omit every key you were not asked for. Shape:
+
+{
+  "modifiers": { "<modifierId>": "<optionId>" },
+  "blanks": { "<blankId>": "1-3 sentences" },
+  "nation": { "name": "…", "governmentId": "<id>", "environmentId": "<id>", "majorityRaceId": "<raceId>" },
+  "vibes": ["<vibeId>"],
+  "vibeSub": "reverence" OR "bringing_death",
+  "pursuer": { "identity": "…", "affiliation": "<id>", "motive": "<id>", "resources": "<id>", "awareness": "<id>", "leverage": "…" },
+  "explanations": { "<ruleId>": "1-2 sentences reconciling the two choices" }
+}
+
+Every dropdown value MUST be one of the ids offered for that field — never a label, never an id you invented, and never an option marked 🚫 (those are blocked by the player's other choices). Free text is written in-fiction, in the campaign's register, with no rules vocabulary. Nation names follow the majority race's naming conventions.`;
+
+/**
+ * Messages for the Origin Details fill pass (sendAgentTurn shape). Asks only
+ * for what the player left unset, and says so field by field.
+ */
+export function buildDetailFillPrompt(draft, originDef) {
+    const paths = detailBlankPaths(draft, originDef);
+    const catalog = [];
+    const mods = modifiersForContext(originDef, { raceId: draft.raceId, nsfw: !!draft.nsfw });
+    const sel = draft.selections || emptySelections();
+    for (const m of mods) {
+        if (!paths.has(`modifiers.${m.id}`)) continue;
+        const opts = m.options.map(o => {
+            const blocked = optionBlockReason(originDef, sel, m.id, o.id);
+            return `${o.id} (${o.label})${blocked ? ' 🚫 BLOCKED' : ''}`;
+        }).join('; ');
+        catalog.push(`modifiers.${m.id} — ${m.label}. Options: ${opts}`);
+    }
+    for (const b of originDef.blanks || []) {
+        if (paths.has(`blanks.${b.id}`)) catalog.push(`blanks.${b.id} — ${b.label}. ${b.hint}`);
+    }
+    if (paths.has('nation.name')) catalog.push('nation.name — the nation\'s name.');
+    if (paths.has('nation.governmentId')) catalog.push(`nation.governmentId — Options: ${GOVERNMENT_TYPES.map(g => `${g.id} (${g.label})`).join('; ')}`);
+    if (paths.has('nation.environmentId')) catalog.push(`nation.environmentId — Options: ${ENVIRONMENTS.map(e => `${e.id} (${e.label})`).join('; ')}`);
+    if (paths.has('nation.majorityRaceId')) catalog.push(`nation.majorityRaceId — Options: ${RACES.map(r => `${r.id} (${r.name})`).join('; ')}`);
+    if (paths.has('vibes')) {
+        catalog.push(`vibes — pick 1 or 2. Options: ${vibesForNsfw(draft.nsfw).map(v => `${v.id} (${v.label}: ${v.summary})`).join('; ')}. ${VIBE_PAIR_GUIDANCE}`);
+    }
+    if (paths.has('vibeSub')) catalog.push('vibeSub — required ONLY if "death" is among the culture vibes: "reverence" or "bringing_death". Omit otherwise.');
+    for (const f of ['identity', 'affiliation', 'motive', 'resources', 'awareness', 'leverage']) {
+        if (!paths.has(`pursuer.${f}`)) continue;
+        const lists = {
+            affiliation: PURSUER_BLOCK.affiliations, motive: PURSUER_BLOCK.motives,
+            resources: PURSUER_BLOCK.resources, awareness: PURSUER_BLOCK.awareness,
+        };
+        catalog.push(lists[f]
+            ? `pursuer.${f} — Options: ${lists[f].map(x => `${x.id} (${x.label})`).join('; ')}`
+            : (f === 'identity'
+                ? 'pursuer.identity — a named individual, small group, or organized body.'
+                : 'pursuer.leverage — something concrete they hold over the character beyond force.'));
+    }
+    for (const r of evaluateIncompatibilities(originDef, sel)) {
+        if (paths.has(`explanations.${r.id}`)) catalog.push(`explanations.${r.id} — reconcile: ${r.message}`);
+    }
+
+    const system = `You are the character-origin compiler for a ${ORIGINS_SETTING.name} campaign. ${ORIGINS_SETTING.blurb}
+
+Setting anchors (fixed canon): ${anchorsForDraft(draft).map(a => `${a.name} — ${a.description}`).join(' | ')}
+
+The player is partway through building a character and has asked you to fill in the choices they left open. Everything they HAVE chosen is fixed — never contradict, revise or "improve" it. Fill only the REQUESTED fields, and make them cohere with each other and with what is already set.
+${draft.nsfw ? 'This campaign has mature content enabled.' : 'This campaign is SFW: no sexual content anywhere.'}
+${antiGenericBlock('detail')}
+${DETAIL_FILL_SCHEMA_SPEC}
+
+Output ONLY the JSON in one fenced \`\`\`json block.`;
+    const user = `CURRENT SELECTIONS\n\n${selectionSummary(draft, originDef)}\n\nREQUESTED FIELDS (fill exactly these, nothing else)\n${catalog.map(c => `- ${c}`).join('\n')}`;
+    return [{ role: 'system', content: system }, { role: 'user', content: user }];
+}
+
+/**
+ * All-errors validator for an Origin Details fill, in the shape of
+ * validateOriginProfile: it reports everything wrong at once so the retry loop
+ * can hand the model a complete list.
+ *
+ * @param {object} fill - the parsed JSON
+ * @param {object} originDef
+ * @param {object} draft
+ * @returns {{ok: boolean, errors: string[]}}
+ */
+export function validateDetailFill(fill, originDef, draft) {
+    if (!fill || typeof fill !== 'object' || Array.isArray(fill)) {
+        return { ok: false, errors: ['The fill is not a JSON object.'] };
+    }
+    const errors = [];
+    const paths = detailBlankPaths(draft, originDef);
+    const sel = draft?.selections || emptySelections();
+
+    /** A proposal is legal only for a field the player actually left open. */
+    const gate = (path) => {
+        if (paths.has(path)) return true;
+        errors.push(`${path} is already set by the player — never restate or revise it.`);
+        return false;
+    };
+    const reqText = (path, value) => {
+        if (typeof value !== 'string' || !value.trim()) errors.push(`${path} must be a non-empty string.`);
+    };
+    const reqId = (path, value, list, what) => {
+        if (!list.some(x => x.id === value)) errors.push(`${path}: "${value}" is not a valid ${what} id.`);
+    };
+
+    for (const [id, optId] of Object.entries(fill.modifiers || {})) {
+        if (!gate(`modifiers.${id}`)) continue;
+        const m = (originDef?.modifiers || []).find(x => x.id === id);
+        if (!m) { errors.push(`modifiers.${id} is not a modifier of this origin.`); continue; }
+        if (!m.options.some(o => o.id === optId)) { errors.push(`modifiers.${id}: "${optId}" is not one of its options.`); continue; }
+        const blocked = optionBlockReason(originDef, sel, id, optId);
+        if (blocked) errors.push(`modifiers.${id}: "${optId}" is blocked — ${blocked}`);
+    }
+    for (const [id, text] of Object.entries(fill.blanks || {})) {
+        if (!gate(`blanks.${id}`)) continue;
+        if (!(originDef?.blanks || []).some(b => b.id === id)) { errors.push(`blanks.${id} is not a blank of this origin.`); continue; }
+        reqText(`blanks.${id}`, text);
+    }
+    for (const [key, value] of Object.entries(fill.nation || {})) {
+        if (!gate(`nation.${key}`)) continue;
+        if (key === 'name') reqText('nation.name', value);
+        else if (key === 'governmentId') reqId('nation.governmentId', value, GOVERNMENT_TYPES, 'government');
+        else if (key === 'environmentId') reqId('nation.environmentId', value, ENVIRONMENTS, 'environment');
+        else if (key === 'majorityRaceId') reqId('nation.majorityRaceId', value, RACES, 'race');
+        else errors.push(`nation.${key} is not a fillable field.`);
+    }
+    if (fill.vibes !== undefined && gate('vibes')) {
+        if (!Array.isArray(fill.vibes)) errors.push('vibes must be an array of 1-2 vibe ids.');
+        else {
+            const allowed = vibesForNsfw(draft?.nsfw).map(v => v.id);
+            for (const v of fill.vibes) if (!allowed.includes(v)) errors.push(`vibes: "${v}" is not selectable on this campaign.`);
+        }
+    }
+    if (fill.vibeSub !== undefined && fill.vibeSub !== null) gate('vibeSub');
+    // Count/pairing/sub-option rules are the wizard's own; run them on the
+    // result rather than duplicating them here.
+    const nextVibes = fill.vibes !== undefined ? fill.vibes : sel.vibes;
+    const nextSub = fill.vibeSub !== undefined ? fill.vibeSub : sel.vibeSub;
+    if (Array.isArray(nextVibes)) errors.push(...validateVibes(nextVibes, nextSub));
+
+    for (const [key, value] of Object.entries(fill.pursuer || {})) {
+        if (!gate(`pursuer.${key}`)) continue;
+        if (key === 'identity' || key === 'leverage') reqText(`pursuer.${key}`, value);
+        else if (key === 'affiliation') reqId('pursuer.affiliation', value, PURSUER_BLOCK.affiliations, 'affiliation');
+        else if (key === 'motive') reqId('pursuer.motive', value, PURSUER_BLOCK.motives, 'motive');
+        else if (key === 'resources') reqId('pursuer.resources', value, PURSUER_BLOCK.resources, 'capability');
+        else if (key === 'awareness') reqId('pursuer.awareness', value, PURSUER_BLOCK.awareness, 'awareness');
+        else errors.push(`pursuer.${key} is not a fillable field.`);
+    }
+    for (const [id, text] of Object.entries(fill.explanations || {})) {
+        if (!gate(`explanations.${id}`)) continue;
+        reqText(`explanations.${id}`, text);
+    }
+
+    // Individually-legal picks can still combine into a blocked character, so
+    // the merged result goes through the same hard-rule gate the wizard uses.
+    if (!errors.length) {
+        const { selections } = applyDetailFill(draft, originDef, fill);
+        for (const r of evaluateIncompatibilities(originDef, selections)) {
+            if (r.level === 'hard' && !r.satisfied) errors.push(`These picks combine into a blocked character: ${r.message}`);
+        }
+    }
+    return { ok: errors.length === 0, errors };
+}
+
+/**
+ * Folds a validated fill into the draft's selections. The player always wins:
+ * only paths still listed by detailBlankPaths are written, so a value they set
+ * is never overwritten however the model answered — the same contract
+ * mergeAppearance enforces on descriptors.
+ *
+ * @returns {{selections: object, paths: string[]}} a new selections object and
+ *   the paths written, ready for markAiFilled().
+ */
+export function applyDetailFill(draft, originDef, fill) {
+    const base = draft?.selections || emptySelections();
+    const sel = JSON.parse(JSON.stringify(base));
+    const open = detailBlankPaths(draft, originDef);
+    const written = [];
+    const put = (path, apply) => {
+        if (!open.has(path)) return;
+        apply();
+        written.push(path);
+    };
+
+    for (const [id, optId] of Object.entries(fill?.modifiers || {})) {
+        put(`modifiers.${id}`, () => { sel.modifiers[id] = optId; });
+    }
+    for (const [id, text] of Object.entries(fill?.blanks || {})) {
+        put(`blanks.${id}`, () => { sel.blanks[id] = text; });
+    }
+    for (const [key, value] of Object.entries(fill?.nation || {})) {
+        put(`nation.${key}`, () => { sel.nation[key] = value; });
+    }
+    if (Array.isArray(fill?.vibes)) put('vibes', () => { sel.vibes = [...fill.vibes]; });
+    if (fill?.vibeSub) put('vibeSub', () => { sel.vibeSub = fill.vibeSub; });
+    if (fill?.pursuer) {
+        if (!sel.pursuer) sel.pursuer = { identity: '', affiliation: '', motive: '', resources: '', awareness: '', leverage: '' };
+        for (const [key, value] of Object.entries(fill.pursuer)) {
+            put(`pursuer.${key}`, () => { sel.pursuer[key] = value; });
+        }
+    }
+    for (const [id, text] of Object.entries(fill?.explanations || {})) {
+        put(`explanations.${id}`, () => { sel.explanations[id] = text; });
+    }
+    // A sub-option only survives while Death-focused is actually selected.
+    if (!sel.vibes.includes('death')) sel.vibeSub = null;
+    return { selections: sel, paths: written };
+}
+
+// ── Step-level AI fill (Appearance) ──────────────────────────────────────────
+
+/**
+ * Messages for the Appearance fill pass (sendAgentTurn shape). Returns the same
+ * {appearanceFilled, intimateFilled} shape the profile pass uses, so
+ * mergeAppearance applies it unchanged.
+ */
+export function buildAppearanceFillPrompt(draft, originDef) {
+    const blanks = appearanceBlankIds(draft.appearance);
+    const race = RACES_BY_ID[draft.raceId];
+    const list = (fields, set) => fields.filter(f => set.has(f.id))
+        .map(f => `- ${f.id} — ${f.label}. ${f.hint}`).join('\n');
+    const wanted = [
+        blanks.appearance.size ? `Base descriptors:\n${list(APPEARANCE_FIELDS, blanks.appearance)}` : '',
+        (draft.nsfw && blanks.intimate.size) ? `Intimate descriptors:\n${list(INTIMATE_FIELDS, blanks.intimate)}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    const system = `You are the character-origin compiler for a ${ORIGINS_SETTING.name} campaign. ${ORIGINS_SETTING.blurb}
+
+Setting anchors (fixed canon): ${anchorsForDraft(draft).map(a => `${a.name} — ${a.description}`).join(' | ')}
+
+The player has finished their character's origin and left some physical descriptors blank for you. Propose a value for EVERY requested field and nothing else — never restate, revise or "improve" a descriptor they typed, and never invent a field id.
+${race?.appearance ? `Race appearance reference (your proposals must fit this): ${race.name} — ${race.appearance}` : ''}
+Proposals must read like this specific character: their origin, nation, modifiers and story blanks are all below, and a life like that leaves marks. Keep each value short — a phrase or one sentence, the way the player would have typed it, not prose.
+${draft.nsfw ? 'This campaign has mature content enabled; intimate descriptors are plain reference data, stated so the narrator never improvises anatomy. State them factually — do not write a description or any prose around them.' : 'This campaign is SFW: propose base descriptors only, and keep every value non-explicit.'}
+${antiGenericBlock('appearance')}
+
+Return a JSON object of exactly this shape, omitting a key entirely when nothing was requested for it:
+
+{
+  "appearanceFilled": { "<fieldId>": "proposed value" },
+  "intimateFilled": { "<fieldId>": "proposed value" }
+}
+
+Output ONLY the JSON in one fenced \`\`\`json block.`;
+    const user = `CURRENT SELECTIONS\n\n${selectionSummary(draft, originDef)}\n\nREQUESTED FIELDS (fill exactly these, nothing else)\n\n${wanted || '(none)'}`;
+    return [{ role: 'system', content: system }, { role: 'user', content: user }];
+}
+
+/**
+ * All-errors validator for an Appearance fill. Shares validateFieldProposals
+ * with the profile validator, so "proposals are for blanks only" means the same
+ * thing on both paths.
+ *
+ * @param {object} fill - {appearanceFilled, intimateFilled}
+ * @param {{appearance: Set<string>, intimate: Set<string>}} blankIds
+ * @param {boolean} nsfw
+ * @returns {{ok: boolean, errors: string[]}}
+ */
+export function validateAppearanceFill(fill, blankIds, nsfw) {
+    if (!fill || typeof fill !== 'object' || Array.isArray(fill)) {
+        return { ok: false, errors: ['The fill is not a JSON object.'] };
+    }
+    const errors = [
+        ...validateFieldProposals(fill.appearanceFilled, APPEARANCE_FIELDS, blankIds?.appearance, 'appearanceFilled'),
+        ...validateFieldProposals(fill.intimateFilled, INTIMATE_FIELDS, blankIds?.intimate, 'intimateFilled'),
+    ];
+    if (!nsfw && Object.keys(fill.intimateFilled || {}).length) {
+        errors.push('intimateFilled must be omitted on an SFW campaign.');
+    }
+    // Silence is a failure here: the whole point of the button is that the
+    // requested blanks come back filled.
+    const asked = (blankIds?.appearance?.size || 0) + (nsfw ? (blankIds?.intimate?.size || 0) : 0);
+    const got = Object.keys(fill.appearanceFilled || {}).length + Object.keys(fill.intimateFilled || {}).length;
+    if (asked && !got) errors.push('No proposals were returned — propose a value for every requested field.');
+    return { ok: errors.length === 0, errors };
 }
 
 /**
