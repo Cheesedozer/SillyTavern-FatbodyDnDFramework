@@ -6,8 +6,9 @@
  * blocks, soft tensions requiring explanations), the Lever Guarantee check
  * (spec §0.2), draft randomization, the origin-profile JSON contract
  * (schema spec + all-errors validator, modeled on foundation.js's
- * validateFoundation), the [ORIGIN] memo-block serializer, and the prompt
- * builders (profile generation, D&D stat generation, first message).
+ * validateFoundation), the [ORIGIN] memo-block serializer, the origins*
+ * connection remap, and the prompt builders (profile generation, D&D stat
+ * generation, first message).
  *
  * Pure module: no DOM, no SillyTavern context, no settings reads — everything
  * is parameterized so it runs unchanged under `node --test`.
@@ -455,6 +456,39 @@ export function antiGenericBlock(kind) {
     return tail ? `${ANTI_GENERIC_DIRECTIVE}\n${tail}` : ANTI_GENERIC_DIRECTIVE;
 }
 
+// ── Connection ───────────────────────────────────────────────────────────────
+
+/**
+ * Remaps the origins* settings namespace onto the shape sendStateRequest and
+ * sendAgentTurn expect — the exact pattern of router.js's routerSettings and
+ * world-progression.js's worldProgSettings.
+ *
+ * Every LLM call the creation flow makes goes through this, so the whole flow
+ * can sit on a strong creative model while the State Tracker — which runs on
+ * every turn — stays wherever the user put it. `originsConnectionSource`
+ * defaults to "default", i.e. ST's active API via generateRaw({ bypassAll:
+ * true }), which is what these calls used before Origins had its own block.
+ *
+ * @param {object} settings - raw extension settings
+ */
+export function originsSettings(settings) {
+    const s = settings || {};
+    return {
+        ...s,
+        connectionSource: s.originsConnectionSource || 'default',
+        connectionProfileId: s.originsConnectionProfileId,
+        completionPresetId: s.originsCompletionPresetId,
+        ollamaUrl: s.originsOllamaUrl,
+        ollamaModel: s.originsOllamaModel,
+        openaiUrl: s.originsOpenaiUrl,
+        openaiKey: s.originsOpenaiKey,
+        openaiModel: s.originsOpenaiModel,
+        maxTokens: (s.originsMaxTokens !== undefined && s.originsMaxTokens !== null && s.originsMaxTokens !== '')
+            ? Number(s.originsMaxTokens)
+            : 0,
+    };
+}
+
 // ── Origin profile JSON contract (spec §6) ───────────────────────────────────
 
 /**
@@ -482,9 +516,8 @@ The origin profile JSON object MUST have exactly this shape:
   "backstory": "3-6 paragraphs of narrative prose synthesized from the blanks and modifiers",
   "appearanceNotes": "1 short paragraph: origin-relevant physical traits ONLY (decay state, curse marks, artifact fusion) — distinct from the base descriptors below",
   "appearanceFilled": { "<fieldId>": "proposed value" },
-  "appearanceProse": "2-4 sentences describing how this character looks, in third person",
+  "appearanceSummary": "1-2 sentences: how this character reads at a glance, in third person",
   "intimateFilled": { "<fieldId>": "proposed value" },
-  "intimateProse": "2-3 sentences",
   "socialLever": { "text": "the mark/tell/symbol/reputation", "legibleTo": "who can read it" },
   "personalLever": { "text": "the active clock, cost, curse, dependency, or leverage" },
   "pursuer": null OR {
@@ -500,7 +533,7 @@ The origin profile JSON object MUST have exactly this shape:
 
 Constraints: every string field non-empty unless explicitly allowed empty above. backstory must be consistent with EVERY selected modifier and blank — contradicting a selection is a validation failure. questSeeds are directions, not pre-written quests; they surface lazily in play.
 
-APPEARANCE. The player's selections list every descriptor field with its [fieldId]. "appearanceFilled" holds one entry for EVERY field marked (unset) — keyed by that exact fieldId — and NOTHING else: never restate, revise, or "improve" a value the player typed, and never invent a fieldId that wasn't listed. Proposals must fit the race appearance reference and agree with the backstory. "appearanceProse" then describes the finished character — the player's values and yours together — as flowing prose: no labels, no lists, no field names, and non-explicit no matter the campaign rating. It is reference for describing the character in play, NOT a paragraph to quote back; write it so a narrator can draw on it without ever reciting it. "intimateFilled" and "intimateProse" follow the same rules and exist ONLY when intimate details were listed in the selections — omit both keys entirely otherwise.
+APPEARANCE. The player's selections list every descriptor field with its [fieldId]. The descriptive work happens in "appearanceFilled", which holds one entry for EVERY field marked (unset) — keyed by that exact fieldId — and NOTHING else: never restate, revise, or "improve" a value the player typed, and never invent a fieldId that wasn't listed. Proposals must fit the race appearance reference and agree with the backstory. "appearanceSummary" is then a BRIEF at-a-glance line — one or two sentences, no more — drawn from the finished picture (the player's values and yours together): no labels, no lists, no field names, and non-explicit no matter the campaign rating. It is not a substitute for the field data and not a paragraph to quote back; the fields carry the detail, the summary just says how this character reads on sight. "intimateFilled" follows the same rules as "appearanceFilled" and exists ONLY when intimate details were listed in the selections — omit the key entirely otherwise. There is NO intimate prose field: never write a prose description of intimate details anywhere in this profile, including in "appearanceSummary", "appearanceNotes", or the backstory.
 
 VOICE — who reads which field. "socialLever.text", "personalLever.text", "currentGoal", and "personalityVoice" are displayed to the PLAYER in their character sheet. Write them in-fiction, naming the thing as the character themselves would experience and describe it. Do NOT use system vocabulary in them — no "social lever", no "personal lever", no "block", no "modifier", no rules-speak, and no naming of framework machinery. "A debt-mark burned under her palm-scales that any Caldian factor can read" is correct; "the Debt-Mark Block, a mechanic acting as her personal lever" is not. Mechanical and narrator-facing framing belongs in "questSeeds", which the player never sees.
 
@@ -562,7 +595,7 @@ export function validateOriginProfile(profile, originDef, raceId, blankIds) {
     }
     reqStr(p, 'backstory');
     if (typeof p.appearanceNotes !== 'string') errors.push('appearanceNotes must be a string.');
-    reqStr(p, 'appearanceProse');
+    reqStr(p, 'appearanceSummary');
     // Proposals are only accepted for fields the player left blank. Anything else
     // is the model editing a choice it was told to honor, and a wrong id would be
     // dropped silently by mergeAppearance — so both fail the pass and get retried.
@@ -669,13 +702,33 @@ export function mergeAppearance(appearance, filled, intimateFilled, nsfw = false
 
 /**
  * Compact "Skin: …; Height: …" summary of the base appearance descriptors.
- * Superseded by `appearanceProse` for profiles generated since prose landed —
- * retained as the fallback for campaigns committed before it.
+ * Superseded by `appearanceSummary` (and, for the campaigns committed in
+ * between, the longer `appearanceProse` it replaced) — retained as the last
+ * fallback for campaigns committed before either existed.
  */
 export function formatAppearanceLine(appearance) {
     const app = appearance || {};
     return APPEARANCE_FIELDS.map(f => (app[f.id] || '').trim() ? `${f.label}: ${String(app[f.id]).trim()}` : null)
         .filter(Boolean).join('; ');
+}
+
+/**
+ * The short appearance line for a profile, across all three generations of the
+ * contract: today's `appearanceSummary`, the longer `appearanceProse` it
+ * replaced, and the `;`-joined descriptor list from before either existed.
+ *
+ * Shared by the memo block, the opening prompt and the lorebook writer so the
+ * three can't drift on which campaigns still render a description.
+ *
+ * @param {object} profile - a generated or committed profile; `profile.appearance`
+ *   (present on st.origin.committed) feeds the last fallback.
+ * @returns {string} '' when the profile carries nothing to show
+ */
+export function resolveAppearanceSummary(profile) {
+    const p = profile || {};
+    return (p.appearanceSummary || '').trim()
+        || (p.appearanceProse || '').trim()
+        || formatAppearanceLine(p.appearance);
 }
 
 /**
@@ -696,13 +749,12 @@ export function buildOriginMemoBlock(profile, originDef) {
         `Origin: ${p.origin}${p.title ? ` — ${p.title}` : ''} (${ORIGINS_SETTING.name})`,
         `Race: ${p.race}`,
     ];
-    // Prose when the generator wrote it; the old `;`-joined descriptor list for
-    // campaigns committed before prose existed, which must keep rendering rather
-    // than silently losing their description. `intimateProse` is deliberately NOT
-    // here: this block is the always-on narrator context as well as the HUD card,
-    // so explicit detail would ride every turn and sit permanently on screen. It
-    // lives in the keyword-triggered lorebook entry instead.
-    const appearanceLine = (p.appearanceProse || '').trim() || formatAppearanceLine(p.appearance);
+    // Deliberately the short line, not the full description: this block is the
+    // always-on narrator context as well as the HUD card, so anything here
+    // rides every turn and sits permanently on screen. The field-by-field
+    // description — and every intimate descriptor — lives in the
+    // keyword-triggered lorebook entries instead.
+    const appearanceLine = resolveAppearanceSummary(p);
     if (appearanceLine) lines.push(`Appearance: ${appearanceLine}`);
     lines.push(
         `Social Lever: ${p.socialLever.text} (legible to: ${p.socialLever.legibleTo})`,
@@ -987,7 +1039,7 @@ export function buildFirstMessagePrompt(profile, frameId, nsfw) {
 
 THE CHARACTER
 ${profile.name}${profile.title ? `, ${profile.title}` : ''} — ${profile.race}, ${profile.origin}.
-${(profile.appearanceProse || '').trim() ? `Appearance: ${profile.appearanceProse.trim()}\n` : ''}Backstory: ${profile.backstory}
+${resolveAppearanceSummary(profile) ? `Appearance: ${resolveAppearanceSummary(profile)}\n` : ''}Backstory: ${profile.backstory}
 Social lever: ${profile.socialLever.text} (legible to: ${profile.socialLever.legibleTo})
 Personal lever: ${profile.personalLever.text}
 Current goal: ${profile.currentGoal}

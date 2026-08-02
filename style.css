@@ -1135,12 +1135,6 @@
     white-space: normal;
 }
 
-.rt-card-prose-nsfw {
-    border-left: 2px solid var(--rt-accent);
-    padding-left: 8px;
-    opacity: 0.92;
-}
-
 .rt-card-line {
     color: inherit;
     font-size: 0.95em;

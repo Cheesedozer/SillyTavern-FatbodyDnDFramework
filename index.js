@@ -5864,6 +5864,123 @@ ${resourceList}
                 getSettings().originsNsfwDefault = !!$(this).prop('checked');
                 saveSettings();
             });
+
+            // ── Origins connection (its own model for the whole creation flow) ──
+            // Same wiring as the router and world-progression connection cards.
+            const ogSourceSelect = $('#rpg_tracker_origins_source');
+            const ogProfileGroup = $('#rpg_tracker_origins_profile_group');
+            const ogProfileSelect = $('#rpg_tracker_origins_connection_profile');
+            const ogOllamaGroup = $('#rpg_tracker_origins_ollama_group');
+            const ogOpenaiGroup = $('#rpg_tracker_origins_openai_group');
+
+            function updateOriginsConnectionPanels() {
+                const source = ogSourceSelect.val();
+                ogProfileGroup.toggle(source === 'profile');
+                ogOllamaGroup.toggle(source === 'ollama');
+                ogOpenaiGroup.toggle(source === 'openai');
+            }
+            ogSourceSelect.val(settings.originsConnectionSource || 'default').on('change', function () {
+                settings.originsConnectionSource = $(this).val();
+                updateOriginsConnectionPanels();
+                saveSettings();
+            });
+            setTimeout(updateOriginsConnectionPanels, 100);
+
+            $('#rpg_tracker_origins_ollama_url').val(settings.originsOllamaUrl).on('input', function () {
+                settings.originsOllamaUrl = $(this).val();
+                saveSettings();
+            });
+            const ogOllamaModelSelect = $('#rpg_tracker_origins_ollama_model');
+            ogOllamaModelSelect.val(settings.originsOllamaModel).on('change', function () {
+                settings.originsOllamaModel = $(this).val();
+                saveSettings();
+            });
+            $('#rpg_tracker_origins_ollama_refresh').on('click', async function () {
+                const url = $('#rpg_tracker_origins_ollama_url').val();
+                if (!url) return toastr['info']("Please enter an Ollama URL first.");
+                try {
+                    const models = await fetchOllamaModels(url);
+                    ogOllamaModelSelect.empty().append('<option value="">-- Select Model --</option>');
+                    models.forEach(m => ogOllamaModelSelect.append($('<option></option>').val(m.name).text(m.name)));
+                    ogOllamaModelSelect.val(settings.originsOllamaModel);
+                    toastr['success']("Ollama models updated.");
+                } catch (e) {
+                    toastr['error']("Failed to fetch Ollama models.");
+                }
+            });
+
+            $('#rpg_tracker_origins_openai_url').val(settings.originsOpenaiUrl).on('input', function () {
+                settings.originsOpenaiUrl = $(this).val();
+                saveSettings();
+            });
+            $('#rpg_tracker_origins_openai_key').val(settings.originsOpenaiKey).on('input', function () {
+                settings.originsOpenaiKey = $(this).val();
+                saveSettings();
+            });
+            const ogOpenaiModelSelect = $('#rpg_tracker_origins_openai_model');
+            const ogOpenaiModelManual = $('#rpg_tracker_origins_openai_model_manual');
+            ogOpenaiModelManual.val(settings.originsOpenaiModel || '');
+            ogOpenaiModelSelect.on('change', function () {
+                const val = $(this).val();
+                if (val) { ogOpenaiModelManual.val(''); settings.originsOpenaiModel = String(val); }
+                else settings.originsOpenaiModel = String(ogOpenaiModelManual.val() || '').trim() || '';
+                saveSettings();
+            });
+            ogOpenaiModelManual.on('input', function () {
+                const manual = String($(this).val() || '').trim();
+                if (manual) ogOpenaiModelSelect.val('');
+                settings.originsOpenaiModel = manual || String(ogOpenaiModelSelect.val() || '') || '';
+                saveSettings();
+            });
+            $('#rpg_tracker_origins_openai_refresh').on('click', async function () {
+                const url = $('#rpg_tracker_origins_openai_url').val();
+                const key = $('#rpg_tracker_origins_openai_key').val();
+                if (!url) return toastr['info']("Please enter an Endpoint URL first.");
+                try {
+                    const models = await fetchOpenAIModels(url, key);
+                    ogOpenaiModelSelect.empty().append('<option value="">-- Select Model --</option>');
+                    models.forEach(m => {
+                        const id = typeof m === 'string' ? m : (m.id || m.name);
+                        if (id) ogOpenaiModelSelect.append($('<option></option>').val(id).text(id));
+                    });
+                    ogOpenaiModelSelect.val(settings.originsOpenaiModel);
+                    toastr['success']("Models updated.");
+                } catch (e) {
+                    toastr['warning']("Cannot auto-detect models. Type manually.");
+                }
+            });
+
+            const ogPresetSelect = $('#rpg_tracker_origins_completion_preset');
+            if (ctx.ConnectionManagerRequestService?.handleDropdown) {
+                /** @type {any} */ (ctx.ConnectionManagerRequestService).handleDropdown(ogProfileSelect[0]);
+                ogProfileSelect.val(settings.originsConnectionProfileId || "");
+            } else {
+                getConnectionProfiles().then(profiles => {
+                    ogProfileSelect.empty().append('<option value="">-- No Profile Selected --</option>');
+                    profiles.forEach(p => ogProfileSelect.append($('<option></option>').val(p).text(p)));
+                    ogProfileSelect.val(settings.originsConnectionProfileId || "");
+                });
+            }
+            ogProfileSelect.on('change', function () {
+                settings.originsConnectionProfileId = $(this).val();
+                saveSettings();
+            });
+            if (pm && typeof pm.getAllPresets === 'function') {
+                const presets = pm.getAllPresets();
+                ogPresetSelect.empty().append('<option value="">-- Use Current Settings --</option>');
+                presets.forEach(p => ogPresetSelect.append($('<option></option>').val(p).text(p)));
+                ogPresetSelect.val(settings.originsCompletionPresetId || '');
+            }
+            ogPresetSelect.on('change', function () {
+                settings.originsCompletionPresetId = String($(this).val() || '');
+                saveSettings();
+            });
+
+            $('#rpg_tracker_origins_max_tokens').val(settings.originsMaxTokens ?? 0).on('input', function () {
+                settings.originsMaxTokens = parseInt(String($(this).val() || '')) || 0;
+                saveSettings();
+            });
+
             _syspromptModDefs.forEach(({ key, id }) => {
                 const s = getSettings();
                 const val = s.syspromptModules?.[key] ?? true;

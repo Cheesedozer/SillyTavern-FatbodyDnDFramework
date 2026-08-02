@@ -13,6 +13,7 @@ import {
     leverageMandatory, checkRaceExclusivity, anchorsForDraft, personalLeverFor,
     ANTI_GENERIC_DIRECTIVE, antiGenericBlock,
     appearanceBlankIds, mergeAppearance, APPEARANCE_FIELDS, RACES_BY_ID,
+    originsSettings,
 } from '../origins-engine.js';
 
 /** Deterministic PRNG for reproducible randomization tests. */
@@ -279,6 +280,40 @@ test('validateDraft rejects an illegal race/origin pairing', () => {
     assert.ok(errors.some(e => e.includes('matrix')));
 });
 
+// ── Connection remap ─────────────────────────────────────────────────────────
+
+test('originsSettings: remaps the origins* namespace onto the generic connection-settings shape', () => {
+    const mapped = originsSettings({
+        connectionProfileId: 'tracker-profile',
+        originsConnectionSource: 'openai',
+        originsConnectionProfileId: 'p1',
+        originsCompletionPresetId: 'creative',
+        originsOllamaUrl: 'http://x',
+        originsOllamaModel: 'm',
+        originsOpenaiUrl: 'http://y',
+        originsOpenaiKey: 'k',
+        originsOpenaiModel: 'gpt',
+        originsMaxTokens: 500,
+    });
+    assert.equal(mapped.connectionSource, 'openai');
+    assert.equal(mapped.connectionProfileId, 'p1', "the tracker's profile must not leak through");
+    assert.equal(mapped.completionPresetId, 'creative');
+    assert.equal(mapped.ollamaUrl, 'http://x');
+    assert.equal(mapped.ollamaModel, 'm');
+    assert.equal(mapped.openaiUrl, 'http://y');
+    assert.equal(mapped.openaiKey, 'k');
+    assert.equal(mapped.openaiModel, 'gpt');
+    assert.equal(mapped.maxTokens, 500);
+});
+
+test('originsSettings: defaults connectionSource to "default" and maxTokens to 0 when unset', () => {
+    const mapped = originsSettings({});
+    assert.equal(mapped.connectionSource, 'default');
+    assert.equal(mapped.maxTokens, 0);
+    assert.equal(originsSettings({ originsMaxTokens: '' }).maxTokens, 0);
+    assert.equal(originsSettings(null).connectionSource, 'default');
+});
+
 // ── Profile validation ───────────────────────────────────────────────────────
 
 function sampleProfile() {
@@ -291,7 +326,7 @@ function sampleProfile() {
         },
         secondaryNation: null,
         backstory: 'Long ago...', appearanceNotes: 'A brand on the wrist.',
-        appearanceProse: 'She carries herself like the court she lost, all straight spine and level grey eyes.',
+        appearanceSummary: 'She carries herself like the court she lost, all straight spine and level grey eyes.',
         socialLever: { text: 'The signet brand', legibleTo: 'Anyone versed in Concord heraldry' },
         personalLever: { text: 'Her brother is held hostage.' },
         pursuer: {
@@ -344,33 +379,46 @@ test('buildOriginMemoBlock publishes the tie-in only once an arc has set arcTieI
     assert.ok(block.includes('World-Threat Tie-In: The looms are mobilizing'));
 });
 
-test('buildOriginMemoBlock carries the appearance prose, never the intimate prose', () => {
+test('buildOriginMemoBlock carries the appearance summary, never any intimate detail', () => {
     const committed = {
         ...sampleProfile(),
         appearance: { skin: 'Bronze scales', intimate: { chest: 'should never appear' } },
+        // A campaign committed while intimateProse was still generated: nothing
+        // reads it any more, and it must not leak back into the block.
         intimateProse: 'explicit paragraph that must not ride every turn',
     };
     const block = buildOriginMemoBlock(committed, ORIGINS_BY_ID['exiled_royal']);
-    assert.ok(block.includes('Appearance: She carries herself like the court she lost'), 'prose, not a descriptor list');
-    assert.ok(!block.includes('Skin / Body Color:'), 'the raw list is superseded once prose exists');
+    assert.ok(block.includes('Appearance: She carries herself like the court she lost'), 'the summary, not a descriptor list');
+    assert.ok(!block.includes('Skin / Body Color:'), 'the raw list is superseded once a summary exists');
     // The memo is BOTH always-on narrator context and the on-screen HUD card.
     assert.ok(!block.includes('should never appear'));
-    assert.ok(!block.includes('explicit paragraph'), 'intimate prose is lorebook + HUD only');
+    assert.ok(!block.includes('explicit paragraph'), 'intimate detail is lorebook only');
 });
 
-test('buildOriginMemoBlock falls back to the descriptor list for pre-prose campaigns', () => {
-    // Campaigns committed before appearanceProse existed must keep rendering.
-    const { appearanceProse, ...legacy } = sampleProfile();
-    void appearanceProse;
-    const committed = {
-        ...legacy,
+test('buildOriginMemoBlock falls back through every generation of the appearance contract', () => {
+    const { appearanceSummary, ...noSummary } = sampleProfile();
+    void appearanceSummary;
+
+    // Campaigns committed while the contract was a longer appearanceProse.
+    const proseEra = { ...noSummary, appearanceProse: 'A tall woman with a courtier\'s spine.' };
+    assert.ok(buildOriginMemoBlock(proseEra, ORIGINS_BY_ID['exiled_royal'])
+        .includes('Appearance: A tall woman with a courtier\'s spine.'));
+
+    // Campaigns committed before either existed.
+    const fieldEra = {
+        ...noSummary,
         appearance: { skin: 'Bronze scales', height: '2.0 m', eyes: 'Molten gold, slit pupils' },
     };
-    const block = buildOriginMemoBlock(committed, ORIGINS_BY_ID['exiled_royal']);
-    assert.ok(block.includes('Appearance: Skin / Body Color: Bronze scales; Height: 2.0 m; Eyes: Molten gold, slit pupils'));
+    assert.ok(buildOriginMemoBlock(fieldEra, ORIGINS_BY_ID['exiled_royal'])
+        .includes('Appearance: Skin / Body Color: Bronze scales; Height: 2.0 m; Eyes: Molten gold, slit pupils'));
 
-    const bare = buildOriginMemoBlock(legacy, ORIGINS_BY_ID['exiled_royal']);
-    assert.ok(!bare.includes('Appearance:'), 'omitted entirely with neither prose nor descriptors');
+    // The summary wins over both when present.
+    const current = { ...proseEra, appearanceSummary };
+    assert.ok(buildOriginMemoBlock(current, ORIGINS_BY_ID['exiled_royal'])
+        .includes('Appearance: She carries herself like the court she lost'));
+
+    const bare = buildOriginMemoBlock(noSummary, ORIGINS_BY_ID['exiled_royal']);
+    assert.ok(!bare.includes('Appearance:'), 'omitted entirely with neither summary, prose nor descriptors');
 });
 
 test('writeOriginToMemo appends once and replaces thereafter', () => {
@@ -576,12 +624,17 @@ test('mergeAppearance discards intimate proposals on an SFW campaign', () => {
     assert.ok(!merged.intimate, 'an SFW campaign never accrues intimate descriptors');
 });
 
-test('validateOriginProfile rejects missing prose and proposals for filled fields', () => {
+test('validateOriginProfile rejects a missing summary and proposals for filled fields', () => {
     const er = ORIGINS_BY_ID['exiled_royal'];
     const blanks = appearanceBlankIds({ skin: 'Pale grey skin' });
 
-    const noProse = { ...sampleProfile(), appearanceProse: '' };
-    assert.ok(!validateOriginProfile(noProse, er, 'human', blanks).ok, 'prose is required');
+    const noSummary = { ...sampleProfile(), appearanceSummary: '' };
+    assert.ok(!validateOriginProfile(noSummary, er, 'human', blanks).ok, 'the summary is required');
+
+    // The generator no longer writes intimate prose, so its absence is not an error.
+    const { intimateProse, ...noIntimateProse } = { ...sampleProfile(), intimateProse: 'x' };
+    void intimateProse;
+    assert.ok(validateOriginProfile(noIntimateProse, er, 'human', blanks).ok, 'no intimate prose field is required');
 
     const overrides = { ...sampleProfile(), appearanceFilled: { skin: 'MODEL OVERRIDE' } };
     const check = validateOriginProfile(overrides, er, 'human', blanks);

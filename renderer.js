@@ -831,26 +831,17 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
             }
             case 'ORIGIN': {
                 // Everything here is the generic kv fallback except Appearance,
-                // which is now a prose paragraph — the first-colon kv split would
-                // cram the whole description into a single value span.
+                // which is a sentence or two rather than a value — the first-colon
+                // kv split would cram the whole thing into a single value span.
                 //
-                // Intimate prose is read from the committed profile rather than
-                // from the block, because it deliberately isn't IN the block: the
-                // memo doubles as always-on narrator context, so explicit detail
-                // would ride every turn. Reading it here shows it to the player
-                // without it ever entering a prompt.
+                // No intimate row: intimate descriptors are never woven into
+                // prose and live only in the keyword-triggered lorebook entry.
                 const results = [];
                 for (const [idx, line] of lines.entries()) {
                     const appearance = line.match(/^Appearance:\s*(.+)$/i);
                     if (!appearance) { results.push(renderCustomBlockLine(tag, line, idx)); continue; }
                     results.push(`<div class="rt-card-kv"><span class="rt-card-key">Appearance:</span></div>`
                         + `<div class="rt-card-prose">${escapeHtmlWithColor(appearance[1].trim())}</div>`);
-                    const chatId = RT.currentChatId || null;
-                    const intimate = (getSettings().chatStates?.[chatId]?.origin?.committed?.intimateProse || '').trim();
-                    if (intimate) {
-                        results.push(`<div class="rt-card-kv"><span class="rt-card-key">Intimate:</span></div>`
-                            + `<div class="rt-card-prose rt-card-prose-nsfw">${escapeHtmlWithColor(intimate)}</div>`);
-                    }
                 }
                 return results;
             }
