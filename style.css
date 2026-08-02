@@ -2560,3 +2560,23 @@
 .rt-settings-tabs-root .inline-drawer {
     margin-left: 0;
 }
+
+/* ── Origins wizard: AI-proposed values ────────────────────────────────────
+   The fill buttons on the Origin Details and Appearance steps write straight
+   into the real inputs, so the player needs to see at a glance which values
+   are the AI's. Editing one clears both marks and exempts it from Regenerate. */
+.rt-og-ai-chip {
+    font-size: 0.72em;
+    font-weight: normal;
+    opacity: 0.75;
+    padding: 0 4px;
+    margin-left: 4px;
+    border: 1px solid var(--rt-accent-dim, rgba(255, 255, 255, 0.25));
+    border-radius: 3px;
+    white-space: nowrap;
+    cursor: help;
+}
+
+.text_pole.rt-og-ai {
+    border-left: 2px solid var(--rt-accent, #00c88c);
+}

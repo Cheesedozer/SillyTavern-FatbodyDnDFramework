@@ -75,7 +75,8 @@ test('D&D step without a draft offers the Origins wizard and keeps the classic r
 test('D&D step with an in-progress draft offers Resume + Start over', () => {
     const entry = renderOriginsEntry({ origin: { draft: { step: 'detail', raceId: 'human', originId: 'oathbreaker' } } });
     assert.ok(entry.includes('Resume Character Creation'));
-    assert.ok(entry.includes('Step 5 of 6'), 'derived from the clamped wizard step');
+    // Origin Details is step 4 of 6 since Appearance moved after it.
+    assert.ok(entry.includes('Step 4 of 6'), 'derived from the clamped wizard step');
     assert.ok(entry.includes('rt-origins-discard-btn'));
 });
 
