@@ -16,6 +16,7 @@ import { getSettings, getActivationMode, getCampaignMode } from './state-manager
 import { parseQuestsFromMemo, buildActiveLorebookContext, estimateTokens, estimateExternalPromptTokens, budgetInjections, OUTPUT_HEADROOM_FRAC } from './memo-processor.js';
 import { runRouterPass, saveSceneToLorebook, scanAssistantOutputForKeywords } from './router.js';
 import { maybeRunWorldProgressionPass } from './world-progression.js';
+import { reconcileAfterTurn } from './cyoa.js';
 import { markerPayloadTokens } from './preset-marker.js';
 import { logTransaction } from './debug-viewer.js';
 
@@ -407,6 +408,12 @@ export function installInterceptor() {
             // the state memo. Saying so explicitly gives the narrator a rule to
             // apply instead of having to guess which source to believe.
             const LORE_SUBORDINATION = ' — recorded lore; the STATE MEMO and origin canon override any conflict here';
+            // The injection is string-prepended onto the *user* message below, so
+            // the model receives it with no structural signal that it is
+            // out-of-band. Without an explicit rule it can and does reproduce the
+            // block verbatim in its reply. Mirrors the STATE MEMO's own
+            // (DO NOT REPEAT) marker, which is the only such guard that existed.
+            const LORE_NO_ECHO = ' — reference material, DO NOT reproduce any of it in your reply';
             if (settings.routerEnabled && getActivationMode(settings) === 'managed' && content) {
                 const t0 = performance.now().toFixed(1);
                 console.group(`[RPG|INTERCEPT] rpgTrackerInterceptor keyword pre-scan @ ${t0}ms`);
@@ -420,7 +427,7 @@ export function installInterceptor() {
                     try {
                         const loreBlock = await buildActiveLorebookContext(triggered);
                         if (loreBlock) {
-                            keywordLore = `\n<font color="#d4a028">## NEWLY ACTIVATED LORE (KEYWORD MATCH)${LORE_SUBORDINATION}</font>\n${loreBlock}\n`;
+                            keywordLore = `\n## NEWLY ACTIVATED LORE (KEYWORD MATCH)${LORE_SUBORDINATION}${LORE_NO_ECHO}\n${loreBlock}\n`;
                             console.log(`[RPG|INTERCEPT] Same-turn lore injected for ${triggered.length} entries.`);
                         }
 
@@ -442,7 +449,7 @@ export function installInterceptor() {
                     try {
                         const persistBlock = await buildActiveLorebookContext(persistent);
                         if (persistBlock) {
-                            persistentLore = `\n<font color="#d4a028">## ACTIVE LORE (KEYWORD)${LORE_SUBORDINATION}</font>\n${persistBlock}\n`;
+                            persistentLore = `\n## ACTIVE LORE (KEYWORD)${LORE_SUBORDINATION}${LORE_NO_ECHO}\n${persistBlock}\n`;
                         }
                     } catch (e) {
                         console.warn('[RPG Tracker] Persistent keyword lore re-injection failed:', e);
@@ -459,7 +466,7 @@ export function installInterceptor() {
                     try {
                         const agentBlock = await buildActiveLorebookContext(agentOwned);
                         if (agentBlock) {
-                            agentLore = `\n## ACTIVE LORE (AGENT)${LORE_SUBORDINATION}\n${agentBlock}\n`;
+                            agentLore = `\n## ACTIVE LORE (AGENT)${LORE_SUBORDINATION}${LORE_NO_ECHO}\n${agentBlock}\n`;
                         }
                     } catch (e) {
                         console.warn('[RPG Tracker] Agent-owned lore injection failed:', e);
@@ -657,6 +664,18 @@ export async function onGenerationEnded() {
             await maybeRunWorldProgressionPass(combinedNarrative, chat);
         } catch (e) {
             console.error('[RPG Tracker] World Progression pass failed:', e);
+        }
+    }
+
+    // Step 2c: CYOA reconciliation. Must be after Step 2 — the combat gate and the
+    // "did the narrator offer anything" check both read the freshly updated memo —
+    // and before Step 3's early return, since the Lorebook Agent's throttle has
+    // nothing to do with whether choices arrived.
+    if (settings.syspromptModules?.cyoa !== false) {
+        try {
+            await reconcileAfterTurn(SillyTavern.getContext().chatId || null);
+        } catch (e) {
+            console.error('[RPG Tracker] CYOA reconciliation failed:', e);
         }
     }
 

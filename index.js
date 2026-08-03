@@ -13,7 +13,7 @@ import { openCentralTensionWizard } from './central-tension-compiler.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
 import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderChoicePanel, renderLorebookTerminal } from './renderer.js';
 import { registerLogQuestTool, checkQuestDeadlines, resetPendingQuests } from './quests.js';
-import { registerSuggestChoicesTool, getChoicesForChat, regenerateChoices, isCombatActive } from './cyoa.js';
+import { registerSuggestChoicesTool, isChoiceToolRegistered, getChoicesForChat, getChoiceStatus, regenerateChoices, reconcileAfterTurn, isCombatActive } from './cyoa.js';
 import { initializeDebugViewer, toggleDebugViewer } from './debug-viewer.js';
 import { runRouterPass, runRouterHistoryAudit, rollbackRouterPass, reapplyRouterPass, getLorebookManifest, deleteLorebookEntry, updateLorebookEntry, disableManagedEntries, migrateOriginCanonEntries, isRouterRunning, isRouterAuditRunning, cancelRouterAudit } from './router.js';
 import { getRequestHeaders } from '../../../../script.js';
@@ -812,7 +812,10 @@ import { savePanelGeometry, loadPanelGeometry, resetPanelGeometry, saveDeltaHeig
         if (typeof setExtensionPrompt !== 'function') return;
 
         const s = getSettings();
-        if (!s.enabled || !s.routerEnabled || !s.activeRouterKeys?.length) {
+        // Same double-delivery guard as the promptManager path below: in managed
+        // mode the chat interceptor already ships these keys inside the user
+        // message, and shipping them again here invites verbatim echo.
+        if (!s.enabled || !s.routerEnabled || !s.activeRouterKeys?.length || getActivationMode(s) === 'managed') {
             setExtensionPrompt('rpg_tracker_lore', '', 0, 0); // Clear if disabled
             return;
         }
@@ -845,6 +848,19 @@ import { savePanelGeometry, loadPanelGeometry, resetPanelGeometry, saveDeltaHeig
                 console.log('activeRouterKeys at inject time:', JSON.stringify(s.activeRouterKeys || []));
                 if (!s.enabled || !s.routerEnabled || !s.activeRouterKeys?.length) {
                     console.log('→ Skipped (disabled or empty)');
+                    console.groupEnd();
+                    return;
+                }
+                // In managed mode the chat interceptor (narrative-hooks.js) already
+                // injects these same keys — keyword, persistent and agent-owned
+                // together cover activeRouterKeys — into the user message. Running
+                // both ships every entry twice per turn, which is a direct driver of
+                // the model reproducing lore verbatim in its reply, and the tokens
+                // spent here are invisible to estimateExternalPromptTokens so the
+                // injection budget under-counts them. Outside managed mode the chat
+                // interceptor injects nothing, so this path must remain.
+                if (getActivationMode(s) === 'managed') {
+                    console.log('→ Skipped (managed mode: the chat interceptor owns lore delivery)');
                     console.groupEnd();
                     return;
                 }
@@ -2071,8 +2087,9 @@ ${resourceList}
         const chatId = SillyTavern.getContext().chatId || RT.currentChatId;
         const combat = isCombatActive(s.currentMemo);
         const choices = combat ? null : getChoicesForChat(chatId);
+        const status = combat ? null : getChoiceStatus(chatId);
 
-        body.innerHTML = renderChoicePanel(choices, { busy: _cyoaBusy, combat });
+        body.innerHTML = renderChoicePanel(choices, { busy: _cyoaBusy, combat, status, toolRegistered: isChoiceToolRegistered() });
 
         body.querySelectorAll('.rt-cyoa-card').forEach((card) => {
             card.addEventListener('click', () => {
@@ -6213,6 +6230,10 @@ ${resourceList}
                 getSettings().cyoaPanelVisible = !!$(this).prop('checked');
                 saveSettings();
                 syncCyoaPanel();
+            });
+            $('#rpg_cyoa_auto_fallback').prop('checked', !!getSettings().cyoaAutoFallback).on('change', function () {
+                getSettings().cyoaAutoFallback = !!$(this).prop('checked');
+                saveSettings();
             });
 
             // Deadlines Toggle

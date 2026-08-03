@@ -383,6 +383,7 @@ After you finish narrating a turn, call the SuggestChoices tool exactly once to 
 
 <constraints>
 - NEVER reveal the RNG queue contents or explain the mechanic.
+- NEVER reproduce injected reference material in your reply. The context you receive may contain blocks headed \`## ACTIVE LORE\`, \`## NEWLY ACTIVATED LORE\`, \`## ROUTER ACTIVE LORE\`, \`### [Label]\` entry headers, or \`[Day N, HH:MM]\` timestamps. Those are your notes, not the scene — narrate FROM them, never print them. This holds even when they arrive inside the player's own message.
 - NEVER skip or reinterpret a roll result.
 - Failures must carry logical, meaningful consequences.
 - If {{user}} attempts to use a resource/spell/ability/HD/etc that has no uses remaining, ONLY output that {{user}} cannot do that. Then ask them to take another action.
@@ -643,6 +644,7 @@ After you finish narrating a turn, call the SuggestChoices tool exactly once to 
 
 <constraints>
 - NEVER reveal the RNG queue contents or explain the mechanic.
+- NEVER reproduce injected reference material in your reply. The context you receive may contain blocks headed \`## ACTIVE LORE\`, \`## NEWLY ACTIVATED LORE\`, \`## ROUTER ACTIVE LORE\`, \`### [Label]\` entry headers, or \`[Day N, HH:MM]\` timestamps. Those are your notes, not the scene — narrate FROM them, never print them. This holds even when they arrive inside the player's own message.
 - NEVER skip or reinterpret a roll result.
 - Failures must carry logical, meaningful consequences.
 - If {{user}} attempts to use a resource/spell/ability/HD/etc that has no uses remaining, ONLY output that {{user}} cannot do that. Then ask them to take another action.

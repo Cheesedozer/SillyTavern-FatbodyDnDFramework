@@ -1557,7 +1557,7 @@ export function renderQuestLog(quests, currentTime, collapsed, detached, filterT
  * inserted into the chat box, and it never includes the slot label.
  *
  * @param {Array<{slot:string,text:string,stake:string}>|null} choices
- * @param {{ busy?: boolean, combat?: boolean }} [opts]
+ * @param {{ busy?: boolean, combat?: boolean, toolRegistered?: boolean, status?: {state: string, errors?: string[]} }} [opts]
  */
 export function renderChoicePanel(choices, opts = {}) {
     const regenBtn = `<button class="rt-cyoa-regen" title="Ask the World Progression model for choices"${opts.busy ? ' disabled' : ''}>${opts.busy ? '…' : '↻'}</button>`;
@@ -1569,8 +1569,34 @@ export function renderChoicePanel(choices, opts = {}) {
     }
 
     if (!choices || !choices.length) {
+        const state = opts.busy ? 'busy' : (opts.status?.state || 'pending');
+        // These three read identically to a user unless they're spelled out, and
+        // the difference is the whole diagnosis: did the narrator stay silent, or
+        // did it answer and we discard the answer?
+        let message;
+        let detail = '';
+        if (state === 'busy') {
+            message = 'Thinking…';
+        } else if (state === 'rejected') {
+            message = 'The narrator offered choices, but they didn\'t pass validation.';
+            detail = `<details class="rt-cyoa-detail"><summary>Why</summary><ul>${
+                (opts.status.errors || []).map(e => `<li>${escapeHtml(e)}</li>`).join('')
+            }</ul></details>`;
+        } else if (state === 'silent' && opts.toolRegistered === false) {
+            // The one state the player cannot diagnose for themselves, and the
+            // one that made the original bug report so hard to pin down.
+            message = 'The SuggestChoices tool failed to register with SillyTavern.';
+            detail = '<div class="rt-cyoa-detail-hint">The narrator was never offered the tool, so it could not have called it. Check the browser console for a registration error.</div>';
+        } else if (state === 'silent') {
+            message = 'The narrator didn\'t offer choices this turn.';
+            detail = '<div class="rt-cyoa-detail-hint">Some large presets crowd out the tool call. ↻ generates them on the World Progression connection, or turn on auto-fallback in settings to do it every turn.</div>';
+        } else {
+            message = 'No choices yet — they arrive with the narrator\'s next turn.';
+        }
+
         return `<div class="rt-cyoa-empty">
-            <div>${opts.busy ? 'Thinking…' : 'No choices yet — they arrive with the narrator\'s next turn.'}</div>
+            <div>${message}</div>
+            ${detail}
             <div class="rt-cyoa-empty-actions">${regenBtn}</div>
         </div>`;
     }

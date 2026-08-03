@@ -17,6 +17,7 @@ import {
     buildChoiceInstructions,
     extractChoiceJson,
     registerSuggestChoicesTool,
+    isChoiceToolRegistered,
     MAX_TEXT_LEN,
 } from '../cyoa.js';
 
@@ -266,11 +267,14 @@ test('registerSuggestChoicesTool: four choices widens the enum', () => {
     });
 });
 
-test('registerSuggestChoicesTool: withdraws the tool during combat', () => {
+// Regression (the PR #37 bug report): the registration gate must match the one
+// buildSysprompt applies to <cyoa> EXACTLY. Combat is a rule inside the block and
+// a panel state — gating registration on it too left the narrator ordered to call
+// a tool that wasn't in the request, which is what produced the original failure.
+test('registerSuggestChoicesTool: stays registered during combat', () => {
     withToolRecorder({ ...ENABLED, currentMemo: MEMO + '\n[COMBAT]\nGrak (Goblin): 8/8 HP\n[/COMBAT]' }, (calls) => {
         registerSuggestChoicesTool(true);
-        assert.equal(calls.registered.length, 0, 'must not be offered mid-combat');
-        assert.deepEqual(calls.unregistered, [TOOL_NAME]);
+        assert.equal(calls.registered.length, 1, 'combat must not desync the tool from the sysprompt block');
     });
 });
 
@@ -295,14 +299,86 @@ test('registerSuggestChoicesTool: unforced re-registration with no observable ch
     });
 });
 
-test('registerSuggestChoicesTool: an unforced call still re-registers once combat ends', () => {
-    const inCombat = { ...ENABLED, currentMemo: MEMO + '\n[COMBAT]\nGrak: 8/8 HP\n[/COMBAT]' };
-    withToolRecorder(inCombat, (calls) => {
+test('registerSuggestChoicesTool: an unforced call re-registers when the whitelist changes', () => {
+    withToolRecorder({ ...ENABLED }, (calls) => {
         registerSuggestChoicesTool(true);
-        assert.equal(calls.registered.length, 0);
-        // Same call, memo now clear — the fingerprint changed, so it re-registers.
-        setSettings({ ...ENABLED });
-        registerSuggestChoicesTool();
         assert.equal(calls.registered.length, 1);
+        setSettings({ ...ENABLED, currentMemo: MEMO + '\n[ABILITIES]\n- Second Wind\n[/ABILITIES]' });
+        registerSuggestChoicesTool();
+        assert.equal(calls.registered.length, 2);
+        assert.match(calls.registered[1].description, /Second Wind/);
+    });
+});
+
+// Regression: the fingerprint used to be recorded before registerFunctionTool
+// ran, so a throw cached a registration that never happened and every later
+// unforced call short-circuited forever.
+test('registerSuggestChoicesTool: a throwing registry call is retried, not cached', () => {
+    const base = globalThis.SillyTavern.getContext;
+    setSettings({ ...ENABLED });
+    let attempts = 0;
+    globalThis.SillyTavern.getContext = () => ({
+        ...base(),
+        unregisterFunctionTool: () => {},
+        registerFunctionTool: () => { attempts++; throw new Error('registry unavailable'); },
+    });
+    try {
+        registerSuggestChoicesTool(true);
+        registerSuggestChoicesTool();   // unforced — must NOT be skipped
+        registerSuggestChoicesTool();
+        assert.equal(attempts, 3, 'a failed registration must not be cached as done');
+    } finally {
+        globalThis.SillyTavern.getContext = base;
+    }
+});
+
+// ── Panel states ─────────────────────────────────────────────────────────────
+// An empty panel used to look identical whether the narrator stayed silent or
+// answered and had the answer thrown away. That ambiguity is what made the
+// original bug report hard to diagnose, so the three states must read apart.
+
+test('renderChoicePanel: the three empty states are distinguishable', async () => {
+    const { renderChoicePanel } = await import('../renderer.js');
+
+    const pending = renderChoicePanel(null, { status: { state: 'pending' } });
+    assert.match(pending, /arrive with the narrator/);
+
+    const silent = renderChoicePanel(null, { status: { state: 'silent' } });
+    assert.match(silent, /didn't offer choices this turn/);
+    assert.match(silent, /auto-fallback/, 'must point at the setting that fixes it');
+
+    const rejected = renderChoicePanel(null, {
+        status: { state: 'rejected', errors: ['Missing the "cost" slot.'] },
+    });
+    assert.match(rejected, /didn't pass validation/);
+    assert.match(rejected, /Missing the &quot;cost&quot; slot\./, 'reasons must be shown, and escaped');
+
+    for (const html of [pending, silent, rejected]) {
+        assert.match(html, /rt-cyoa-regen/, 'every empty state needs a way out');
+    }
+});
+
+test('renderChoicePanel: combat state overrides everything and offers no reroll', async () => {
+    const { renderChoicePanel } = await import('../renderer.js');
+    const html = renderChoicePanel(null, { combat: true, status: { state: 'silent' } });
+    assert.match(html, /paused during combat/);
+    assert.ok(!/rt-cyoa-regen/.test(html));
+});
+
+test('renderChoicePanel: names an unregistered tool as the cause', async () => {
+    const { renderChoicePanel } = await import('../renderer.js');
+    const html = renderChoicePanel(null, { status: { state: 'silent' }, toolRegistered: false });
+    assert.match(html, /failed to register/);
+    assert.ok(!/crowd out the tool call/.test(html), 'must not blame the preset when the tool was never offered');
+});
+
+test('isChoiceToolRegistered: tracks the last successful registration', () => {
+    withToolRecorder({ ...ENABLED }, () => {
+        registerSuggestChoicesTool(true);
+        assert.equal(isChoiceToolRegistered(), true);
+    });
+    withToolRecorder({ ...ENABLED, syspromptModules: { cyoa: false } }, () => {
+        registerSuggestChoicesTool(true);
+        assert.equal(isChoiceToolRegistered(), false);
     });
 });
