@@ -4,6 +4,29 @@ All notable changes to the **Origins RPG Framework** (formerly the Fatbody D&D F
 
 ## [Unreleased]
 
+**CYOA choices are no longer a function tool.** The narrator now writes them as a short block at the bottom of its own message, and the framework renders that block into a styled box. The panel, the slots, the validator, and the ↻ fallback are all unchanged — only the delivery mechanism moved.
+
+Three problems drove this, and they were not fixable inside a tool:
+
+1. **It raced the HUD for the end of the turn.** `<end_of_output_footer>` tells the narrator to end every message with the status line; `<cyoa>` told it to call the tool last. Both claimed the terminal position. Because the tool was `stealth: true`, a model that called it *before* writing the footer got no follow-up generation — so the footer never landed, and the HUD's location/level parse lost its input.
+2. **Tool-call turns remain a source of double generation.** `stealth` closed the specific case, but `GENERATION_ENDED` and `GENERATION_STOPPED` share one handler, and `LogQuest` is still (correctly) non-stealth. Text in the message body has none of that surface.
+3. **Adherence.** A large preset can crowd out an unprompted every-turn tool call no matter how correctly the tool is registered. That was already why `cyoaAutoFallback` exists.
+
+### Changed
+- **`SuggestChoices` is gone.** The narrator emits `<choices>` / `slot | text | stake` lines instead, parsed back out by `parseChoiceBlock()`. `validateChoices()` is untouched and still the single judge for both this path and the World Progression fallback, so every rule — slot coverage, length caps, the outcome-disclosure pattern — applies exactly as before. No tool calling is required of the narrator model any more.
+- **The `<cyoa>` sysprompt block now carries a `{{cyoaSlots}}` placeholder**, substituted by `buildSysprompt()` from the live `cyoaChoiceCount` — the slot list used to live in the tool description, which was rebuilt every turn, and the sysprompt files are static. The resource whitelist was dropped from it rather than shipped as a stale snapshot on every request: the interceptor already delivers the live `### STATE MEMO`, so the rule points at that. `regenerateChoices()` still passes the whitelist explicitly, because it builds its prompt per call.
+- **The block is ordered explicitly against the status footer** — prose, then footer, then choices — which is what actually fixes the HUD collision, since both are now plain text in one generation.
+- **The Choices panel has three empty states, not four.** "The tool failed to register with SillyTavern" no longer exists as a failure mode.
+
+### Added
+- **Three managed SillyTavern regex scripts** (`cyoa-regex.js`), installed into `extension_settings.regex` when the module is on and removed when it is off. Two style the block into a box; the third strips choice blocks from the display *and the prompt* past a depth cutoff, so a long chat stops paying for options nobody can take. They are keyed by fixed ids and rebuilt from settings on every change, so they cannot drift from the prompt the way a hand-imported copy would — user-owned scripts are left alone. None of them rewrites the stored message: `markdownOnly`/`promptOnly` keep ST's rewrites off `msg.mes`, which is what lets the parser keep reading the raw block.
+- **`cyoaCleanupDepth` setting** — *"Keep choice blocks in context for N messages"*, default 4. The most recent few stay in the prompt on purpose: they show the narrator the format it is meant to produce.
+- **`stripChoiceBlock()` is applied wherever message text feeds another model** — `getNarrativeBlocks()` and the audit chunker. Left in, the state pass would read offered options as things that happened.
+
+**Running Megumin Suite?** Turn its `[[cyoa]]` addon off. It and this now both ask for an every-turn choice list in the message body; see `presets/README.md`.
+
+---
+
 **The narrator stopped echoing your lorebook back at you.** A Megumin Suite user reported lorebook entries appearing verbatim inside a narrator message, on the same turn CYOA choices failed to arrive. Two independent defects, one of them long-standing.
 
 ### Fixed

@@ -2,9 +2,13 @@
  * Audit chunker — partitions a chat log into token-budgeted chunks for the
  * sequential audit flows (State Tracker chunked audit, Lorebook Agent history
  * audit). Pure module: no DOM, no SillyTavern context access.
+ *
+ * Imports: memo-processor.js, cyoa.js (stripChoiceBlock)
+ * Imported by: index.js, router.js, test/audit-chunker.test.js
  */
 
 import { estimateTokens, cleanToolCallMessage } from './memo-processor.js';
+import { stripChoiceBlock } from './cyoa.js';
 
 /**
  * Formats one chat message as a "Player: ..." / "Narrator: ..." audit line, or
@@ -38,6 +42,11 @@ export function formatAuditMessage(msg, includeHidden = false) {
     mes = mes.replace(/<thinking\b[^>]*>([\s\S]*?)<\/thinking>/gi, '');
     mes = mes.replace(/<reasoning\b[^>]*>([\s\S]*?)<\/reasoning>/gi, '');
     mes = mes.replace(/<think\b[^>]*>([\s\S]*?)<\/think>/gi, '');
+
+    // CYOA choices are UI data the narrator happens to write inline, not events
+    // that occurred — an auditor reading them back would treat offered options as
+    // things the player did.
+    mes = stripChoiceBlock(mes);
 
     const extraReasoning = msg.extra?.reasoning;
     if (extraReasoning && typeof extraReasoning === 'string' && mes.includes(extraReasoning)) {

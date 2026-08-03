@@ -382,9 +382,14 @@ Don't be afraid to hit the budget exactly. It's better to lean towards activatin
         // live per-chat in chatStates[chatId].cyoa; these are the global knobs.
         cyoaChoiceCount: 3,
         cyoaPanelVisible: true,
+        // How many messages back a <choices> block stays in context before the
+        // managed regex script drops it (see cyoa-regex.js). The block is dead
+        // weight once the scene has moved on, but the most recent few are worth
+        // keeping — they show the narrator the format it is meant to produce.
+        cyoaCleanupDepth: 4,
         // Off by default: this one DOES cost a request per turn. It exists
-        // because a large third-party preset can crowd out an unprompted
-        // every-turn tool call no matter how the tool is registered.
+        // because a large third-party preset can talk the narrator out of a
+        // standing every-turn instruction.
         cyoaAutoFallback: false,
     };
 }

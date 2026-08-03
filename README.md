@@ -95,9 +95,11 @@ In a hurry? **⚒️ Forge me a character** randomizes everything valid and jump
 
 ## 🧭 Choose-Your-Own-Adventure Mode
 
-Turn on **🧭 Choices (CYOA)** under *Narrator & Quests → Components* and the narrator will offer a few things you could do next after each turn, in their own draggable panel. Click one and it drops into the chat box **unsent** — edit it, or ignore all of them and type your own. The text box is always the implicit extra option, which is why there's never a "none of the above."
+Turn on **🧭 Choices (CYOA)** under *Narrator & Quests → Components* and the narrator will offer a few things you could do next after each turn — as a styled box at the bottom of its message, and in their own draggable panel. Click one in the panel and it drops into the chat box **unsent** — edit it, or ignore all of them and type your own. The text box is always the implicit extra option, which is why there's never a "none of the above."
 
-It costs nothing extra. The narrator produces the choices as part of its normal turn through a function tool, the same mechanism the quest log uses — there's no second model call and no added latency. (Your narrator model needs tool calling, which the Hybrid RNG system already requires.)
+It costs nothing extra. The narrator writes the choices as the last few lines of its normal turn — there's no second model call, no added latency, and no tool calling required.
+
+The framework installs and maintains three small SillyTavern regex scripts for this (they appear under *Extensions → Regex* as `Origins CYOA — …`, and are removed when you turn the module off). Two of them style the box; the third drops choice blocks out of your context once they're a few messages old, so a long chat doesn't pay for options nobody can take any more. How long they stick around is a setting. Don't hand-edit those three — they're rebuilt from your settings on every change.
 
 **Each choice fills a different role**, which is what stops them collapsing into three rewordings of the same idea:
 
@@ -112,9 +114,9 @@ It costs nothing extra. The narrator produces the choices as part of its normal 
 
 Choices are checked against your actual state — the whitelist comes from your live `[SPELLS]`, `[ABILITIES]`, and `[INVENTORY]` — so you won't be offered a spell slot you don't have. They're paused during combat, and they clear themselves when you swipe.
 
-**If choices don't appear**, the panel tells you which of the four things went wrong rather than just sitting empty: nothing has generated yet, the narrator stayed silent, the narrator answered and the payload was rejected (with reasons), or the tool never registered with SillyTavern. The ↻ button generates a set on your **World Progression** connection at any time.
+**If choices don't appear**, the panel tells you which of the three things went wrong rather than just sitting empty: nothing has generated yet, the narrator stayed silent, or the narrator wrote a block and it was rejected (with reasons). The ↻ button generates a set on your **World Progression** connection at any time.
 
-Large narrative presets — Megumin Suite especially — can crowd out an unprompted every-turn tool call no matter how the tool is registered. If that's happening to you, turn on **"Generate choices if the narrator doesn't"**. It's off by default because it costs one extra request per turn the narrator skips the tool.
+Large narrative presets — Megumin Suite especially — can talk the narrator out of a standing every-turn instruction. If that's happening to you, turn on **"Generate choices if the narrator doesn't"**. It's off by default because it costs one extra request per turn the narrator skips the block. If you run Megumin Suite, also turn its own `[[cyoa]]` addon off — see [presets/README.md](presets/README.md).
 
 ## Basic Video Walkthrough of the RNG System
 https://www.youtube.com/watch?v=1n5x7VBJ0IU

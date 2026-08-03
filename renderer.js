@@ -1557,7 +1557,7 @@ export function renderQuestLog(quests, currentTime, collapsed, detached, filterT
  * inserted into the chat box, and it never includes the slot label.
  *
  * @param {Array<{slot:string,text:string,stake:string}>|null} choices
- * @param {{ busy?: boolean, combat?: boolean, toolRegistered?: boolean, status?: {state: string, errors?: string[]} }} [opts]
+ * @param {{ busy?: boolean, combat?: boolean, status?: {state: string, errors?: string[]} }} [opts]
  */
 export function renderChoicePanel(choices, opts = {}) {
     const regenBtn = `<button class="rt-cyoa-regen" title="Ask the World Progression model for choices"${opts.busy ? ' disabled' : ''}>${opts.busy ? '…' : '↻'}</button>`;
@@ -1582,14 +1582,9 @@ export function renderChoicePanel(choices, opts = {}) {
             detail = `<details class="rt-cyoa-detail"><summary>Why</summary><ul>${
                 (opts.status.errors || []).map(e => `<li>${escapeHtml(e)}</li>`).join('')
             }</ul></details>`;
-        } else if (state === 'silent' && opts.toolRegistered === false) {
-            // The one state the player cannot diagnose for themselves, and the
-            // one that made the original bug report so hard to pin down.
-            message = 'The SuggestChoices tool failed to register with SillyTavern.';
-            detail = '<div class="rt-cyoa-detail-hint">The narrator was never offered the tool, so it could not have called it. Check the browser console for a registration error.</div>';
         } else if (state === 'silent') {
             message = 'The narrator didn\'t offer choices this turn.';
-            detail = '<div class="rt-cyoa-detail-hint">Some large presets crowd out the tool call. ↻ generates them on the World Progression connection, or turn on auto-fallback in settings to do it every turn.</div>';
+            detail = '<div class="rt-cyoa-detail-hint">It should end each message with a choices block. Some large presets talk it out of that. ↻ generates a set on the World Progression connection, or turn on auto-fallback in settings to do it every turn.</div>';
         } else {
             message = 'No choices yet — they arrive with the narrator\'s next turn.';
         }

@@ -1,7 +1,8 @@
 /**
  * Tests for CYOA mode: slot selection, the payload validator, the combat gate,
- * the resource whitelist, and when the SuggestChoices tool is offered. DOM-free
- * — the panel itself is only exercised by the manual SillyTavern smoke test.
+ * the resource whitelist, and the parser that reads the narrator's <choices>
+ * block back out of its message. DOM-free — the panel itself is only exercised
+ * by the manual SillyTavern smoke test.
  */
 import './_bootstrap.js';
 import { setSettings } from './_bootstrap.js';
@@ -9,15 +10,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     CYOA_SLOTS,
-    TOOL_NAME,
     activeSlots,
     validateChoices,
     isCombatActive,
     buildResourceWhitelist,
     buildChoiceInstructions,
     extractChoiceJson,
-    registerSuggestChoicesTool,
-    isChoiceToolRegistered,
+    parseChoiceBlock,
+    stripChoiceBlock,
+    ingestNarratorMessage,
+    getChoicesForChat,
+    getChoiceStatus,
     MAX_TEXT_LEN,
 } from '../cyoa.js';
 
@@ -198,16 +201,21 @@ test('buildResourceWhitelist: empty for an empty or blockless memo', () => {
 
 // ── buildChoiceInstructions ──────────────────────────────────────────────────
 
-test('buildChoiceInstructions: names every active slot and carries the whitelist', () => {
-    const out = buildChoiceInstructions(3, MEMO);
-    for (const id of ['advance', 'diverge', 'cost']) assert.ok(out.includes(`"${id}"`), `missing ${id}`);
-    assert.ok(!out.includes('"character"'), 'character slot must be absent at count 3');
-    assert.match(out, /do not invent others/);
-    assert.match(out, /Eldritch Blast/);
+test('buildChoiceInstructions: names every active slot', () => {
+    const out = buildChoiceInstructions(3);
+    for (const id of ['advance', 'diverge', 'cost']) assert.ok(out.includes(`\`${id}\``), `missing ${id}`);
+    assert.ok(!out.includes('`character`'), 'character slot must be absent at count 3');
+    assert.match(out, /exactly 3 lines/);
 });
 
-test('buildChoiceInstructions: omits the whitelist section when there is nothing to list', () => {
-    assert.ok(!/do not invent others/.test(buildChoiceInstructions(3, '')));
+// Regression: the whitelist used to ride in the tool description, which was
+// rebuilt every turn. It now rides in the sysprompt, where it would be a stale
+// snapshot on every request — so it was pulled out and the rule points at the
+// live State Memo the interceptor already ships instead.
+test('buildChoiceInstructions: carries no resource whitelist', () => {
+    const out = buildChoiceInstructions(3);
+    assert.ok(!/Eldritch Blast/.test(out), 'no memo contents may be baked into the sysprompt');
+    assert.match(out, /not in the State Memo/);
 });
 
 // ── extractChoiceJson ────────────────────────────────────────────────────────
@@ -224,133 +232,157 @@ test('extractChoiceJson: null on unparseable content', () => {
     assert.equal(extractChoiceJson(''), null);
 });
 
-// ── registerSuggestChoicesTool ───────────────────────────────────────────────
-// The bootstrap context has no tool API, so swap in a recording one. Everything
-// below is about *whether and how* the tool is offered, never the panel.
+// ── parseChoiceBlock ─────────────────────────────────────────────────────────
+// The narrator writes the choices as text at the bottom of its own message.
+// parseChoiceBlock hands validateChoices the same shape the old function tool
+// used to deliver, so every rule above applies to this path unchanged.
 
-function withToolRecorder(settings, fn) {
-    const calls = { registered: [], unregistered: [] };
-    const base = globalThis.SillyTavern.getContext;
-    setSettings(settings);
-    globalThis.SillyTavern.getContext = () => ({
-        ...base(),
-        registerFunctionTool: (def) => calls.registered.push(def),
-        unregisterFunctionTool: (name) => calls.unregistered.push(name),
-    });
-    try { fn(calls); } finally { globalThis.SillyTavern.getContext = base; }
+const PROSE = 'The steward holds the door, saying nothing.\n\n*Level 3 | 09:12 AM, Day 4*\n\n';
+
+test('parseChoiceBlock: reads slot, text, and stake off each line', () => {
+    const parsed = parseChoiceBlock(PROSE + [
+        '<choices>',
+        'advance | Follow the steward through the door. | You lose sight of the hall.',
+        'diverge | Ask the scullery boy who else came through. |',
+        'cost | Buy the guard\'s silence with the signet ring. | The ring is your proof of birth.',
+        '</choices>',
+    ].join('\n'));
+
+    assert.deepEqual(parsed.choices.map(c => c.slot), ['advance', 'diverge', 'cost']);
+    assert.equal(parsed.choices[0].text, 'Follow the steward through the door.');
+    assert.equal(parsed.choices[0].stake, 'You lose sight of the hall.');
+    assert.equal(parsed.choices[1].stake, '', 'an empty trailing field is a missing stake, not a parse error');
+    assert.equal(validateChoices(parsed, 3).ok, true);
+});
+
+test('parseChoiceBlock: tolerates a missing stake field entirely', () => {
+    const parsed = parseChoiceBlock('<choices>\nadvance | Push the door open.\n</choices>');
+    assert.equal(parsed.choices[0].text, 'Push the door open.');
+    assert.equal(parsed.choices[0].stake, '');
+});
+
+// Models reach for the sysprompt block's own tag name. Cheaper to accept it
+// than to lose a whole turn's choices to it.
+test('parseChoiceBlock: accepts <cyoa> as an alias for <choices>', () => {
+    const parsed = parseChoiceBlock('<cyoa>\nadvance | Go through. | It shuts behind you.\n</cyoa>');
+    assert.equal(parsed.choices[0].slot, 'advance');
+    assert.equal(parsed.choices[0].stake, 'It shuts behind you.');
+});
+
+test('parseChoiceBlock: normalizes casing, indentation, and list bullets', () => {
+    const parsed = parseChoiceBlock('  <choices>\n  - Advance | Go. | Now.\n  * DIVERGE | Wait. |\n  </choices>');
+    assert.deepEqual(parsed.choices.map(c => c.slot), ['advance', 'diverge']);
+    assert.equal(parsed.choices[0].text, 'Go.');
+});
+
+test('parseChoiceBlock: a literal pipe in the stake stays in the stake', () => {
+    const parsed = parseChoiceBlock('<choices>\ncost | Pay the toll. | 5 GP | half your purse\n</choices>');
+    assert.equal(parsed.choices[0].text, 'Pay the toll.');
+    assert.equal(parsed.choices[0].stake, '5 GP | half your purse');
+});
+
+// A narrator that emits two blocks has restated itself; the later one belongs
+// to the scene it actually finished on.
+test('parseChoiceBlock: the last block wins', () => {
+    const parsed = parseChoiceBlock(
+        '<choices>\nadvance | Old option. |\n</choices>\nthen more prose\n<choices>\nadvance | New option. |\n</choices>',
+    );
+    assert.equal(parsed.choices.length, 1);
+    assert.equal(parsed.choices[0].text, 'New option.');
+});
+
+test('parseChoiceBlock: null when there is no block at all', () => {
+    assert.equal(parseChoiceBlock(PROSE), null);
+    assert.equal(parseChoiceBlock(''), null);
+    assert.equal(parseChoiceBlock(undefined), null);
+});
+
+// Regression: a module-level /g regex carries lastIndex between calls, which
+// makes every second parse of the same text return null.
+test('parseChoiceBlock: repeated calls on the same text are stable', () => {
+    const msg = '<choices>\nadvance | Go. |\n</choices>';
+    assert.ok(parseChoiceBlock(msg));
+    assert.ok(parseChoiceBlock(msg), 'the block regex must not carry lastIndex between calls');
+    assert.ok(parseChoiceBlock(msg));
+});
+
+// ── stripChoiceBlock ─────────────────────────────────────────────────────────
+// The block is UI data the narrator happens to write inline. Left in, the state
+// pass reads offered options as things that happened.
+
+test('stripChoiceBlock: removes every block and leaves the prose', () => {
+    const out = stripChoiceBlock(PROSE + '<choices>\nadvance | Go. |\n</choices>\ntail\n<cyoa>\ncost | Pay. |\n</cyoa>');
+    assert.ok(!/choices|advance|cost/i.test(out), out);
+    assert.match(out, /The steward holds the door/);
+    assert.match(out, /tail/);
+});
+
+test('stripChoiceBlock: leaves a blockless message untouched', () => {
+    assert.equal(stripChoiceBlock(PROSE), PROSE);
+    assert.equal(stripChoiceBlock(''), '');
+});
+
+// ── ingestNarratorMessage ────────────────────────────────────────────────────
+// The replacement for the old tool's action callback: same three outcomes.
+
+const ENABLED = { enabled: true, syspromptModules: { cyoa: true }, cyoaChoiceCount: 3, chatStates: {} };
+
+/** The bootstrap context reports an empty chat, so the tail stamp is (-1, 0). */
+function seed(settings = {}) {
+    setSettings({ ...ENABLED, ...settings });
 }
 
-const ENABLED = { enabled: true, syspromptModules: { cyoa: true }, cyoaChoiceCount: 3, currentMemo: MEMO };
+test('ingestNarratorMessage: stores a valid block against the chat', () => {
+    seed();
+    const ok = ingestNarratorMessage('chat-a', PROSE + [
+        '<choices>',
+        'advance | Follow the steward through the door. | You lose sight of the hall.',
+        'diverge | Ask the scullery boy who else came through. |',
+        'cost | Buy the guard\'s silence with the ring. | The ring is your proof of birth.',
+        '</choices>',
+    ].join('\n'));
 
-test('registerSuggestChoicesTool: offers the tool with the active slots as an enum', () => {
-    withToolRecorder({ ...ENABLED }, (calls) => {
-        registerSuggestChoicesTool(true);
-        assert.equal(calls.registered.length, 1);
-        const def = calls.registered[0];
-        assert.equal(def.name, TOOL_NAME);
-        const slotProp = def.parameters.properties.choices.items.properties.slot;
-        assert.deepEqual(slotProp.enum, ['advance', 'diverge', 'cost']);
-        // The whitelist has to ride along or the narrator can invent resources.
-        assert.match(def.description, /Eldritch Blast/);
-    });
+    assert.equal(ok, true);
+    assert.deepEqual(getChoicesForChat('chat-a').map(c => c.slot), ['advance', 'diverge', 'cost']);
 });
 
-// Regression: without `stealth`, SillyTavern saves the tool result to the chat
-// AND runs a follow-up generation. Since SuggestChoices is specified to fire only
-// after the prose is finished, that follow-up made the narrator continue a scene
-// it had already ended — every turn the tool fired. The action still runs under
-// stealth (ToolManager awaits invokeFunctionTool before checking the flag), so
-// choices are still captured.
-test('registerSuggestChoicesTool: is stealth, so no follow-up generation is triggered', () => {
-    withToolRecorder({ ...ENABLED }, (calls) => {
-        registerSuggestChoicesTool(true);
-        assert.equal(calls.registered[0].stealth, true);
-    });
+// An empty panel gives the player no way to tell "the narrator wrote nothing"
+// from "it wrote something and we threw it away". Those must read apart.
+test('ingestNarratorMessage: records a rejection when the block is malformed', () => {
+    seed();
+    const ok = ingestNarratorMessage('chat-b', '<choices>\nadvance | Only one option. |\n</choices>');
+
+    assert.equal(ok, true);
+    assert.equal(getChoicesForChat('chat-b'), null);
+    const status = getChoiceStatus('chat-b');
+    assert.equal(status.state, 'rejected');
+    assert.ok(status.errors.some(e => /Expected exactly 3/.test(e)), status.errors.join(' | '));
 });
 
-test('registerSuggestChoicesTool: warns the narrator never to call it alone', () => {
-    withToolRecorder({ ...ENABLED }, (calls) => {
-        registerSuggestChoicesTool(true);
-        // Under stealth there is no follow-up to supply missing prose, so a
-        // tool-call-only turn would land as an empty message.
-        assert.match(calls.registered[0].description, /NEVER instead of it/);
-        assert.match(calls.registered[0].description, /empty message/);
-    });
+test('ingestNarratorMessage: a message with no block writes nothing at all', () => {
+    seed();
+    assert.equal(ingestNarratorMessage('chat-c', PROSE), false);
+    // Not 'silent' either — classifying the turn is reconcileAfterTurn's job,
+    // and it must still see an untouched slot to do it.
+    assert.equal(getChoiceStatus('chat-c').state, 'pending');
 });
 
-test('registerSuggestChoicesTool: four choices widens the enum', () => {
-    withToolRecorder({ ...ENABLED, cyoaChoiceCount: 4 }, (calls) => {
-        registerSuggestChoicesTool(true);
-        assert.deepEqual(
-            calls.registered[0].parameters.properties.choices.items.properties.slot.enum,
-            ['advance', 'diverge', 'cost', 'character'],
-        );
-    });
+test('ingestNarratorMessage: honours the live choice count', () => {
+    seed({ cyoaChoiceCount: 4 });
+    ingestNarratorMessage('chat-d', [
+        '<choices>',
+        'advance | Follow the steward. |',
+        'diverge | Ask the scullery boy. |',
+        'cost | Buy the guard\'s silence. |',
+        'character | Refuse, the way your father would have. |',
+        '</choices>',
+    ].join('\n'));
+    assert.equal(getChoicesForChat('chat-d').length, 4);
 });
 
-// Regression (the PR #37 bug report): the registration gate must match the one
-// buildSysprompt applies to <cyoa> EXACTLY. Combat is a rule inside the block and
-// a panel state — gating registration on it too left the narrator ordered to call
-// a tool that wasn't in the request, which is what produced the original failure.
-test('registerSuggestChoicesTool: stays registered during combat', () => {
-    withToolRecorder({ ...ENABLED, currentMemo: MEMO + '\n[COMBAT]\nGrak (Goblin): 8/8 HP\n[/COMBAT]' }, (calls) => {
-        registerSuggestChoicesTool(true);
-        assert.equal(calls.registered.length, 1, 'combat must not desync the tool from the sysprompt block');
-    });
-});
-
-test('registerSuggestChoicesTool: withdraws the tool when the module or framework is off', () => {
-    withToolRecorder({ ...ENABLED, syspromptModules: { cyoa: false } }, (calls) => {
-        registerSuggestChoicesTool(true);
-        assert.equal(calls.registered.length, 0);
-        assert.deepEqual(calls.unregistered, [TOOL_NAME]);
-    });
-    withToolRecorder({ ...ENABLED, enabled: false }, (calls) => {
-        registerSuggestChoicesTool(true);
-        assert.equal(calls.registered.length, 0);
-    });
-});
-
-test('registerSuggestChoicesTool: unforced re-registration with no observable change is a no-op', () => {
-    withToolRecorder({ ...ENABLED }, (calls) => {
-        registerSuggestChoicesTool(true);
-        registerSuggestChoicesTool();
-        registerSuggestChoicesTool();
-        assert.equal(calls.registered.length, 1, 'refreshRenderedView must not churn the tool');
-    });
-});
-
-test('registerSuggestChoicesTool: an unforced call re-registers when the whitelist changes', () => {
-    withToolRecorder({ ...ENABLED }, (calls) => {
-        registerSuggestChoicesTool(true);
-        assert.equal(calls.registered.length, 1);
-        setSettings({ ...ENABLED, currentMemo: MEMO + '\n[ABILITIES]\n- Second Wind\n[/ABILITIES]' });
-        registerSuggestChoicesTool();
-        assert.equal(calls.registered.length, 2);
-        assert.match(calls.registered[1].description, /Second Wind/);
-    });
-});
-
-// Regression: the fingerprint used to be recorded before registerFunctionTool
-// ran, so a throw cached a registration that never happened and every later
-// unforced call short-circuited forever.
-test('registerSuggestChoicesTool: a throwing registry call is retried, not cached', () => {
-    const base = globalThis.SillyTavern.getContext;
-    setSettings({ ...ENABLED });
-    let attempts = 0;
-    globalThis.SillyTavern.getContext = () => ({
-        ...base(),
-        unregisterFunctionTool: () => {},
-        registerFunctionTool: () => { attempts++; throw new Error('registry unavailable'); },
-    });
-    try {
-        registerSuggestChoicesTool(true);
-        registerSuggestChoicesTool();   // unforced — must NOT be skipped
-        registerSuggestChoicesTool();
-        assert.equal(attempts, 3, 'a failed registration must not be cached as done');
-    } finally {
-        globalThis.SillyTavern.getContext = base;
-    }
+test('ingestNarratorMessage: no chat id is a no-op', () => {
+    seed();
+    assert.equal(ingestNarratorMessage('', '<choices>\nadvance | Go. |\n</choices>'), false);
 });
 
 // ── Panel states ─────────────────────────────────────────────────────────────
@@ -384,22 +416,4 @@ test('renderChoicePanel: combat state overrides everything and offers no reroll'
     const html = renderChoicePanel(null, { combat: true, status: { state: 'silent' } });
     assert.match(html, /paused during combat/);
     assert.ok(!/rt-cyoa-regen/.test(html));
-});
-
-test('renderChoicePanel: names an unregistered tool as the cause', async () => {
-    const { renderChoicePanel } = await import('../renderer.js');
-    const html = renderChoicePanel(null, { status: { state: 'silent' }, toolRegistered: false });
-    assert.match(html, /failed to register/);
-    assert.ok(!/crowd out the tool call/.test(html), 'must not blame the preset when the tool was never offered');
-});
-
-test('isChoiceToolRegistered: tracks the last successful registration', () => {
-    withToolRecorder({ ...ENABLED }, () => {
-        registerSuggestChoicesTool(true);
-        assert.equal(isChoiceToolRegistered(), true);
-    });
-    withToolRecorder({ ...ENABLED, syspromptModules: { cyoa: false } }, () => {
-        registerSuggestChoicesTool(true);
-        assert.equal(isChoiceToolRegistered(), false);
-    });
 });
