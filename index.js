@@ -11,8 +11,9 @@ import {
 import { handlePresetMarker } from './preset-marker.js';
 import { openCentralTensionWizard } from './central-tension-compiler.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
-import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderLorebookTerminal } from './renderer.js';
+import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderChoicePanel, renderLorebookTerminal } from './renderer.js';
 import { registerLogQuestTool, checkQuestDeadlines, resetPendingQuests } from './quests.js';
+import { registerSuggestChoicesTool, getChoicesForChat, regenerateChoices, isCombatActive } from './cyoa.js';
 import { initializeDebugViewer, toggleDebugViewer } from './debug-viewer.js';
 import { runRouterPass, runRouterHistoryAudit, rollbackRouterPass, reapplyRouterPass, getLorebookManifest, deleteLorebookEntry, updateLorebookEntry, disableManagedEntries, migrateOriginCanonEntries, isRouterRunning, isRouterAuditRunning, cancelRouterAudit } from './router.js';
 import { getRequestHeaders } from '../../../../script.js';
@@ -1247,6 +1248,11 @@ import { savePanelGeometry, loadPanelGeometry, resetPanelGeometry, saveDeltaHeig
                 ${card('💤', 'Resting',
                     `Resting is limited to once every 9 hours of in-game time. Prevents exploiting rest as a free heal between every fight, and reflects the reality that you can't just nap on demand.`
                 )}
+                ${card('🧭', 'Choices (CYOA)',
+                    `After each turn the narrator offers a few things you could do next, in their own draggable panel. Each option fills a different role — <b>Advance</b> pushes the current thread, <b>Diverge</b> chases something else in the scene, <b>Cost</b> buys an advantage with something you'll miss, and <b>Character</b> (at 4 choices) acts on who you are rather than what you want.<br><br>`
+                    + `Options never tell you how they turn out and none of them is the "right" one — they differ in what they cost and risk. They're also checked against your actual spells, abilities, and inventory, so you won't be offered a slot you don't have.<br><br>`
+                    + `Clicking one drops it into the chat box <b>unsent</b>, so you can edit it or ignore the lot and type your own. Paused during combat. Costs nothing extra — the narrator produces them as part of its normal turn. If your model ignores the tool, the ↻ button generates them on your World Progression connection instead.`
+                )}
             </div>`;
         await Popup.show.confirm('🧩 Components Explained', popupBody, { okButton: 'Got it', cancelButton: false });
     }
@@ -1535,7 +1541,7 @@ ${resourceList}
             }
             
             // Optional components
-            const mods = { 'loot': '#rpg_sysprompt_mod_loot', 'random_events': '#rpg_sysprompt_mod_random_events', 'resting': '#rpg_sysprompt_mod_resting' };
+            const mods = { 'loot': '#rpg_sysprompt_mod_loot', 'random_events': '#rpg_sysprompt_mod_random_events', 'resting': '#rpg_sysprompt_mod_resting', 'cyoa': '#rpg_sysprompt_mod_cyoa' };
             for (const [key, id] of Object.entries(mods)) {
                 const cb = /** @type {HTMLInputElement|null} */ (document.getElementById(id.replace('#','')));
                 if (cb) cb.checked = !!fresh.syspromptModules?.[key];
@@ -1559,6 +1565,8 @@ ${resourceList}
                 fresh.stockPrompts.quests = DEFAULT_STOCK_PROMPTS.quests;
                 registerLogQuestTool();
             }
+            registerSuggestChoicesTool(true);
+            syncCyoaPanel();
             refreshOrderList();
             saveSettings();
             scheduleAutoApply();
@@ -1675,6 +1683,7 @@ ${resourceList}
         syncOptionalMod('#rt_onboarding_mod_loot', 'loot');
         syncOptionalMod('#rt_onboarding_mod_random_events', 'random_events');
         syncOptionalMod('#rt_onboarding_mod_resting', 'resting');
+        syncOptionalMod('#rt_onboarding_mod_cyoa', 'cyoa');
 
         // Custom Sysprompt toggle (onboarding)
         const onboardingCustomSyspromptCb = el.querySelector('#rt_onboarding_custom_sysprompt');
@@ -1806,6 +1815,12 @@ ${resourceList}
     }
 
     export function refreshRenderedView() {
+        // The CYOA panel is a separate window, so it refreshes regardless of
+        // whether the main HUD is in rendered-card mode. This is also where a
+        // combat start/end reaches it: the memo has just been updated, so the
+        // tool registration has to be re-evaluated against it.
+        try { registerSuggestChoicesTool(); syncCyoaPanel(); } catch { /* pre-init */ }
+
         if (!RT.renderedViewActive) return;
         const s = getSettings();
         const memo = RT.historyViewIndex === -1
@@ -1971,8 +1986,148 @@ ${resourceList}
         refreshRenderedView();
     }
 
+    // ─── CYOA choices panel ──────────────────────────────────────────────────
+    // A standalone floating window, not a section of the main HUD — the player
+    // reads it while composing, so it must be positionable independently.
+    // Geometry handling mirrors createDetachedPanel() above.
 
+    const CYOA_GEO_KEY = 'rpg_tracker_geometry_CYOA';
+    /** Transient across re-renders; the choices themselves live in chatStates. */
+    let _cyoaBusy = false;
 
+    function ensureCyoaPanel() {
+        const existing = document.getElementById('rt-cyoa-panel');
+        if (existing) return existing;
+
+        const settings = getSettings();
+        const panel = document.createElement('div');
+        panel.id = 'rt-cyoa-panel';
+        panel.className = `rpg-tracker-panel rt-cyoa-panel ${settings.trackerTheme || 'rt-theme-native'}`;
+        panel.innerHTML = `
+            <div class="rpg-tracker-header rt-cyoa-header">
+                <div class="rpg-tracker-header-left"><span>🧭 Choices</span></div>
+                <div class="rpg-tracker-header-right">
+                    <button class="rpg-tracker-icon-btn rt-cyoa-close" title="Hide">✕</button>
+                </div>
+            </div>
+            <div class="rpg-tracker-content rt-cyoa-body"></div>
+        `;
+        document.body.appendChild(panel);
+
+        const header = panel.querySelector('.rt-cyoa-header');
+        if (header instanceof HTMLElement) makeDraggable(panel, header, CYOA_GEO_KEY);
+
+        try {
+            const saved = JSON.parse(localStorage.getItem(CYOA_GEO_KEY));
+            if (saved && saved.left !== undefined) {
+                panel.style.left = Math.max(0, Math.min(window.innerWidth - 50, saved.left)) + 'px';
+                panel.style.top = Math.max(0, Math.min(window.innerHeight - 50, saved.top)) + 'px';
+                panel.style.right = 'auto'; panel.style.bottom = 'auto';
+                if (saved.width) panel.style.width = saved.width + 'px';
+                if (saved.height) panel.style.height = saved.height + 'px';
+            } else {
+                const mainPanel = document.getElementById('rpg-tracker-panel');
+                const rect = mainPanel?.getBoundingClientRect();
+                let spawnLeft = rect ? rect.left - 340 : 20;
+                if (spawnLeft < 0) spawnLeft = rect ? rect.right + 10 : 20;
+                panel.style.left = Math.max(10, spawnLeft) + 'px';
+                panel.style.top = (rect ? rect.top : 80) + 'px';
+                panel.style.right = 'auto'; panel.style.bottom = 'auto';
+            }
+        } catch { /* ignore */ }
+
+        let _geoTimer;
+        new ResizeObserver(() => {
+            clearTimeout(_geoTimer);
+            _geoTimer = setTimeout(() => {
+                const rect = panel.getBoundingClientRect();
+                localStorage.setItem(CYOA_GEO_KEY, JSON.stringify({
+                    left: rect.left, top: rect.top, width: rect.width, height: rect.height,
+                }));
+            }, 300);
+        }).observe(panel);
+
+        panel.querySelector('.rt-cyoa-close').addEventListener('click', () => {
+            getSettings().cyoaPanelVisible = false;
+            saveSettings();
+            const cb = document.getElementById('rpg_cyoa_panel_visible');
+            if (cb instanceof HTMLInputElement) cb.checked = false;
+            syncCyoaPanel();
+        });
+
+        return panel;
+    }
+
+    /**
+     * Rebuilds the panel body from persisted state. The render pipeline replaces
+     * innerHTML wholesale, so nothing may be held in the DOM between calls.
+     */
+    function renderCyoaPanel() {
+        const panel = document.getElementById('rt-cyoa-panel');
+        const body = panel?.querySelector('.rt-cyoa-body');
+        if (!body) return;
+
+        const s = getSettings();
+        const chatId = SillyTavern.getContext().chatId || RT.currentChatId;
+        const combat = isCombatActive(s.currentMemo);
+        const choices = combat ? null : getChoicesForChat(chatId);
+
+        body.innerHTML = renderChoicePanel(choices, { busy: _cyoaBusy, combat });
+
+        body.querySelectorAll('.rt-cyoa-card').forEach((card) => {
+            card.addEventListener('click', () => {
+                // Insert unsent so the player can edit or discard. Anything that
+                // sends for them would hand authorship to the model.
+                const ta = /** @type {HTMLTextAreaElement|null} */ (document.getElementById('send_textarea'));
+                if (!ta) return;
+                ta.value = card.getAttribute('data-text') || '';
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+                ta.focus();
+            });
+        });
+
+        const regen = body.querySelector('.rt-cyoa-regen');
+        if (regen) {
+            regen.addEventListener('click', async () => {
+                if (_cyoaBusy || !chatId) return;
+                _cyoaBusy = true;
+                renderCyoaPanel();
+                try {
+                    const res = await regenerateChoices(chatId);
+                    if (!res.ok && res.reason !== 'combat') {
+                        toastr['warning'](`Could not generate choices (${res.reason}).`, 'RPG Tracker');
+                    }
+                } finally {
+                    _cyoaBusy = false;
+                    renderCyoaPanel();
+                }
+            });
+        }
+    }
+
+    /** Creates, shows, hides, or destroys the panel to match current settings. */
+    function syncCyoaPanel() {
+        const s = getSettings();
+        const wanted = !!s.enabled && s.syspromptModules?.cyoa !== false && s.cyoaPanelVisible !== false;
+        const existing = document.getElementById('rt-cyoa-panel');
+
+        if (!wanted) {
+            if (existing) existing.style.display = 'none';
+            const btn = document.getElementById('rpg-tracker-cyoa-btn');
+            if (btn) btn.style.display = (s.enabled && s.syspromptModules?.cyoa !== false) ? '' : 'none';
+            return;
+        }
+
+        const panel = existing || ensureCyoaPanel();
+        panel.style.display = 'flex';
+        panel.className = `rpg-tracker-panel rt-cyoa-panel ${s.trackerTheme || 'rt-theme-native'}`;
+        const btn = document.getElementById('rpg-tracker-cyoa-btn');
+        if (btn) btn.style.display = '';
+        renderCyoaPanel();
+    }
+
+    globalThis._rpgRenderCyoaPanel = renderCyoaPanel;
+    globalThis._rpgSyncCyoaPanel = syncCyoaPanel;
 
 
     /**
@@ -2103,6 +2258,7 @@ ${resourceList}
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-agent-btn" title="Lorebook Agent">🤖</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-skilltree-btn" title="Skill Tree" style="display:none;">🌳</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-worldprog-btn" title="World Progression" style="${settings.worldProgHudVisible ? '' : 'display:none;'}">🌍</button>
+                    <button class="rpg-tracker-icon-btn" id="rpg-tracker-cyoa-btn" title="Choices" style="${settings.syspromptModules?.cyoa ? '' : 'display:none;'}">🧭</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-debug-btn" title="Context Debugger" style="display:none;">🛠️</button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-collapse-btn" title="Collapse Panel (still clickable when collapsed — double-click the header to toggle too)"><i class="fa-solid ${settings.trackerCollapsed ? 'fa-chevron-down' : 'fa-chevron-up'}"></i></button>
                     <button class="rpg-tracker-icon-btn" id="rpg-tracker-close-btn" title="Hide panel">✕</button>
@@ -2656,6 +2812,20 @@ ${resourceList}
         const worldProgBtn = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-worldprog-btn'));
         const worldProgPanel = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-worldprog'));
         const worldProgCloseBtn = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-worldprog-close'));
+
+        // ─── Choices (CYOA) HUD button — toggles the standalone floating panel ───
+        const cyoaBtn = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-cyoa-btn'));
+        if (cyoaBtn) {
+            cyoaBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const s = getSettings();
+                s.cyoaPanelVisible = s.cyoaPanelVisible === false;
+                saveSettings();
+                const cb = document.getElementById('rpg_cyoa_panel_visible');
+                if (cb instanceof HTMLInputElement) cb.checked = s.cyoaPanelVisible;
+                syncCyoaPanel();
+            });
+        }
 
         // ─── Skill Tree HUD button (Modern-mode only; visibility refreshed per-chat) ───
         const skillTreeBtn = /** @type {HTMLElement|null} */ (panel.querySelector('#rpg-tracker-skilltree-btn'));
@@ -5008,6 +5178,8 @@ ${resourceList}
                 // RollTheDice/LogQuest function tools live, not just on next reload.
                 registerDiceFunctionTool();
                 registerLogQuestTool();
+                registerSuggestChoicesTool(true);
+                syncCyoaPanel();
             });
 
             $('#rpg_tracker_debug').prop('checked', settings.debugMode).on('change', function () {
@@ -5094,6 +5266,17 @@ ${resourceList}
                 });
             }
 
+            // CYOA: choices belong to a specific message + swipe. getChoicesForChat
+            // stops returning them once that no longer matches the chat tail, so
+            // these hooks only need to re-render — stale options then disappear on
+            // their own rather than describing a scene that no longer exists.
+            for (const evt of [event_types.MESSAGE_DELETED, event_types.MESSAGE_SWIPED, event_types.MESSAGE_SENT]) {
+                if (evt) eventSource.on(evt, () => { try { renderCyoaPanel(); } catch { /* panel may not exist */ } });
+            }
+            eventSource.on(event_types.CHAT_CHANGED, () => {
+                try { registerSuggestChoicesTool(true); syncCyoaPanel(); } catch (e) { console.error('[RPG Tracker] CYOA: chat-change refresh failed:', e); }
+            });
+
             // Sysprompt lifecycle: establish delivery at boot and re-dispatch on chat
             // switches — campaign mode is per-chat (D&D vs Modern), so the narrator
             // prompt must follow the active chat. Each path no-ops/clears when inactive.
@@ -5151,6 +5334,10 @@ ${resourceList}
             registerDiceFunctionTool();
             registerDiceSlashCommand();
             registerHudSlashCommand();
+
+            // ─── Choices (CYOA) ───
+            registerSuggestChoicesTool(true);
+            syncCyoaPanel();
 
             // ─── Quest System ───
             import('./quests.js').then(({ registerLogQuestTool, installQuestDebugTools, computeFrustration }) => {
@@ -5852,6 +6039,7 @@ ${resourceList}
                 { key: 'resting',       id: 'rpg_sysprompt_mod_resting' },
                 { key: 'quests',        id: 'rpg_sysprompt_mod_quests' },
                 { key: 'origin_levers', id: 'rpg_sysprompt_mod_origin_levers' },
+                { key: 'cyoa',          id: 'rpg_sysprompt_mod_cyoa' },
             ];
 
             // ── Origins tab toggles (v4.0) ──
@@ -5995,6 +6183,14 @@ ${resourceList}
                         refreshOrderList();
                     }
 
+                    if (key === 'cyoa') {
+                        $('#rpg_cyoa_options').toggle(!!$(this).prop('checked'));
+                        // The tool registration has to follow the setting, or ST
+                        // keeps offering a tool the user just turned off.
+                        registerSuggestChoicesTool(true);
+                        syncCyoaPanel();
+                    }
+
                     saveSettings();
                     scheduleAutoApply();
                 });
@@ -6002,6 +6198,21 @@ ${resourceList}
                 if (key === 'quests') {
                     $('#rpg_quests_options').toggle(val);
                 }
+                if (key === 'cyoa') {
+                    $('#rpg_cyoa_options').toggle(val);
+                }
+            });
+
+            // ── CYOA options ──
+            $('#rpg_cyoa_choice_count').val(String(getSettings().cyoaChoiceCount || 3)).on('change', function () {
+                getSettings().cyoaChoiceCount = Number($(this).val()) || 3;
+                saveSettings();
+                registerSuggestChoicesTool(true); // slot list is baked into the tool schema
+            });
+            $('#rpg_cyoa_panel_visible').prop('checked', getSettings().cyoaPanelVisible !== false).on('change', function () {
+                getSettings().cyoaPanelVisible = !!$(this).prop('checked');
+                saveSettings();
+                syncCyoaPanel();
             });
 
             // Deadlines Toggle

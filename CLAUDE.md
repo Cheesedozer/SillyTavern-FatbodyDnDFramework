@@ -23,6 +23,21 @@ Anything reacting to that event must consult `isInternalRequestActive()`
 note it gates only the *inference* it draws from an absent marker, not the rewriting
 itself, because a background pass can still be open when the next real turn is assembled.
 
+## Narrator function tools
+
+Two subsystems get their structured data from the *narrator's own turn* rather than a
+follow-up pass: quests (`LogQuest`, `quests.js`) and CYOA choices (`SuggestChoices`,
+`cyoa.js`). Both register via `ctx.registerFunctionTool` with `formatMessage: () => ''`
+— **not** `stealth: true`, which also suppresses the follow-up generation and leaves an
+empty assistant message. Both build their tool *description* dynamically from
+`settings.syspromptModules`, so the schema the model sees tracks the user's toggles.
+
+Prefer this shape over a second LLM pass when the data is about the scene the narrator
+just wrote: it costs no extra request, and the model proposing has the context the
+proposal is about. `cyoa.js#registerSuggestChoicesTool` fingerprints its inputs and
+no-ops on an unchanged fingerprint, because `refreshRenderedView()` calls it on every
+render.
+
 ## External projects
 
 - **[SillyTavern](https://github.com/SillyTavern/SillyTavern)** — the host app. Event

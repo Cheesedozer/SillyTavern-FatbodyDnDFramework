@@ -43,6 +43,10 @@ export const ADDITIVE_TAGS = [
     'rng_system', 'combat', 'saving_throws', 'loot', 'random_events',
     'xp_system', 'quests', 'level_up_protocol', 'resting',
     'end_of_output_footer', 'state_memo', 'constraints',
+    // CYOA choice offers — a tool contract, not persona, so it must survive
+    // additive delivery (self-gating: the tool simply isn't registered when the
+    // module is off, and buildSysprompt strips the block in that case anyway).
+    'cyoa',
     // Modern-mode (sysprompt_modern.txt) mechanics sections
     'power_system', 'skills', 'lethality',
     // v4.0 Origins lever/canon rules — mechanics, not persona (self-gating:

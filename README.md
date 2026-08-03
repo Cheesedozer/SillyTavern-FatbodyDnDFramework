@@ -49,6 +49,7 @@ Together they solve the four core problems of LLM tabletop RP: the AI forgeting 
 - **Profile saving** - switch between multiple campaigns without losing your state.
 - **Homebrew-friendly** and flexible in general, relying on AI to do a lot of the lifting.
 - **Automatic Long-Context Tracking** via the Lorebook Agent.
+- 🧭 **Choose-Your-Own-Adventure mode** (opt-in) — see below.
 
 <div align="center">
   <figure>
@@ -91,6 +92,25 @@ In a hurry? **⚒️ Forge me a character** randomizes everything valid and jump
 **Afterward:** the World Arc gate offers a Central Tension seeded **from your origin** (your personal lever becomes the intimate stake, your world-threat tie-in the epic one), origin quests surface lazily in play through the normal quest system tagged `[origin]`, and the `[ORIGIN]` tracker section plus the campaign lorebook keep your levers, nation, and pursuer canon.
 
 **Don't want any of it?** The classic archetype quick-roll and the describe-it-via-💬 path are untouched, and the Origins offer can be hidden entirely from the settings' Origins tab. Existing campaigns are never affected.
+
+## 🧭 Choose-Your-Own-Adventure Mode
+
+Turn on **🧭 Choices (CYOA)** under *Narrator & Quests → Components* and the narrator will offer a few things you could do next after each turn, in their own draggable panel. Click one and it drops into the chat box **unsent** — edit it, or ignore all of them and type your own. The text box is always the implicit extra option, which is why there's never a "none of the above."
+
+It costs nothing extra. The narrator produces the choices as part of its normal turn through a function tool, the same mechanism the quest log uses — there's no second model call and no added latency. (Your narrator model needs tool calling, which the Hybrid RNG system already requires.)
+
+**Each choice fills a different role**, which is what stops them collapsing into three rewordings of the same idea:
+
+| | |
+|---|---|
+| ➤ **Advance** | Push the current thread — the quest, the scene's obvious pressure. |
+| ⤳ **Diverge** | Chase something else the narrator put in the scene. |
+| ⚖ **Cost** | Buy a real advantage with something you'll miss. |
+| ❖ **Character** | Act on who you are rather than what you want — your origin lever, a party member, a standing grudge. Appears at 4 choices. |
+
+**No option tells you how it turns out, and none of them is the "right" one.** A choice states what you do and, optionally, what it puts at risk — never the result, never a DC. Marking one option as the good one would spoil the scene and hand the narrator an answer key, which is exactly what the RNG system's "declare the DC before you see the roll" logic exists to prevent. Options differ in what they cost, not in how good they are.
+
+Choices are checked against your actual state — the whitelist comes from your live `[SPELLS]`, `[ABILITIES]`, and `[INVENTORY]` — so you won't be offered a spell slot you don't have. They're paused during combat, and they clear themselves when you swipe. If your model ignores the tool, the ↻ button generates them on your **World Progression** connection instead (that path *does* cost a call, so it's manual only).
 
 ## Basic Video Walkthrough of the RNG System
 https://www.youtube.com/watch?v=1n5x7VBJ0IU

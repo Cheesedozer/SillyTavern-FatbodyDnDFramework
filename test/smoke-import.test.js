@@ -41,4 +41,8 @@ test('index.js and its split modules link and evaluate without throwing', async 
     assert.equal(typeof globalThis._rpgRenderRouterUI, 'function');
     assert.equal(typeof globalThis._rpgRefreshAgentManifest, 'function');
     assert.equal(typeof globalThis._rpgRunStateModelPass, 'function');
+    // CYOA panel bridges — cyoa.js#registerSuggestChoicesTool calls
+    // _rpgRenderCyoaPanel from inside the tool action, so it must exist by load.
+    assert.equal(typeof globalThis._rpgRenderCyoaPanel, 'function');
+    assert.equal(typeof globalThis._rpgSyncCyoaPanel, 'function');
 });
