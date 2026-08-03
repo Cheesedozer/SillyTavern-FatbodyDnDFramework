@@ -4,6 +4,25 @@ All notable changes to the **Origins RPG Framework** (formerly the Fatbody D&D F
 
 ## [Unreleased]
 
+**Choose-Your-Own-Adventure mode (opt-in).** After each turn the narrator offers a handful of things you could do next, in their own draggable panel. Clicking one drops it into the chat box *unsent* — you can edit it, or ignore the lot and type your own; the text box is always the implicit extra option.
+
+The generation is free: the narrator emits the choices mid-turn through a function tool, the same way `LogQuest` works. That was the design's central decision. A separate post-turn pass on a second model — the obvious implementation, and what generic suggester extensions do — costs a full creative-tier request every turn and is structurally blind: it reads what the narrator wrote and guesses at four futures it has no authority over. The model that just wrote the scene is the one that knows where it was going.
+
+Two rules do the heavy lifting on quality:
+
+- **Each option fills a distinct slot** — *Advance* pushes the current thread, *Diverge* chases something else you put in the scene, *Cost* buys an advantage with something the player will miss, and *Character* (at four choices) acts on who they are rather than what they want. Asked for "three choices," a model reliably returns three rewordings of one idea; requiring distinct slots is the mechanical fix.
+- **No option may disclose its outcome, and none is the "right" one.** Labelling an option good or bad spoils the scene and hands the narrator an answer key — it would also undercut the RNG system's whole "declare the DC before you see the roll" commitment logic. Options differ in what they cost and risk, not in how good they are.
+
+Choices are also checked against the campaign, which is the reason to build this here rather than install a generic suggester: the resource whitelist passed to the tool is built from the live `[SPELLS]`, `[ABILITIES]`, and `[INVENTORY]` blocks, so the narrator cannot offer a slot the player doesn't have.
+
+### Added
+- **`cyoa.js`**: slot definitions, the `SuggestChoices` tool, a pure `validateChoices` payload validator, the combat gate, and per-chat choice storage. Registration mirrors `registerLogQuestTool` — idempotent, description built dynamically from settings, and `formatMessage: () => ''` so the call is hidden from chat while the follow-up generation still supplies the prose.
+- **`<cyoa>` sysprompt module** with a 🧭 **Choices (CYOA)** toggle under *Narrator & Quests → Components* (off by default; existing installs are untouched), a 2–4 choice-count selector, and a panel-visibility checkbox. Listed in `ADDITIVE_TAGS`, so it survives Suite/additive delivery.
+- **A standalone floating panel** (`#rt-cyoa-panel`), draggable and resizable with its own persisted geometry, plus a 🧭 button in the HUD header. Deliberately not a section of the main HUD — the player reads it while composing.
+- **Manual fallback**: a ↻ button generates choices on the World Progression connection for narrators that ignore the tool. It runs only on click, so the per-turn cost stays zero.
+- **Paused during combat.** Combat is authored by the RNG queue and the combat rules; narrative slots are the wrong shape there, so the tool is unregistered entirely while a `[COMBAT]` block is live.
+- **Stale choices disappear on their own.** Each set is stamped with the message index and swipe id it belongs to; a swipe or delete makes `getChoicesForChat` stop returning it, rather than leaving the panel describing a scene that no longer exists. `saveChatState` preserves `chatStates[chatId].cyoa` across the normal save cycle, as it already does for `worldProg` and `origin`.
+
 **The narrator stopped getting two versions of the same character.** A player reported the model reasoning, mid-scene, about which of two contradictory descriptions of the same NPC to believe — one from the origin backstory, one from a lore entry the Lorebook Agent had written later. Both were in the prompt, neither was marked authoritative, and the model had to guess. Three separate defects fed it.
 
 Two further paths by which the same drift could still occur are now closed as well.

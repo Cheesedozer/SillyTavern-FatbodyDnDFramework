@@ -128,6 +128,19 @@
                     <label class="checkbox_label"><input type="checkbox" id="rpg_sysprompt_mod_loot" /><span>🎲 Loot</span></label>
                     <label class="checkbox_label"><input type="checkbox" id="rpg_sysprompt_mod_random_events" /><span>🌍 Events</span></label>
                     <label class="checkbox_label"><input type="checkbox" id="rpg_sysprompt_mod_resting" /><span>💤 Resting</span></label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="rpg_sysprompt_mod_cyoa" /><span>🧭 Choices (CYOA)</span>
+                        <i class="fa-solid fa-circle-question interactable" title="After each turn the narrator offers a few things you could do next, in their own floating panel. Clicking one drops it into the chat box unsent, so you can edit it or ignore it entirely. Paused during combat."></i>
+                    </label>
+                    <div id="rpg_cyoa_options" class="flex-container flexFlowColumn gap-1" style="padding-left: 20px; display: none;">
+                        <label style="font-size: 0.85em; opacity: 0.8;">Choices per turn</label>
+                        <select id="rpg_cyoa_choice_count" class="text_pole">
+                            <option value="2">2 — Advance, Diverge</option>
+                            <option value="3">3 — Advance, Diverge, Cost</option>
+                            <option value="4">4 — Advance, Diverge, Cost, Character</option>
+                        </select>
+                        <label class="checkbox_label"><input type="checkbox" id="rpg_cyoa_panel_visible" /><span>Show the choices panel</span></label>
+                    </div>
                 </div>
             </div>
         </div>

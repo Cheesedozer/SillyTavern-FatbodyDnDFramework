@@ -205,6 +205,9 @@ You may be asked to use Markers: ((PLS)), ((B)), ((XB)), ((BDG)), ((HGT)). These
             resting: true,
             quests: true,
             origin_levers: true,
+            // Opt-in: this changes how the narrator ends every turn, so existing
+            // installs must not have it switched on for them by the deep-merge.
+            cyoa: false,
             questsDeadlines: false,
             questsFrustration: false,
             questsDifficulty: false
@@ -374,6 +377,11 @@ Don't be afraid to hit the budget exactly. It's better to lean towards activatin
         worldProgHudVisible: false,
         worldProgHudCollapsed: false,
         worldProgMeguminWarningDismissed: false,
+
+        // Choose-Your-Own-Adventure mode (see cyoa.js). The choices themselves
+        // live per-chat in chatStates[chatId].cyoa; these are the global knobs.
+        cyoaChoiceCount: 3,
+        cyoaPanelVisible: true,
     };
 }
 
@@ -728,6 +736,8 @@ export function saveChatState(chatId) {
         // wizard directly, never by the normal save cycle. Must be preserved
         // here or the next saveChatState would silently wipe it.
         origin: existing.origin,
+        // CYOA choices — written by cyoa.js directly, same class as the above.
+        cyoa: existing.cyoa,
     };
     SillyTavern.getContext().saveSettingsDebounced();
 }

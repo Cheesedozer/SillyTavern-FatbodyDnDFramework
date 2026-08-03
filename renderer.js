@@ -9,6 +9,7 @@ import {
     WIZARD_STEP_LABELS as ORIGINS_WIZARD_STEP_LABELS,
 } from './origins-engine.js';
 import { RT } from './shared-state.js';
+import { CYOA_SLOTS } from './cyoa.js';
 
 // ── Renderer module: pure HTML string producers, localStorage helpers ──
 // No live DOM mutations. All functions return strings or void (localStorage).
@@ -982,6 +983,10 @@ const DEFAULT_XP_COLOR = 'linear-gradient(90deg, #0088ff, #00d4ff)';
                             <input type="checkbox" id="rt_onboarding_mod_resting" />
                             <span>💤 Time-Limited Resting and interruption rolls based on location danger</span>
                         </label>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="rt_onboarding_mod_cyoa" />
+                            <span>🧭 Choices (CYOA) — the narrator offers a few next actions each turn</span>
+                        </label>
                     </div>
 
                     <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 4px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1);">
@@ -1541,3 +1546,48 @@ export function renderQuestLog(quests, currentTime, collapsed, detached, filterT
             </div>`;
         }).join('');
     }
+
+// ── CYOA choice panel ────────────────────────────────────────────────────────
+
+/**
+ * Body of the Choices panel. Pure string producer, same contract as
+ * renderQuestLog — the caller injects it and rebinds handlers.
+ *
+ * The slot chip is a UI affordance only: `data-text` carries exactly what gets
+ * inserted into the chat box, and it never includes the slot label.
+ *
+ * @param {Array<{slot:string,text:string,stake:string}>|null} choices
+ * @param {{ busy?: boolean, combat?: boolean }} [opts]
+ */
+export function renderChoicePanel(choices, opts = {}) {
+    const regenBtn = `<button class="rt-cyoa-regen" title="Ask the World Progression model for choices"${opts.busy ? ' disabled' : ''}>${opts.busy ? '…' : '↻'}</button>`;
+
+    if (opts.combat) {
+        return `<div class="rt-cyoa-empty">
+            <div>⚔️ Choices are paused during combat.</div>
+        </div>`;
+    }
+
+    if (!choices || !choices.length) {
+        return `<div class="rt-cyoa-empty">
+            <div>${opts.busy ? 'Thinking…' : 'No choices yet — they arrive with the narrator\'s next turn.'}</div>
+            <div class="rt-cyoa-empty-actions">${regenBtn}</div>
+        </div>`;
+    }
+
+    const slotById = Object.fromEntries(CYOA_SLOTS.map(s => [s.id, s]));
+    const cards = choices.map((c) => {
+        const meta = slotById[c.slot] || { label: c.slot, icon: '•' };
+        return `<button class="rt-cyoa-card" data-text="${escapeHtml(c.text)}">
+            <span class="rt-cyoa-slot">${meta.icon} ${escapeHtml(meta.label)}</span>
+            <span class="rt-cyoa-text">${escapeHtml(c.text)}</span>
+            ${c.stake ? `<span class="rt-cyoa-stake">${escapeHtml(c.stake)}</span>` : ''}
+        </button>`;
+    }).join('');
+
+    return `<div class="rt-cyoa-list">${cards}</div>
+        <div class="rt-cyoa-footer">
+            <span class="rt-cyoa-hint">Click to drop into the chat box — edit or ignore freely.</span>
+            ${regenBtn}
+        </div>`;
+}
