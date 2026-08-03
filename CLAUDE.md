@@ -23,40 +23,76 @@ Anything reacting to that event must consult `isInternalRequestActive()`
 note it gates only the *inference* it draws from an absent marker, not the rewriting
 itself, because a background pass can still be open when the next real turn is assembled.
 
-## Narrator function tools
+## Getting structured data out of the narrator's own turn
 
-Two subsystems get their structured data from the *narrator's own turn* rather than a
-follow-up pass: quests (`LogQuest`, `quests.js`) and CYOA choices (`SuggestChoices`,
-`cyoa.js`). Both build their tool *description* dynamically from
+Two subsystems do this rather than paying for a follow-up pass — quests (`quests.js`) and
+CYOA choices (`cyoa.js`) — and they use **opposite mechanisms**. Prefer one of these to a
+second LLM pass when the data is about the scene the narrator just wrote: it costs no
+extra request, and the model proposing has the context the proposal is about.
+
+### `LogQuest` — a function tool
+
+`quests.js` registers `LogQuest` and builds its *description* dynamically from
 `settings.syspromptModules`, so the schema the model sees tracks the user's toggles.
 
-**They differ on `stealth`, and the difference is load-bearing.** ST's ToolManager
-documents `stealth` as "the tool call result will not be shown in the chat; no follow-up
-generation will be performed" — the tool's `action` runs either way, since
-`invokeFunctionTool` is awaited *before* the flag is checked. So the question is only
-ever "should the model get another generation after this call?":
+It has **no** `stealth`, deliberately. ST's ToolManager documents `stealth` as "the tool
+call result will not be shown in the chat; no follow-up generation will be performed" —
+the `action` runs either way, since `invokeFunctionTool` is awaited *before* the flag is
+checked. The model may call `LogQuest` *instead of* narrating, and the follow-up
+generation is what supplies the prose. It uses `formatMessage: () => ''`.
 
-- `LogQuest` — **no** `stealth`. The model may call it *instead of* narrating, and the
-  follow-up generation is what supplies the prose. It uses `formatMessage: () => ''`.
-- `SuggestChoices` — **`stealth: true`**. It is specified to fire only after the prose is
-  finished, so a follow-up has nothing to write and the narrator just continues a scene
-  it already ended. That follow-up also re-ran the interceptor (re-injecting lore) and
-  re-fired `GENERATION_ENDED`, double-running the state pass and World Progression.
+**The cost of that follow-up is real**, and it's what drove CYOA off tool calling: the
+follow-up re-runs the interceptor (re-injecting lore) and re-fires `GENERATION_ENDED`,
+double-running the state pass and World Progression. If you reach for a second tool, be
+sure the model genuinely might call it instead of narrating. If it can only fire *after*
+the prose, a tool is the wrong shape — see below.
 
-Before adding a third tool, decide which of those two it is. The cost of `stealth` is
-that a tool-call-only turn lands as an empty message with no follow-up to fill it, so a
-stealth tool's description must tell the model never to call it alone.
+### `<choices>` — a text block in the message body
 
-Prefer a narrator tool over a second LLM pass when the data is about the scene the
-narrator just wrote: it costs no extra request, and the model proposing has the context
-the proposal is about. `cyoa.js#registerSuggestChoicesTool` fingerprints its inputs and
-no-ops on an unchanged fingerprint, because `refreshRenderedView()` calls it on every
-render; the fingerprint is assigned only *after* the registry call succeeds, so a throw
-is retried rather than cached as done.
+CYOA was a `stealth: true` tool (`SuggestChoices`) and is not any more. `cyoa.js`'s header
+comment carries the full reasoning; the short version is that a tool specified to fire
+after the prose has three problems a text block doesn't:
 
-Its registration gate must stay identical to the one `buildSysprompt()` applies to the
-`<cyoa>` block. If the rules can ship while the tool cannot, the narrator is left ordered
-to call something absent from the request — that desync caused a real bug report.
+1. It races `<end_of_output_footer>` for the terminal position of the turn. Under
+   `stealth` there's no follow-up to write a footer the model skipped, so the HUD's
+   footer parse (`index.js`, `#rt-footer-location`) silently loses its input.
+2. Any tool-call turn is a live source of a second generation.
+3. Large presets crowd out an unprompted every-turn tool call no matter how correctly
+   the tool is registered.
+
+So the narrator writes `<choices>\nslot | text | stake\n</choices>` at the bottom of its
+message and `parseChoiceBlock()` reads it back. `validateChoices()` stayed exactly as it
+was — it is still the single judge for both this path and the `regenerateChoices()`
+fallback. The pieces that have to move together:
+
+- The `<cyoa>` sysprompt block lives in **five** places (`sysprompt.txt`,
+  `sysprompt_legacy.txt`, `sysprompt_modern.txt`, and two `RT_PROMPTS` fallbacks in
+  `constants.js`). It carries a `{{cyoaSlots}}` placeholder that `buildSysprompt()`
+  substitutes, because the slot list is a live setting and the files are static — the
+  same trick as `{{modulesText}}`. `'cyoa'` must stay in `ADDITIVE_TAGS` or the
+  `[[ORIGINS]]` audience never sees it.
+- **Anything that feeds message text to another model must call `stripChoiceBlock()`** —
+  `getNarrativeBlocks()` in `narrative-hooks.js` and `formatAuditMessage()` in
+  `audit-chunker.js` today. Left in, the state pass reads offered options as events.
+- `ingestNarratorMessage()` is bound to `MESSAGE_RECEIVED`/`MESSAGE_EDITED`/
+  `MESSAGE_SWIPED`, which land *before* `onGenerationEnded`'s `reconcileAfterTurn()` —
+  that ordering is what keeps "the narrator stayed silent" from firing on a turn that
+  actually delivered.
+
+### Managed regex scripts (`cyoa-regex.js`)
+
+The only place this repo writes into *another* extension's settings
+(`extension_settings.regex`). Three entries under fixed ids, rebuilt from settings on
+every sync so they can't drift from the prompt; user-owned scripts are preserved by id
+filter. They must never be applied without `markdownOnly` or `promptOnly` — `cyoa.js`
+reads the block out of `msg.mes`, so the stored message has to survive untouched.
+
+`syncCyoaRegexScripts()` fingerprints its inputs and no-ops on an unchanged fingerprint,
+because `refreshRenderedView()` calls it on every render; the fingerprint is assigned only
+*after* the write succeeds, so a throw is retried rather than cached as done. Its gate
+must stay identical to the one `buildSysprompt()` applies to the `<cyoa>` block — if the
+rules ship without the scripts, the narrator writes a block nothing renders. (The same
+invariant, for the same reason, as when the gate guarded a tool registration.)
 
 ## External projects
 

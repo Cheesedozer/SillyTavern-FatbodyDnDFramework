@@ -130,7 +130,7 @@
                     <label class="checkbox_label"><input type="checkbox" id="rpg_sysprompt_mod_resting" /><span>💤 Resting</span></label>
                     <label class="checkbox_label">
                         <input type="checkbox" id="rpg_sysprompt_mod_cyoa" /><span>🧭 Choices (CYOA)</span>
-                        <i class="fa-solid fa-circle-question interactable" title="After each turn the narrator offers a few things you could do next, in their own floating panel. Clicking one drops it into the chat box unsent, so you can edit it or ignore it entirely. Paused during combat."></i>
+                        <i class="fa-solid fa-circle-question interactable" title="After each turn the narrator writes a few things you could do next at the bottom of its message, styled into a box. They also appear in their own floating panel — click one and it drops into the chat box unsent, so you can edit it or ignore it entirely. Paused during combat."></i>
                     </label>
                     <div id="rpg_cyoa_options" class="flex-container flexFlowColumn gap-1" style="padding-left: 20px; display: none;">
                         <label style="font-size: 0.85em; opacity: 0.8;">Choices per turn</label>
@@ -139,12 +139,23 @@
                             <option value="3">3 — Advance, Diverge, Cost</option>
                             <option value="4">4 — Advance, Diverge, Cost, Character</option>
                         </select>
+                        <label style="font-size: 0.85em; opacity: 0.8;">
+                            Keep choice blocks in context for
+                            <i class="fa-solid fa-circle-question interactable" title="Old choice boxes are dead weight in the prompt — the scene has moved on and the options no longer apply. Past this many messages they're stripped from the context and hidden in the chat, though the text stays in the message itself. Keep a few: they show the narrator the format it's meant to produce."></i>
+                        </label>
+                        <select id="rpg_cyoa_cleanup_depth" class="text_pole">
+                            <option value="1">1 message — only the newest</option>
+                            <option value="2">2 messages</option>
+                            <option value="4">4 messages</option>
+                            <option value="8">8 messages</option>
+                            <option value="999">Never strip them</option>
+                        </select>
                         <label class="checkbox_label"><input type="checkbox" id="rpg_cyoa_panel_visible" /><span>Show the choices panel</span></label>
                         <label class="checkbox_label">
                             <input type="checkbox" id="rpg_cyoa_auto_fallback" /><span>Generate choices if the narrator doesn't</span>
-                            <i class="fa-solid fa-circle-question interactable" title="Normally the narrator produces the choices during its own turn, for free. Large third-party presets can crowd that tool call out. With this on, a turn that ends with no choices triggers one extra request on the World Progression connection — reliable, but it costs a call every turn the narrator stays silent."></i>
+                            <i class="fa-solid fa-circle-question interactable" title="Normally the narrator writes the choices during its own turn, for free. Large third-party presets can talk it out of that. With this on, a turn that ends with no choices triggers one extra request on the World Progression connection — reliable, but it costs a call every turn the narrator stays silent."></i>
                         </label>
-                        <small style="opacity: 0.55; font-style: italic; line-height: 1.3;">Costs one extra request per turn the narrator skips the tool. Leave off unless choices keep failing to appear.</small>
+                        <small style="opacity: 0.55; font-style: italic; line-height: 1.3;">Costs one extra request per turn the narrator skips the block. Leave off unless choices keep failing to appear.</small>
                     </div>
                 </div>
             </div>

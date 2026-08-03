@@ -13,7 +13,8 @@ import { openCentralTensionWizard } from './central-tension-compiler.js';
 import { deduplicateMemo, mergeMemo, computeDelta, escapeHtml, escapeRegex, highlightParens, cleanToolCallMessage, getLastUserAction, buildLorebookContext, buildActiveLorebookContext, buildModulesInstructionText, buildModuleFormatInstruction, parseQuestsFromMemo, syncQuestsFromMemo, syncQuestsToMemo, writeQuestsToMemo, getQuestMood } from './memo-processor.js';
 import { renderSubFieldByRule, tryRenderMarker, renderCustomBlockLine, stripMemoHtml, escapeHtmlWithColor, parseMemoBlocks, getPageSize, loadCollapsed, saveCollapsed, loadDetached, saveDetached, blockToItems, renderMemoAsCards, renderQuestLog, renderChoicePanel, renderLorebookTerminal } from './renderer.js';
 import { registerLogQuestTool, checkQuestDeadlines, resetPendingQuests } from './quests.js';
-import { registerSuggestChoicesTool, isChoiceToolRegistered, getChoicesForChat, getChoiceStatus, regenerateChoices, reconcileAfterTurn, isCombatActive } from './cyoa.js';
+import { getChoicesForChat, getChoiceStatus, regenerateChoices, reconcileAfterTurn, isCombatActive, ingestNarratorMessage } from './cyoa.js';
+import { syncCyoaRegexScripts } from './cyoa-regex.js';
 import { initializeDebugViewer, toggleDebugViewer } from './debug-viewer.js';
 import { runRouterPass, runRouterHistoryAudit, rollbackRouterPass, reapplyRouterPass, getLorebookManifest, deleteLorebookEntry, updateLorebookEntry, disableManagedEntries, migrateOriginCanonEntries, isRouterRunning, isRouterAuditRunning, cancelRouterAudit } from './router.js';
 import { getRequestHeaders } from '../../../../script.js';
@@ -1267,7 +1268,7 @@ import { savePanelGeometry, loadPanelGeometry, resetPanelGeometry, saveDeltaHeig
                 ${card('🧭', 'Choices (CYOA)',
                     `After each turn the narrator offers a few things you could do next, in their own draggable panel. Each option fills a different role — <b>Advance</b> pushes the current thread, <b>Diverge</b> chases something else in the scene, <b>Cost</b> buys an advantage with something you'll miss, and <b>Character</b> (at 4 choices) acts on who you are rather than what you want.<br><br>`
                     + `Options never tell you how they turn out and none of them is the "right" one — they differ in what they cost and risk. They're also checked against your actual spells, abilities, and inventory, so you won't be offered a slot you don't have.<br><br>`
-                    + `Clicking one drops it into the chat box <b>unsent</b>, so you can edit it or ignore the lot and type your own. Paused during combat. Costs nothing extra — the narrator produces them as part of its normal turn. If your model ignores the tool, the ↻ button generates them on your World Progression connection instead.`
+                    + `Clicking one drops it into the chat box <b>unsent</b>, so you can edit it or ignore the lot and type your own. Paused during combat. Costs nothing extra — the narrator writes them at the bottom of its own message, and the framework installs the regex scripts that style that block and drop older ones out of context. If your narrator skips it, the ↻ button generates a set on your World Progression connection instead.`
                 )}
             </div>`;
         await Popup.show.confirm('🧩 Components Explained', popupBody, { okButton: 'Got it', cancelButton: false });
@@ -1581,7 +1582,7 @@ ${resourceList}
                 fresh.stockPrompts.quests = DEFAULT_STOCK_PROMPTS.quests;
                 registerLogQuestTool();
             }
-            registerSuggestChoicesTool(true);
+            syncCyoaRegexScripts(true);
             syncCyoaPanel();
             refreshOrderList();
             saveSettings();
@@ -1835,7 +1836,7 @@ ${resourceList}
         // whether the main HUD is in rendered-card mode. This is also where a
         // combat start/end reaches it: the memo has just been updated, so the
         // tool registration has to be re-evaluated against it.
-        try { registerSuggestChoicesTool(); syncCyoaPanel(); } catch { /* pre-init */ }
+        try { syncCyoaRegexScripts(); syncCyoaPanel(); } catch { /* pre-init */ }
 
         if (!RT.renderedViewActive) return;
         const s = getSettings();
@@ -2089,7 +2090,7 @@ ${resourceList}
         const choices = combat ? null : getChoicesForChat(chatId);
         const status = combat ? null : getChoiceStatus(chatId);
 
-        body.innerHTML = renderChoicePanel(choices, { busy: _cyoaBusy, combat, status, toolRegistered: isChoiceToolRegistered() });
+        body.innerHTML = renderChoicePanel(choices, { busy: _cyoaBusy, combat, status });
 
         body.querySelectorAll('.rt-cyoa-card').forEach((card) => {
             card.addEventListener('click', () => {
@@ -5195,7 +5196,7 @@ ${resourceList}
                 // RollTheDice/LogQuest function tools live, not just on next reload.
                 registerDiceFunctionTool();
                 registerLogQuestTool();
-                registerSuggestChoicesTool(true);
+                syncCyoaRegexScripts(true);
                 syncCyoaPanel();
             });
 
@@ -5290,8 +5291,30 @@ ${resourceList}
             for (const evt of [event_types.MESSAGE_DELETED, event_types.MESSAGE_SWIPED, event_types.MESSAGE_SENT]) {
                 if (evt) eventSource.on(evt, () => { try { renderCyoaPanel(); } catch { /* panel may not exist */ } });
             }
+            // CYOA ingest: the choices arrive as a <choices> block at the bottom of
+            // the narrator's own message, so read them straight out of it. Bound to
+            // the message-level events rather than GENERATION_ENDED so it lands
+            // before onGenerationEnded's reconcileAfterTurn — which classifies "the
+            // narrator stayed silent" and must not fire on a turn that delivered.
+            // MESSAGE_EDITED is included because ST's regex scripts never rewrite
+            // the stored text: an edited message still carries its raw block.
+            for (const evt of [event_types.MESSAGE_RECEIVED, event_types.MESSAGE_EDITED, event_types.MESSAGE_SWIPED]) {
+                if (!evt) continue;
+                eventSource.on(evt, () => {
+                    try {
+                        const s = getSettings();
+                        if (!s.enabled || s.syspromptModules?.cyoa === false) return;
+                        const chat = SillyTavern.getContext().chat || [];
+                        const last = chat[chat.length - 1];
+                        if (!last || last.is_user || last.is_system) return;
+                        if (ingestNarratorMessage(SillyTavern.getContext().chatId || RT.currentChatId, last.mes)) {
+                            renderCyoaPanel();
+                        }
+                    } catch (e) { console.error('[RPG Tracker] CYOA: ingest failed:', e); }
+                });
+            }
             eventSource.on(event_types.CHAT_CHANGED, () => {
-                try { registerSuggestChoicesTool(true); syncCyoaPanel(); } catch (e) { console.error('[RPG Tracker] CYOA: chat-change refresh failed:', e); }
+                try { syncCyoaRegexScripts(true); syncCyoaPanel(); } catch (e) { console.error('[RPG Tracker] CYOA: chat-change refresh failed:', e); }
             });
 
             // Sysprompt lifecycle: establish delivery at boot and re-dispatch on chat
@@ -5353,7 +5376,7 @@ ${resourceList}
             registerHudSlashCommand();
 
             // ─── Choices (CYOA) ───
-            registerSuggestChoicesTool(true);
+            syncCyoaRegexScripts(true);
             syncCyoaPanel();
 
             // ─── Quest System ───
@@ -6202,9 +6225,10 @@ ${resourceList}
 
                     if (key === 'cyoa') {
                         $('#rpg_cyoa_options').toggle(!!$(this).prop('checked'));
-                        // The tool registration has to follow the setting, or ST
-                        // keeps offering a tool the user just turned off.
-                        registerSuggestChoicesTool(true);
+                        // The render scripts have to follow the setting, or the
+                        // user is left with regex entries for a module they just
+                        // turned off (and, turning it on, raw <choices> markup).
+                        syncCyoaRegexScripts(true);
                         syncCyoaPanel();
                     }
 
@@ -6224,7 +6248,13 @@ ${resourceList}
             $('#rpg_cyoa_choice_count').val(String(getSettings().cyoaChoiceCount || 3)).on('change', function () {
                 getSettings().cyoaChoiceCount = Number($(this).val()) || 3;
                 saveSettings();
-                registerSuggestChoicesTool(true); // slot list is baked into the tool schema
+                syncCyoaRegexScripts(true);   // the row regex is built from the slot list
+                scheduleAutoApply();          // …and the slot rules ride in the <cyoa> sysprompt block
+            });
+            $('#rpg_cyoa_cleanup_depth').val(String(getSettings().cyoaCleanupDepth || 4)).on('change', function () {
+                getSettings().cyoaCleanupDepth = Number($(this).val()) || 4;
+                saveSettings();
+                syncCyoaRegexScripts(true);   // the cutoff is the cleanup script's minDepth
             });
             $('#rpg_cyoa_panel_visible').prop('checked', getSettings().cyoaPanelVisible !== false).on('change', function () {
                 getSettings().cyoaPanelVisible = !!$(this).prop('checked');

@@ -5,7 +5,8 @@
  * it intercepts outgoing messages to inject context (RNG queue, state memo,
  * quests) and collects incoming AI narrative for the state model pass.
  *
- * Imports: state-manager.js
+ * Imports: state-manager.js, memo-processor.js, router.js, world-progression.js,
+ *   cyoa.js (reconcileAfterTurn, stripChoiceBlock), preset-marker.js, debug-viewer.js
  * Imported by: index.js (registration)
  *
  * NOTE: runStateModelPass is resolved at call-time via globalThis to avoid a
@@ -16,7 +17,7 @@ import { getSettings, getActivationMode, getCampaignMode } from './state-manager
 import { parseQuestsFromMemo, buildActiveLorebookContext, estimateTokens, estimateExternalPromptTokens, budgetInjections, OUTPUT_HEADROOM_FRAC } from './memo-processor.js';
 import { runRouterPass, saveSceneToLorebook, scanAssistantOutputForKeywords } from './router.js';
 import { maybeRunWorldProgressionPass } from './world-progression.js';
-import { reconcileAfterTurn } from './cyoa.js';
+import { reconcileAfterTurn, stripChoiceBlock } from './cyoa.js';
 import { markerPayloadTokens } from './preset-marker.js';
 import { logTransaction } from './debug-viewer.js';
 
@@ -559,6 +560,9 @@ export function getNarrativeBlocks(chat, limit = -1, includeHidden = false) {
         mes = mes.replace(/<reasoning\b[^>]*>([\s\S]*?)<\/reasoning>/gi, '');
         // <think> tags used by DeepSeek, Qwen, etc.
         mes = mes.replace(/<think\b[^>]*>([\s\S]*?)<\/think>/gi, '');
+        // CYOA choices are UI data the narrator writes inline, not narration.
+        // Left in, the state pass reads offered options as things that happened.
+        mes = stripChoiceBlock(mes);
 
         // If ST stored reasoning in extra.reasoning and it bled into mes, strip it
         const extraReasoning = /** @type {any} */ (msg).extra?.reasoning;

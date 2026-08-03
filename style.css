@@ -2698,3 +2698,68 @@
     opacity: 0.4;
     cursor: default;
 }
+
+/* ── In-message choices box ──────────────────────────────────────────────────
+   Produced by the managed regex scripts in cyoa-regex.js, which rewrite the
+   narrator's <choices> block into this markup at render time. The stored
+   message keeps its plain-text block, so these rules style a view of it and
+   nothing else — and a user who disables the module (or the extension) is left
+   with readable text rather than broken markup.
+
+   The slot icon and label come from ::before on [data-slot] rather than from
+   the regex: the replacement string can't map an id to an icon, but CSS can,
+   and it keeps the four slot definitions in cyoa.js as the only place a slot
+   is spelled out. Keep these in sync with CYOA_SLOTS. */
+
+.rt-cyoa-block {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin: 12px 0 4px;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.13);
+    border-left: 3px solid rgba(255, 255, 255, 0.3);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.035);
+}
+
+.rt-cyoa-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 5px 0;
+}
+
+.rt-cyoa-row + .rt-cyoa-row {
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.rt-cyoa-row-slot {
+    font-size: 0.68em;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    opacity: 0.55;
+    font-weight: 700;
+}
+
+.rt-cyoa-row-slot[data-slot="advance"]::before { content: "➤ Advance"; }
+.rt-cyoa-row-slot[data-slot="diverge"]::before { content: "⤳ Diverge"; }
+.rt-cyoa-row-slot[data-slot="cost"]::before { content: "⚖ Cost"; }
+.rt-cyoa-row-slot[data-slot="character"]::before { content: "❖ Character"; }
+
+.rt-cyoa-row-text {
+    font-size: 0.95em;
+    line-height: 1.4;
+}
+
+.rt-cyoa-row-stake {
+    font-size: 0.82em;
+    font-style: italic;
+    opacity: 0.6;
+    line-height: 1.3;
+}
+
+/* An omitted stake is legal — collapse the empty span rather than leaving a gap. */
+.rt-cyoa-row-stake:empty {
+    display: none;
+}

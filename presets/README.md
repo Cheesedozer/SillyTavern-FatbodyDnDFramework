@@ -98,7 +98,8 @@ rulebooks. For Megumin Suite specifically:
 | `[[combat]]` addon | `<combat>` — NPC tiers, AC/HP/attack tables, opportunity attacks | **Disable.** Megumin's "no plot armor, combat follows physical reality" framing overrides the framework's dice math — you'll get narrated outcomes instead of rolled ones. |
 | `[[death]]` addon | Lethality — Downed at 0 HP, rescue window, 3 Injuries before true death | **Disable.** Megumin's instant-lethal rule deletes the Downed state entirely. |
 | `[[infoblock]]` block | `<end_of_output_footer>` — the `*(Status: …) \| (XP: …) \| (Location: …)*` line | **Pick one.** Both emit a status block every turn; running both doubles the footer and confuses the tracker's parsing. |
-| `[[MVU]]`, `[[storytracker]]`, `[[cyoa]]` | `<state_memo>` and tracker parsing | Judgement call — they overlap rather than contradict. Start with them off and add back what you miss. |
+| `[[cyoa]]` addon | 🧭 Choices — the `<choices>` block the narrator writes at the end of each message | **Pick one.** Both ask for an every-turn choice list in the message body; running both gets you two sets of options per turn, and the framework's regex scripts will only style (and clean up) its own. |
+| `[[MVU]]`, `[[storytracker]]` | `<state_memo>` and tracker parsing | Judgement call — they overlap rather than contradict. Start with them off and add back what you miss. |
 | NPC Bank | Lorebook Agent | **Disable.** |
 | Memory archiver | The tracker's chat reads | **Disable.** |
 

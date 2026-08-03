@@ -11,7 +11,8 @@
  * by preset-marker.js so a preset's [[ORIGINS]] marker can be substituted with
  * the framework's live rules instead of a hand-pasted frozen copy.
  *
- * Imports: env.js, state-manager.js, constants.js, memo-processor.js
+ * Imports: env.js, state-manager.js, constants.js, memo-processor.js, foundation.js,
+ *   cyoa.js (buildChoiceInstructions, for the {{cyoaSlots}} placeholder)
  * Extracted from index.js as part of the monolith split (behaviour unchanged).
  */
 
@@ -20,6 +21,7 @@ import { getSettings, getCampaignMode } from './state-manager.js';
 import { RT_PROMPTS, QUESTS_NARRATOR_LEGACY, QUESTS_NARRATOR_MODERN } from './constants.js';
 import { buildModulesInstructionText } from './memo-processor.js';
 import { getFoundation, foundationPlaceholders } from './foundation.js';
+import { buildChoiceInstructions } from './cyoa.js';
 
 let _autoApplyTimer = null;
 
@@ -43,9 +45,10 @@ export const ADDITIVE_TAGS = [
     'rng_system', 'combat', 'saving_throws', 'loot', 'random_events',
     'xp_system', 'quests', 'level_up_protocol', 'resting',
     'end_of_output_footer', 'state_memo', 'constraints',
-    // CYOA choice offers — a tool contract, not persona, so it must survive
-    // additive delivery (self-gating: the tool simply isn't registered when the
-    // module is off, and buildSysprompt strips the block in that case anyway).
+    // CYOA choice offers — an output-format contract, not persona, so it must
+    // survive additive delivery (self-gating: buildSysprompt strips the block
+    // when the module is off, and cyoa-regex.js removes the render scripts to
+    // match).
     'cyoa',
     // Modern-mode (sysprompt_modern.txt) mechanics sections
     'power_system', 'skills', 'lethality',
@@ -267,6 +270,12 @@ export function buildSysprompt(rawText, { variant = 'standalone' } = {}) {
     // 2. Inject current module instructions
     const modulesText = buildModulesInstructionText(s);
     content = content.replace("{{modulesText}}", modulesText);
+
+    // 2b. CYOA slot rules. The slot list is a live setting (2–4 options) but the
+    // sysprompt files are static, so the <cyoa> block carries a placeholder — the
+    // same trick as {{modulesText}} above. Unconditional: when the module is off
+    // the block (and its placeholder) was already stripped in step 1.
+    content = content.replace("{{cyoaSlots}}", () => buildChoiceInstructions(s.cyoaChoiceCount));
 
     // 3. Handle Quests Hardcore rules stripping (Narrator guidance)
     if (!mods.questsDeadlines) {

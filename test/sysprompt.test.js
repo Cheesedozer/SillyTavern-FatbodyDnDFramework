@@ -248,3 +248,57 @@ test('SFW origins, uncommitted drafts and non-Origins chats add nothing', () => 
     setSettings({});
     assert.ok(!buildSysprompt('<combat>KEEP</combat>').includes('content_rating'), 'non-Origins campaigns unchanged');
 });
+
+// ── CYOA slot injection ───────────────────────────────────────────────────────
+// The slot list is a live setting (2–4 options) but the sysprompt files are
+// static, so the <cyoa> block carries a {{cyoaSlots}} placeholder. A placeholder
+// that survives into the request is a literal `{{cyoaSlots}}` in the narrator's
+// rules — worse than shipping the wrong count.
+
+test('buildSysprompt substitutes {{cyoaSlots}} with the active slot rules', () => {
+    setSettings({ syspromptModules: { cyoa: true }, cyoaChoiceCount: 3 });
+    const out = buildSysprompt(SYSPROMPT_TXT);
+    assert.ok(!out.includes('{{cyoaSlots}}'), 'the placeholder must never reach the model');
+    assert.ok(out.includes('exactly 3 lines'), 'the live choice count is injected');
+    assert.ok(out.includes('`advance`') && out.includes('`cost`'));
+    assert.ok(!out.includes('`character`'), 'the 4th slot is absent at count 3');
+});
+
+test('buildSysprompt widens the CYOA slot list with the setting', () => {
+    setSettings({ syspromptModules: { cyoa: true }, cyoaChoiceCount: 4 });
+    assert.ok(buildSysprompt(SYSPROMPT_TXT).includes('`character`'));
+});
+
+// cyoa defaults to false (opt-in), so this is also the shape most installs see.
+test('the CYOA placeholder is gone along with the block when the module is off', () => {
+    setSettings({ syspromptModules: { cyoa: true } });
+    assert.ok(buildSysprompt(SYSPROMPT_TXT).includes('<choices>'), 'on: the example ships');
+
+    setSettings({ syspromptModules: { cyoa: false } });
+    const out = buildSysprompt(SYSPROMPT_TXT);
+    assert.ok(!out.includes('{{cyoaSlots}}'));
+    assert.ok(!out.includes('<choices>'), 'off: no orphaned output-format example');
+});
+
+// Every delivery path has to carry it: the [[ORIGINS]] / Suite-Mode audience
+// only ever sees the additive variant, and a narrator told to write a block the
+// framework can't render is the desync this design exists to avoid.
+test('the CYOA block and its slot rules survive additive delivery', () => {
+    setSettings({ syspromptModules: { cyoa: true }, cyoaChoiceCount: 3 });
+    for (const txt of [SYSPROMPT_TXT, SYSPROMPT_LEGACY_TXT, SYSPROMPT_MODERN_TXT, RT_PROMPTS['sysprompt.txt']]) {
+        const out = buildSysprompt(txt, { variant: 'additive' });
+        assert.ok(out.includes('<cyoa>'), 'cyoa must be in ADDITIVE_TAGS');
+        assert.ok(!out.includes('{{cyoaSlots}}'));
+        assert.ok(out.includes('exactly 3 lines'));
+    }
+});
+
+// The block collides with <end_of_output_footer> unless the order is spelled
+// out — that ambiguity is what cost the HUD its status line under the old tool.
+test('every sysprompt source orders the choices block after the status footer', () => {
+    for (const txt of [SYSPROMPT_TXT, SYSPROMPT_LEGACY_TXT, SYSPROMPT_MODERN_TXT, RT_PROMPTS['sysprompt.txt'], RT_PROMPTS['sysprompt_legacy.txt']]) {
+        const block = txt.match(/<cyoa>[\s\S]*?<\/cyoa>/)[0];
+        assert.match(block, /AFTER the status footer/);
+        assert.match(block, /\{\{cyoaSlots\}\}/, 'each copy needs the placeholder or its slot rules go missing');
+    }
+});
