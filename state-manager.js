@@ -382,6 +382,10 @@ Don't be afraid to hit the budget exactly. It's better to lean towards activatin
         // live per-chat in chatStates[chatId].cyoa; these are the global knobs.
         cyoaChoiceCount: 3,
         cyoaPanelVisible: true,
+        // Off by default: this one DOES cost a request per turn. It exists
+        // because a large third-party preset can crowd out an unprompted
+        // every-turn tool call no matter how the tool is registered.
+        cyoaAutoFallback: false,
     };
 }
 

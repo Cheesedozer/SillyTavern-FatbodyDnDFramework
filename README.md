@@ -110,7 +110,11 @@ It costs nothing extra. The narrator produces the choices as part of its normal 
 
 **No option tells you how it turns out, and none of them is the "right" one.** A choice states what you do and, optionally, what it puts at risk — never the result, never a DC. Marking one option as the good one would spoil the scene and hand the narrator an answer key, which is exactly what the RNG system's "declare the DC before you see the roll" logic exists to prevent. Options differ in what they cost, not in how good they are.
 
-Choices are checked against your actual state — the whitelist comes from your live `[SPELLS]`, `[ABILITIES]`, and `[INVENTORY]` — so you won't be offered a spell slot you don't have. They're paused during combat, and they clear themselves when you swipe. If your model ignores the tool, the ↻ button generates them on your **World Progression** connection instead (that path *does* cost a call, so it's manual only).
+Choices are checked against your actual state — the whitelist comes from your live `[SPELLS]`, `[ABILITIES]`, and `[INVENTORY]` — so you won't be offered a spell slot you don't have. They're paused during combat, and they clear themselves when you swipe.
+
+**If choices don't appear**, the panel tells you which of the four things went wrong rather than just sitting empty: nothing has generated yet, the narrator stayed silent, the narrator answered and the payload was rejected (with reasons), or the tool never registered with SillyTavern. The ↻ button generates a set on your **World Progression** connection at any time.
+
+Large narrative presets — Megumin Suite especially — can crowd out an unprompted every-turn tool call no matter how the tool is registered. If that's happening to you, turn on **"Generate choices if the narrator doesn't"**. It's off by default because it costs one extra request per turn the narrator skips the tool.
 
 ## Basic Video Walkthrough of the RNG System
 https://www.youtube.com/watch?v=1n5x7VBJ0IU

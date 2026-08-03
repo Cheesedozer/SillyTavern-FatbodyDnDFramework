@@ -225,15 +225,42 @@ function chatTail() {
     } catch { return { messageIndex: -1, swipeId: 0 }; }
 }
 
-/** Writes choices for a chat, stamped against the message they belong to. */
-export function storeChoices(chatId, choices) {
+function writeEntry(chatId, patch) {
     if (!chatId) return;
     const s = getSettings();
     if (!s.chatStates) s.chatStates = {};
     if (!s.chatStates[chatId]) s.chatStates[chatId] = {};
     const { messageIndex, swipeId } = chatTail();
-    s.chatStates[chatId].cyoa = { choices, messageIndex, swipeId, ts: Date.now() };
+    s.chatStates[chatId].cyoa = { messageIndex, swipeId, ts: Date.now(), ...patch };
     persist();
+}
+
+/** Writes choices for a chat, stamped against the message they belong to. */
+export function storeChoices(chatId, choices, source = 'narrator') {
+    writeEntry(chatId, { choices, source });
+}
+
+/**
+ * Records that the narrator called the tool but the payload was unusable. Kept
+ * so the panel can say *why* it is empty instead of looking like nothing
+ * happened — the difference matters when debugging a preset.
+ */
+export function storeRejection(chatId, errors) {
+    writeEntry(chatId, { rejected: errors });
+}
+
+/**
+ * Marks that a turn completed with the module on. Lets the panel distinguish
+ * "no generation has run yet" from "a turn just ended and the narrator didn't
+ * offer anything", which is the state that actually needs explaining.
+ */
+export function markTurnCompleted(chatId) {
+    if (!chatId) return;
+    const s = getSettings();
+    const entry = s.chatStates?.[chatId]?.cyoa;
+    const { messageIndex, swipeId } = chatTail();
+    if (entry && entry.messageIndex === messageIndex && entry.swipeId === swipeId) return;
+    writeEntry(chatId, { silent: true });
 }
 
 export function clearChoices(chatId) {
@@ -245,6 +272,16 @@ export function clearChoices(chatId) {
     }
 }
 
+/** The stored entry for a chat, or null when it belongs to a superseded message. */
+function currentEntry(chatId) {
+    if (!chatId) return null;
+    const entry = getSettings().chatStates?.[chatId]?.cyoa;
+    if (!entry) return null;
+    const { messageIndex, swipeId } = chatTail();
+    if (entry.messageIndex !== messageIndex || entry.swipeId !== swipeId) return null;
+    return entry;
+}
+
 /**
  * Stored choices for a chat, or null when there are none *or* when they belong
  * to a message that has since been swiped or deleted. Stale choices are worse
@@ -252,12 +289,19 @@ export function clearChoices(chatId) {
  * @param {string} chatId
  */
 export function getChoicesForChat(chatId) {
-    if (!chatId) return null;
-    const entry = getSettings().chatStates?.[chatId]?.cyoa;
-    if (!entry?.choices?.length) return null;
-    const { messageIndex, swipeId } = chatTail();
-    if (entry.messageIndex !== messageIndex || entry.swipeId !== swipeId) return null;
-    return entry.choices;
+    const entry = currentEntry(chatId);
+    return entry?.choices?.length ? entry.choices : null;
+}
+
+/**
+ * What the panel should say when there are no choices to show.
+ * @returns {{ state: 'pending'|'rejected'|'silent', errors?: string[] }}
+ */
+export function getChoiceStatus(chatId) {
+    const entry = currentEntry(chatId);
+    if (entry?.rejected?.length) return { state: 'rejected', errors: entry.rejected };
+    if (entry?.silent) return { state: 'silent' };
+    return { state: 'pending' };
 }
 
 // ── Prompt construction ──────────────────────────────────────────────────────
@@ -295,12 +339,30 @@ export function buildChoiceInstructions(count, memo) {
  * calls this on every render (a collapse click, a page change), and tearing the
  * tool down and rebuilding it that often is both wasteful and disruptive if a
  * generation is in flight — so an unchanged fingerprint is a no-op.
+ *
+ * Only ever assigned *after* the registry call it describes has succeeded. An
+ * earlier version recorded it up front, so a throw (or ST clearing its tool
+ * registry underneath us) left a fingerprint claiming a registration that never
+ * happened, and every later unforced call short-circuited forever.
  */
 let _lastRegistration = null;
+
+/** True while the tool is believed to be registered with SillyTavern. */
+export function isChoiceToolRegistered() {
+    return _lastRegistration !== null && _lastRegistration.startsWith('on:');
+}
 
 /**
  * Registers (or removes) the SuggestChoices narrator tool. Idempotent, and safe
  * to call on every settings change / chat switch — mirrors registerLogQuestTool.
+ *
+ * The gate here must stay *identical* to the one buildSysprompt() applies to the
+ * `<cyoa>` block. If the rules can ship while the tool cannot, the narrator is
+ * left ordered to call something that isn't in the request — an unsatisfiable
+ * instruction, and the state that produced the original bug report. In
+ * particular combat is deliberately NOT gated here: it's a rule inside the
+ * `<cyoa>` block and a panel state, nothing more.
+ *
  * @param {boolean} [force] re-register even when nothing observable changed
  */
 export function registerSuggestChoicesTool(force = false) {
@@ -308,25 +370,22 @@ export function registerSuggestChoicesTool(force = false) {
         const s = getSettings();
         const { registerFunctionTool, unregisterFunctionTool } = SillyTavern.getContext();
 
-        const fingerprint = JSON.stringify([
-            !!s.enabled,
-            s.syspromptModules?.cyoa !== false,
-            isCombatActive(s.currentMemo),
-            activeSlots(s.cyoaChoiceCount).length,
-            buildResourceWhitelist(s.currentMemo),
-        ]);
+        const enabled = !!s.enabled && s.syspromptModules?.cyoa !== false;
+        const count = activeSlots(s.cyoaChoiceCount).length;
+        const whitelist = buildResourceWhitelist(s.currentMemo);
+        const fingerprint = `${enabled ? 'on' : 'off'}:${JSON.stringify([count, whitelist])}`;
         if (!force && fingerprint === _lastRegistration) return;
-        _lastRegistration = fingerprint;
 
-        // Unregister first (idempotent).
+        // Clear first, so a throw below can never leave a stale fingerprint
+        // asserting a registration that isn't there.
+        _lastRegistration = null;
         unregisterFunctionTool(TOOL_NAME);
 
-        if (!s.enabled || s.syspromptModules?.cyoa === false) return;
-        // Combat is authored by the RNG queue and the combat rules; narrative
-        // choice slots are the wrong shape there, so the tool goes away entirely.
-        if (isCombatActive(s.currentMemo)) return;
+        if (!enabled) {
+            _lastRegistration = fingerprint;
+            return;
+        }
 
-        const count = activeSlots(s.cyoaChoiceCount).length;
         const slots = activeSlots(count);
 
         registerFunctionTool({
@@ -370,9 +429,12 @@ export function registerSuggestChoicesTool(force = false) {
                 const expected = activeSlots(fresh.cyoaChoiceCount).length;
                 const { ok, errors, choices } = validateChoices(args, expected);
                 if (!ok) {
-                    // Returned to the model, which can correct itself on the next
-                    // turn. Nothing is stored, so the panel keeps its prior state.
+                    // Surfaced in the panel, not just the console: an empty panel
+                    // gives the player no way to tell "the narrator never called
+                    // it" from "it called and I threw the answer away".
                     console.warn('[RPG Tracker] CYOA: rejected SuggestChoices payload:', errors);
+                    storeRejection(currentChatId(), errors);
+                    globalThis._rpgRenderCyoaPanel?.();
                     return `Choices rejected: ${errors.join(' ')}`;
                 }
                 storeChoices(currentChatId(), choices);
@@ -385,7 +447,12 @@ export function registerSuggestChoicesTool(force = false) {
             // narration through.
             formatMessage: () => '',
         });
+
+        _lastRegistration = fingerprint;
     } catch (error) {
+        // Leave the fingerprint clear so the next call retries rather than
+        // caching a registration that never landed.
+        _lastRegistration = null;
         console.error('[RPG Tracker] Error registering SuggestChoices function tool', error);
     }
 }
@@ -406,8 +473,10 @@ const REGEN_MAX_TURNS = 3;
 
 /**
  * Fallback for narrators that don't tool-call: asks the World Progression
- * connection for choices against the last narrator message. Only ever runs when
- * the player clicks ↻ — this feature is free per-turn by design.
+ * connection for choices against the last narrator message.
+ *
+ * Costs a request, so it is never automatic unless the player opts in via
+ * `cyoaAutoFallback`; otherwise it only runs when they click ↻.
  * @param {string} chatId
  * @returns {Promise<{ok: boolean, reason?: string, errors?: string[]}>}
  */
@@ -456,7 +525,7 @@ Respond with a single fenced JSON block and nothing else:
         const parsed = extractChoiceJson(result.content || '');
         const validation = validateChoices(parsed, count);
         if (validation.ok) {
-            storeChoices(chatId, validation.choices);
+            storeChoices(chatId, validation.choices, 'fallback');
             return { ok: true };
         }
 
@@ -467,4 +536,36 @@ Respond with a single fenced JSON block and nothing else:
 
     console.warn('[RPG Tracker] CYOA: regenerate exhausted retries.', lastErrors);
     return { ok: false, reason: 'validation-exhausted', errors: lastErrors };
+}
+
+// ── Post-turn reconciliation ─────────────────────────────────────────────────
+
+/**
+ * Runs after each narrator turn. Two jobs, both about the case the original bug
+ * report hit — the narrator simply not calling the tool:
+ *
+ *  1. Record that a turn completed with nothing offered, so the panel can say so
+ *     rather than showing the same "no choices yet" text it shows at boot.
+ *  2. If the player has opted into `cyoaAutoFallback`, generate them anyway.
+ *
+ * A large third-party preset (Megumin Suite is the worked example) can suppress
+ * an unprompted every-turn tool call no matter how correct the registration is,
+ * and no amount of registration correctness fixes a prompt-adherence problem.
+ *
+ * @param {string} chatId
+ * @returns {Promise<void>}
+ */
+export async function reconcileAfterTurn(chatId) {
+    const s = getSettings();
+    if (!chatId || !s.enabled || s.syspromptModules?.cyoa === false) return;
+    if (isCombatActive(s.currentMemo)) return;
+    if (getChoicesForChat(chatId)) return;                       // narrator delivered
+    if (getChoiceStatus(chatId).state === 'rejected') return;    // called, but unusable — don't paper over it
+
+    markTurnCompleted(chatId);
+    globalThis._rpgRenderCyoaPanel?.();
+
+    if (!s.cyoaAutoFallback) return;
+    await regenerateChoices(chatId);
+    globalThis._rpgRenderCyoaPanel?.();
 }
