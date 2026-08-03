@@ -25,6 +25,16 @@ Three problems drove this, and they were not fixable inside a tool:
 
 **Running Megumin Suite?** Turn its `[[cyoa]]` addon off. It and this now both ask for an every-turn choice list in the message body; see `presets/README.md`.
 
+### Fixed
+- **One turn could run the whole post-turn pipeline twice.** This is the other half of "responses are repeating," and it sits upstream of CYOA entirely. `index.js` binds a single handler to *both* `GENERATION_ENDED` and `GENERATION_STOPPED`, and SillyTavern promises nothing about only one firing per turn. The only guard consulted `_rpgStateModelRunning`, which is not set until well inside the state pass — two `await`s run before it, so two events delivered together both got past it and proceeded concurrently.
+
+  The damage went beyond a wasted request. World Progression accumulates `engagementScore = (… || 0) + delta` for every NPC and then **persists** it, so a duplicate silently inflated saved engagement scores (and double-incremented `_regionMessagesSinceCheck`). `_routerAutoTick` and `_worldProgAutoTick` are counters, so a duplicate skewed the Lorebook Agent's and World Progression's cadence. And because a second state pass aborts the first one's in-flight request, it could cancel the pass it duplicated.
+
+  `onGenerationEnded` now dedupes itself with two guards, because they catch different things: a synchronous in-flight lock set before anything can yield (which is what the old check structurally could not do), and a per-turn key — chat, message index, swipe id, and a hash of the narrative — compared before the work and stamped only after it completes, so a throw retries rather than caching a failure as done. The narrative hash is not decoration: a regenerate can land on the same index and swipe id, and without it that turn would be skipped as a duplicate. Swipes, regenerates and edits all still re-run; only a byte-identical repeat of the turn just processed is suppressed.
+
+  Both events stay bound. A stopped generation has committed its partial text to the chat and the tracker should read it, and a key-based guard makes the question of which event arrives first — or whether both do — stop mattering.
+- **Framework-initiated passes can no longer re-enter the pipeline.** `onGenerationEnded` now consults `isInternalRequestActive()`. `_rpgStateModelRunning` covered the state pass; the router and World Progression passes had no equivalent.
+
 ---
 
 **The narrator stopped echoing your lorebook back at you.** A Megumin Suite user reported lorebook entries appearing verbatim inside a narrator message, on the same turn CYOA choices failed to arrive. Two independent defects, one of them long-standing.

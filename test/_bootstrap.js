@@ -16,6 +16,7 @@
 let _store = { rpg_tracker: {} };
 let _extensionPrompts = {};
 let _chatId = '';
+let _chat = [];
 
 /** Seed the rpg_tracker settings object getSettings() will merge defaults into. */
 export function setSettings(obj) {
@@ -25,6 +26,15 @@ export function setSettings(obj) {
 /** Sets the id the context reports as the open chat (defaults to '' — no chat). */
 export function setChatId(chatId) {
     _chatId = chatId || '';
+}
+
+/**
+ * Sets the message array the context reports as the open chat (defaults to []).
+ * Needed by anything that reads chat history — getNarrativeBlocks and, through
+ * it, onGenerationEnded, which returns immediately on an empty chat.
+ */
+export function setChat(messages) {
+    _chat = Array.isArray(messages) ? messages : [];
 }
 
 /** Raw access to the backing extension_settings store (post-merge inspection). */
@@ -49,7 +59,7 @@ globalThis.SillyTavern = {
             chatId: _chatId,
             saveSettingsDebounced() {},
             saveSettings() {},
-            chat: [],
+            chat: _chat,
             eventSource: { on() {}, emit() {} },
             setExtensionPrompt(key, value) { _extensionPrompts[key] = value; },
         };

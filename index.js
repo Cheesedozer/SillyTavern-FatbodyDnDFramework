@@ -5260,6 +5260,12 @@ ${resourceList}
             });
 
             // ─── Event Hooks ───
+            // Both events drive the same pipeline on purpose: a generation the user
+            // stopped has still committed its partial text to the chat, and the
+            // tracker should read it. SillyTavern makes no promise that only one of
+            // them fires per turn, so onGenerationEnded dedupes itself on a per-turn
+            // key — do NOT "fix" a double-run by unbinding one of these, or a stopped
+            // turn may end up running nothing at all.
             eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
             eventSource.on(event_types.GENERATION_STOPPED, onGenerationEnded);
 
