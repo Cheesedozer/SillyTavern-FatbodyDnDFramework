@@ -27,16 +27,36 @@ itself, because a background pass can still be open when the next real turn is a
 
 Two subsystems get their structured data from the *narrator's own turn* rather than a
 follow-up pass: quests (`LogQuest`, `quests.js`) and CYOA choices (`SuggestChoices`,
-`cyoa.js`). Both register via `ctx.registerFunctionTool` with `formatMessage: () => ''`
-— **not** `stealth: true`, which also suppresses the follow-up generation and leaves an
-empty assistant message. Both build their tool *description* dynamically from
+`cyoa.js`). Both build their tool *description* dynamically from
 `settings.syspromptModules`, so the schema the model sees tracks the user's toggles.
 
-Prefer this shape over a second LLM pass when the data is about the scene the narrator
-just wrote: it costs no extra request, and the model proposing has the context the
-proposal is about. `cyoa.js#registerSuggestChoicesTool` fingerprints its inputs and
+**They differ on `stealth`, and the difference is load-bearing.** ST's ToolManager
+documents `stealth` as "the tool call result will not be shown in the chat; no follow-up
+generation will be performed" — the tool's `action` runs either way, since
+`invokeFunctionTool` is awaited *before* the flag is checked. So the question is only
+ever "should the model get another generation after this call?":
+
+- `LogQuest` — **no** `stealth`. The model may call it *instead of* narrating, and the
+  follow-up generation is what supplies the prose. It uses `formatMessage: () => ''`.
+- `SuggestChoices` — **`stealth: true`**. It is specified to fire only after the prose is
+  finished, so a follow-up has nothing to write and the narrator just continues a scene
+  it already ended. That follow-up also re-ran the interceptor (re-injecting lore) and
+  re-fired `GENERATION_ENDED`, double-running the state pass and World Progression.
+
+Before adding a third tool, decide which of those two it is. The cost of `stealth` is
+that a tool-call-only turn lands as an empty message with no follow-up to fill it, so a
+stealth tool's description must tell the model never to call it alone.
+
+Prefer a narrator tool over a second LLM pass when the data is about the scene the
+narrator just wrote: it costs no extra request, and the model proposing has the context
+the proposal is about. `cyoa.js#registerSuggestChoicesTool` fingerprints its inputs and
 no-ops on an unchanged fingerprint, because `refreshRenderedView()` calls it on every
-render.
+render; the fingerprint is assigned only *after* the registry call succeeds, so a throw
+is retried rather than cached as done.
+
+Its registration gate must stay identical to the one `buildSysprompt()` applies to the
+`<cyoa>` block. If the rules can ship while the tool cannot, the narrator is left ordered
+to call something absent from the request — that desync caused a real bug report.
 
 ## External projects
 

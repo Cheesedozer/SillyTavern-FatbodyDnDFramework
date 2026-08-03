@@ -252,8 +252,29 @@ test('registerSuggestChoicesTool: offers the tool with the active slots as an en
         assert.deepEqual(slotProp.enum, ['advance', 'diverge', 'cost']);
         // The whitelist has to ride along or the narrator can invent resources.
         assert.match(def.description, /Eldritch Blast/);
-        // The tool-call message must stay out of the chat log.
-        assert.equal(def.formatMessage(), '');
+    });
+});
+
+// Regression: without `stealth`, SillyTavern saves the tool result to the chat
+// AND runs a follow-up generation. Since SuggestChoices is specified to fire only
+// after the prose is finished, that follow-up made the narrator continue a scene
+// it had already ended — every turn the tool fired. The action still runs under
+// stealth (ToolManager awaits invokeFunctionTool before checking the flag), so
+// choices are still captured.
+test('registerSuggestChoicesTool: is stealth, so no follow-up generation is triggered', () => {
+    withToolRecorder({ ...ENABLED }, (calls) => {
+        registerSuggestChoicesTool(true);
+        assert.equal(calls.registered[0].stealth, true);
+    });
+});
+
+test('registerSuggestChoicesTool: warns the narrator never to call it alone', () => {
+    withToolRecorder({ ...ENABLED }, (calls) => {
+        registerSuggestChoicesTool(true);
+        // Under stealth there is no follow-up to supply missing prose, so a
+        // tool-call-only turn would land as an empty message.
+        assert.match(calls.registered[0].description, /NEVER instead of it/);
+        assert.match(calls.registered[0].description, /empty message/);
     });
 });
 
