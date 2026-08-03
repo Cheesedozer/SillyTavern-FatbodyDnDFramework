@@ -393,7 +393,8 @@ export function registerSuggestChoicesTool(force = false) {
             displayName: TOOL_NAME,
             description:
                 'Call this ONCE at the end of every turn, after you have finished narrating, to offer the player their next possible actions. '
-                + 'Call it in addition to your prose, never instead of it.\n\n'
+                + 'Call it in addition to your prose, NEVER instead of it — a turn whose only output is this call produces an empty message. '
+                + 'Write the scene first, then call this last.\n\n'
                 + buildChoiceInstructions(count, s.currentMemo),
             parameters: {
                 type: 'object',
@@ -441,11 +442,22 @@ export function registerSuggestChoicesTool(force = false) {
                 globalThis._rpgRenderCyoaPanel?.();
                 return `${choices.length} choices offered.`;
             },
-            // Same reasoning as LogQuest: `stealth` suppressed the follow-up
-            // generation too, so a turn that only called the tool ended as an
-            // empty message. An empty formatMessage hides the call and lets the
-            // narration through.
-            formatMessage: () => '',
+            // LogQuest's reasoning INVERTS here, so this deliberately differs from
+            // quests.js. Per SillyTavern's ToolManager, `stealth` means "the tool
+            // call result will not be shown in the chat; no follow-up generation
+            // will be performed" — and the tool's action still runs regardless
+            // (invokeFunctionTool is awaited *before* the stealth check).
+            //
+            // LogQuest needs the follow-up because the model may call it INSTEAD of
+            // narrating, leaving an empty message the follow-up then fills.
+            // SuggestChoices is the opposite: it is specified to run only after the
+            // prose is finished, so the follow-up has nothing left to write and the
+            // narrator simply continues a scene it had already ended — a second,
+            // unasked-for block of story on every single turn the tool fires. It
+            // also re-ran the interceptor, re-injecting lore into a continuation
+            // prompt with nothing to say, and double-fired GENERATION_ENDED (and
+            // with it the state pass and the World Progression cycle).
+            stealth: true,
         });
 
         _lastRegistration = fingerprint;
