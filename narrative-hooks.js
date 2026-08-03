@@ -5,7 +5,8 @@
  * it intercepts outgoing messages to inject context (RNG queue, state memo,
  * quests) and collects incoming AI narrative for the state model pass.
  *
- * Imports: state-manager.js, memo-processor.js, router.js, world-progression.js,
+ * Imports: state-manager.js (incl. fingerprintString), shared-state.js,
+ *   memo-processor.js, router.js, world-progression.js,
  *   cyoa.js (reconcileAfterTurn, stripChoiceBlock), preset-marker.js, debug-viewer.js
  * Imported by: index.js (registration)
  *
@@ -13,7 +14,8 @@
  * circular import. This will be cleaned up when index.js is split.
  */
 
-import { getSettings, getActivationMode, getCampaignMode } from './state-manager.js';
+import { getSettings, getActivationMode, getCampaignMode, fingerprintString } from './state-manager.js';
+import { isInternalRequestActive } from './shared-state.js';
 import { parseQuestsFromMemo, buildActiveLorebookContext, estimateTokens, estimateExternalPromptTokens, budgetInjections, OUTPUT_HEADROOM_FRAC } from './memo-processor.js';
 import { runRouterPass, saveSceneToLorebook, scanAssistantOutputForKeywords } from './router.js';
 import { maybeRunWorldProgressionPass } from './world-progression.js';
@@ -589,6 +591,45 @@ let _routerAutoTick = 0;
  */
 let _pendingKeywordTriggered = [];
 
+// ── Post-turn pipeline dedupe ────────────────────────────────────────────────
+//
+// index.js binds ONE handler to two events, GENERATION_ENDED and
+// GENERATION_STOPPED, and SillyTavern gives no guarantee that only one of them
+// fires per turn. Running the pipeline twice is not merely wasteful:
+// world-progression.js accumulates `engagementScore += delta` and then persists
+// it, so a duplicate silently inflates saved state; `_routerAutoTick` and
+// `_worldProgAutoTick` are counters, so a duplicate skews every cadence; and the
+// second state pass aborts the first one's request mid-flight.
+//
+// Two guards, because they catch different things:
+
+/**
+ * True from the first synchronous line of onGenerationEnded to its finally.
+ *
+ * The pre-existing `_rpgStateModelRunning` check cannot do this job: RT.stateModelRunning
+ * isn't set until well inside the state pass, and two awaits run before we get
+ * there — so two events delivered together both sail past it and proceed
+ * concurrently. This flag closes that window because nothing yields before it.
+ */
+let _pipelineRunning = false;
+
+/**
+ * Fingerprint of the last turn whose pipeline ran to completion, or null.
+ *
+ * Keyed on chat, message index, swipe id AND a hash of the narrative. The hash
+ * is not redundant: a regenerate can land on the same index and swipe id, and
+ * without it that turn would be silently skipped as a duplicate. With it, only a
+ * byte-identical repeat of the turn just processed is suppressed — which is
+ * exactly what a duplicate event is.
+ */
+let _lastCompletedTurn = null;
+
+/** Test seam — drops the dedupe state between cases. Mirrors _resetInternalRequestDepth(). */
+export function _resetGenerationDedupe() {
+    _pipelineRunning = false;
+    _lastCompletedTurn = null;
+}
+
 /** Call this whenever the active chat changes so the interval counter and accumulator restart.
  * @param {boolean} [clearKeywordPool] - Pass true only when actually switching to a different chat.
  */
@@ -606,15 +647,44 @@ export function resetRouterTick(clearKeywordPool = false) {
 }
 
 /**
- * Fires on GENERATION_ENDED. Triggers the state model pass.
- * runStateModelPass is resolved via the module import below to avoid
- * a hard circular dep — it will be a direct import once memo-processor.js exists.
+ * Fires on GENERATION_ENDED *and* GENERATION_STOPPED — index.js binds one handler
+ * to both, so this function is responsible for its own dedupe. Runs the post-turn
+ * pipeline (keyword scan, state pass, World Progression, CYOA, Lorebook Agent)
+ * exactly once per turn.
+ *
+ * runStateModelPass is resolved via globalThis to avoid a hard circular dep —
+ * it will be a direct import once memo-processor.js exists.
  */
 export async function onGenerationEnded() {
     const settings = getSettings();
     const isStateRunning = typeof globalThis._rpgStateModelRunning === 'function' && globalThis._rpgStateModelRunning();
     if (!settings.enabled || settings.paused || isStateRunning) return;
 
+    // Two events, one handler: a second delivery for the same turn must not start
+    // a second pipeline. Checked before anything can yield.
+    if (_pipelineRunning) return;
+
+    // The framework's own passes go out via generateRaw, which does not appear to
+    // emit GENERATION_ENDED (if it did, this would already be looping). This is a
+    // cheap invariant rather than a fix for an observed bug — but unlike the
+    // isStateRunning check above, it also covers the router and World Progression
+    // passes, which have no equivalent flag of their own.
+    if (isInternalRequestActive()) return;
+
+    _pipelineRunning = true;
+    try {
+        await runPostTurnPipeline(settings);
+    } finally {
+        _pipelineRunning = false;
+    }
+}
+
+/**
+ * The body of one post-turn run, split out so the in-flight lock above can wrap
+ * it in a tight try/finally.
+ * @param {ReturnType<import('./state-manager.js').getSettings>} settings
+ */
+async function runPostTurnPipeline(settings) {
     // Modern mode: a level-up directive that was delivered with the generation
     // that just finished is consumed (fail-open — one delivery per level-up;
     // the state pass below may stage a NEW one from this generation's XP).
@@ -624,10 +694,39 @@ export async function onGenerationEnded() {
         if (prog?.pendingLevelUp?.delivered) prog.pendingLevelUp = null;
     } catch (_) { /* never block the pipeline */ }
 
-    const { chat } = SillyTavern.getContext();
+    const ctx = SillyTavern.getContext();
+    const { chat } = ctx;
     const combinedNarrative = getNarrativeBlocks(chat, -1, !!settings.routerIncludeHidden);
+    // Deliberately before the dedupe stamp: GENERATION_STOPPED can fire before the
+    // message is committed to the chat, and that no-op must not claim the turn —
+    // the GENERATION_ENDED that follows still has real work to do.
     if (!combinedNarrative) return;
 
+    const messageIndex = (chat?.length || 0) - 1;
+    const turnKey = [
+        ctx.chatId || '',
+        messageIndex,
+        chat?.[messageIndex]?.swipe_id || 0,
+        fingerprintString(combinedNarrative),
+    ].join(':');
+    if (turnKey === _lastCompletedTurn) {
+        if (settings.debugMode) console.log('[RPG Tracker] Post-turn pipeline already ran for this turn — skipping duplicate event.');
+        return;
+    }
+
+    await runPostTurnSteps(settings, chat, combinedNarrative);
+
+    // Stamped only on a normal return — an early return from the throttle is a
+    // completed turn, but a throw must leave the turn unclaimed so the next event
+    // retries rather than caching a failure as done (the cyoa-regex.js idiom).
+    _lastCompletedTurn = turnKey;
+}
+
+/**
+ * Steps 1–4 of the post-turn pipeline. Returning early (the Lorebook Agent
+ * throttle) counts as completing the turn; throwing does not.
+ */
+async function runPostTurnSteps(settings, chat, combinedNarrative) {
     if (settings.debugMode) console.log("[RPG Tracker] Assistant generation ended. Running keyword scanner...");
 
     // Step 1: Scan assistant output for entry keywords and activate matches immediately.

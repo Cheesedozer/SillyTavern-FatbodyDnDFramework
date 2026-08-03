@@ -28,8 +28,12 @@ export const MODULE_NAME = 'rpg_tracker';
 // known prior default while preserving user-customized prompts.
 export const STATE_PROMPT_VERSION = 1;
 
-/** Tiny FNV-1a fingerprint (`<len>:<hash>`) used to recognize prior default prompts. */
-function promptFingerprint(str) {
+/**
+ * Tiny FNV-1a fingerprint (`<len>:<hash>`). Written to recognize prior default
+ * prompts; also used by narrative-hooks.js to key one generation's post-turn
+ * pipeline run, so two events for the same turn can't run it twice.
+ */
+export function fingerprintString(str) {
     let h = 0x811c9dc5;
     for (let i = 0; i < str.length; i++) {
         h ^= str.charCodeAt(i);
@@ -605,7 +609,7 @@ export function migrateSystemPrompt(s) {
 
     if (cur === latest) {
         // Fresh install or already migrated — nothing to change.
-    } else if (LEGACY_STATE_PROMPT_FINGERPRINTS.has(promptFingerprint(cur))) {
+    } else if (LEGACY_STATE_PROMPT_FINGERPRINTS.has(fingerprintString(cur))) {
         s.systemPromptTemplate = latest; // untouched prior default → auto-upgrade
         if (s.debugMode) console.log(`[RPG Tracker] State Extractor prompt auto-upgraded to v${STATE_PROMPT_VERSION}.`);
     } else {
@@ -644,7 +648,7 @@ export function migrateWorldProgPrompts(s) {
 
         if (cur === latest) {
             // Fresh install or already migrated — nothing to change.
-        } else if (LEGACY_WORLDPROG_PROMPT_FINGERPRINTS.has(promptFingerprint(cur))) {
+        } else if (LEGACY_WORLDPROG_PROMPT_FINGERPRINTS.has(fingerprintString(cur))) {
             s[key] = latest; // untouched prior default → auto-upgrade
             if (s.debugMode) console.log(`[RPG Tracker] World Progression ${layer} prompt auto-upgraded to v${WORLDPROG_PROMPT_VERSION}.`);
         } else {

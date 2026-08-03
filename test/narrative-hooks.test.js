@@ -143,3 +143,175 @@ test('validateToolDiceFormula accepts valid formulas and rejects junk via droll'
         globalThis.SillyTavern.libs = prevLibs;
     }
 });
+
+// ── onGenerationEnded dedupe ─────────────────────────────────────────────────
+// index.js binds ONE handler to both GENERATION_ENDED and GENERATION_STOPPED,
+// and SillyTavern does not promise only one fires per turn. A duplicate run is
+// not merely wasteful: world-progression.js accumulates engagementScore += delta
+// and persists it, and _routerAutoTick is a counter, so a second run corrupts
+// saved state and skews every cadence.
+
+/** Installs a counting stand-in for the state pass. Returns a live call counter. */
+function spyStatePass({ throws = false } = {}) {
+    const calls = { count: 0 };
+    globalThis._rpgRunStateModelPass = async () => {
+        calls.count++;
+        if (throws) throw new Error('state pass exploded');
+    };
+    return calls;
+}
+
+/**
+ * Seeds an enabled framework with one narrator message. Everything the pipeline
+ * would spend a request on is left off — the state-pass spy is the only observer
+ * we need, and runRouterPass/maybeRunWorldProgressionPass bail without generateRaw.
+ */
+async function seedTurn(mes, { swipeId = 0 } = {}) {
+    const { setChat, setChatId, setSettings } = await import('./_bootstrap.js');
+    const { _resetGenerationDedupe } = await import('../narrative-hooks.js');
+    setSettings({ enabled: true, debugMode: false, routerEnabled: false, worldProgEnabled: false, syspromptModules: { cyoa: false } });
+    setChatId('chat-dedupe');
+    setChat([{ is_user: false, is_system: false, mes, swipe_id: swipeId }]);
+    _resetGenerationDedupe();
+}
+
+test('onGenerationEnded: a duplicate event for the same turn runs the pipeline once', async () => {
+    const { onGenerationEnded } = await import('../narrative-hooks.js');
+    await seedTurn('The steward holds the door.');
+    const calls = spyStatePass();
+
+    await onGenerationEnded();   // GENERATION_ENDED
+    await onGenerationEnded();   // GENERATION_STOPPED for the same turn
+    await onGenerationEnded();
+
+    assert.equal(calls.count, 1, 'both events must not each run the pipeline');
+});
+
+// The pre-existing _rpgStateModelRunning check cannot catch this: two awaits run
+// before RT.stateModelRunning is ever set, so simultaneous events both get past it.
+test('onGenerationEnded: two concurrent events run the pipeline once', async () => {
+    const { onGenerationEnded } = await import('../narrative-hooks.js');
+    await seedTurn('The steward holds the door.');
+    const calls = spyStatePass();
+
+    await Promise.all([onGenerationEnded(), onGenerationEnded()]);
+
+    assert.equal(calls.count, 1, 'the in-flight lock must be set before anything yields');
+});
+
+test('onGenerationEnded: a genuinely new turn runs again', async () => {
+    const { setChat } = await import('./_bootstrap.js');
+    const { onGenerationEnded } = await import('../narrative-hooks.js');
+    await seedTurn('The steward holds the door.');
+    const calls = spyStatePass();
+
+    await onGenerationEnded();
+    setChat([{ is_user: false, is_system: false, mes: 'The hall empties.', swipe_id: 0 }]);
+    await onGenerationEnded();
+
+    assert.equal(calls.count, 2);
+});
+
+test('onGenerationEnded: a swipe runs again', async () => {
+    const { setChat } = await import('./_bootstrap.js');
+    const { onGenerationEnded } = await import('../narrative-hooks.js');
+    await seedTurn('The steward holds the door.');
+    const calls = spyStatePass();
+
+    await onGenerationEnded();
+    setChat([{ is_user: false, is_system: false, mes: 'The steward blocks it.', swipe_id: 1 }]);
+    await onGenerationEnded();
+
+    assert.equal(calls.count, 2);
+});
+
+// The case a key of (chatId, messageIndex, swipeId) alone would wrongly suppress:
+// a regenerate can land on the same index and swipe id with different text.
+// This is why the turn key includes a hash of the narrative.
+test('onGenerationEnded: a regenerate at the same index and swipe id runs again', async () => {
+    const { setChat } = await import('./_bootstrap.js');
+    const { onGenerationEnded } = await import('../narrative-hooks.js');
+    await seedTurn('The steward holds the door.');
+    const calls = spyStatePass();
+
+    await onGenerationEnded();
+    setChat([{ is_user: false, is_system: false, mes: 'A different opening entirely.', swipe_id: 0 }]);
+    await onGenerationEnded();
+
+    assert.equal(calls.count, 2, 'same index + swipe id but new text is a new turn');
+});
+
+// GENERATION_STOPPED can fire before the message is committed to the chat. That
+// no-op must not claim the turn, or the GENERATION_ENDED behind it does nothing.
+test('onGenerationEnded: an empty chat does not consume the turn', async () => {
+    const { setChat } = await import('./_bootstrap.js');
+    const { onGenerationEnded } = await import('../narrative-hooks.js');
+    await seedTurn('The steward holds the door.');
+    const calls = spyStatePass();
+
+    setChat([]);
+    await onGenerationEnded();
+    assert.equal(calls.count, 0);
+
+    setChat([{ is_user: false, is_system: false, mes: 'The steward holds the door.', swipe_id: 0 }]);
+    await onGenerationEnded();
+    assert.equal(calls.count, 1, 'the real event must still do the work');
+});
+
+// The cyoa-regex.js idiom: stamp only after success, so a throw retries rather
+// than caching a failure as done.
+test('onGenerationEnded: a throwing pipeline leaves the turn unclaimed', async () => {
+    const { onGenerationEnded } = await import('../narrative-hooks.js');
+    await seedTurn('The steward holds the door.');
+    const calls = spyStatePass({ throws: true });
+
+    for (let i = 0; i < 3; i++) {
+        await assert.rejects(() => onGenerationEnded(), /state pass exploded/);
+    }
+
+    assert.equal(calls.count, 3, 'a failed run must not be cached as done');
+});
+
+// A duplicate would double-increment the counter and skew the Lorebook Agent's
+// cadence even when the state pass itself was cheap.
+test('onGenerationEnded: the Lorebook Agent tick advances once per turn', async () => {
+    const { setChat, setSettings } = await import('./_bootstrap.js');
+    const { onGenerationEnded, resetRouterTick, _resetGenerationDedupe } = await import('../narrative-hooks.js');
+    const { RT } = await import('../shared-state.js');
+
+    setSettings({ enabled: true, debugMode: false, routerEnabled: false, worldProgEnabled: false, syspromptModules: { cyoa: false }, routerRunEvery: 2 });
+    RT.currentChatId = 'chat-tick';
+    resetRouterTick();
+    _resetGenerationDedupe();
+    const calls = spyStatePass();
+
+    // Turn 1, delivered twice.
+    setChat([{ is_user: false, is_system: false, mes: 'Turn one.', swipe_id: 0 }]);
+    await onGenerationEnded();
+    await onGenerationEnded();
+    // Turn 2, delivered twice. With runEvery=2 the agent is due exactly now — if
+    // the duplicates had counted, it would already have fired on turn 1.
+    setChat([{ is_user: false, is_system: false, mes: 'Turn two.', swipe_id: 0 }]);
+    await onGenerationEnded();
+    await onGenerationEnded();
+
+    assert.equal(calls.count, 2, 'two turns, four events, two runs');
+});
+
+test('onGenerationEnded: does nothing while a framework-initiated request is open', async () => {
+    const { onGenerationEnded } = await import('../narrative-hooks.js');
+    const { beginInternalRequest, endInternalRequest } = await import('../shared-state.js');
+    await seedTurn('The steward holds the door.');
+    const calls = spyStatePass();
+
+    beginInternalRequest();
+    try {
+        await onGenerationEnded();
+        assert.equal(calls.count, 0);
+    } finally {
+        endInternalRequest();
+    }
+
+    await onGenerationEnded();
+    assert.equal(calls.count, 1, 'and resumes once the internal request closes');
+});
